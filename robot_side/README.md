@@ -31,6 +31,29 @@
 注意：nod/shake 是**一次性头部动作**，与课程按钮一致，不改变连续步态模式
 （正在行走时收到 `nod`，机器人边走边点头）；要让机器人停下请发 `CMD:stand`。
 
+## 与仓库 main 分支 `TCP_connect.py` 的关系
+
+团队仓库 `main` 分支只含一个 `TCP_connect.py`，是课程版的整理增强版（滞回
+`ENTER_DZ=0.20`/`EXIT_DZ=0.30`、**运动中拒绝所有 CMD**、无 SDK 时内置 `[DRY]` dry-run）。
+经逐项核对，PC 端本项目与它**完全兼容**：JSONL 控制帧、0.60s 看门狗、0.30s 节拍、
+死区 0.20（本项目的 `search_steer=0.35`、`minimum_active_steer=0.25`、`near_speed=0.21`
+均在其上）、CMD 行也会刷新看门狗，直接运行即可配合 GUI/CLI 使用。
+
+| 能力 | main 分支版 | 本服务（robot_side） |
+| --- | --- | --- |
+| JSON 连续控制 + 看门狗 + 步态 | ✓ | ✓（无滞回，纯 0.20 死区） |
+| 三个原 CMD 映射 | ✓ | ✓ |
+| `CMD:nod` / `CMD:shake` / `CMD:stand` | ✗（no mapping，忽略） | ✓ 头部舵机序列 |
+| 行走中收到 CMD | 拒绝（更安全） | 允许（边走边点头） |
+| 无 SDK 时 dry-run | ✓ 自动 `[DRY]` | ✓ 需 `TONYPI_DRY_RUN=1` 或导入失败 |
+| 端口等可配置 | 硬编码 | 环境变量可覆盖 |
+
+结论：**只做闭环控制/点动/停止验证时，直接用 main 分支版即可**；要用 GUI 的
+点头/摇头按钮，需部署本服务（二者都用 5075，注意先停旧服务）。本服务基于课程
+zip 版而非 main 版；如希望合并两者的能力（滞回 + CMD 拒绝 + 头部动作），可把
+main 版的 `_handle_vector` 滞回与 `_handle_cmd` 拒绝逻辑移植进 `tonypi_server.py`，
+头部序列代码可直接复用。
+
 ## 头部舵机 API（已对照课程 SDK 核实）
 
 来自 `HiwonderSDK/hiwonder/Board.py`：

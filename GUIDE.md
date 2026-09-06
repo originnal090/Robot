@@ -421,25 +421,26 @@ Orange Pi 本项目
 
 ### 9.2 TonyPi 端
 
-两种可选服务：
+三种可选服务，按需选择：
 
-**课程原版** `Example/TCP_connect.py`：只支持 JSON 运动、三个固定 CMD 映射和看门狗，收到 `CMD:nod`/`CMD:shake` 会忽略。
+| 能力 | ① main 分支 `TCP_connect.py` | ② 课程 zip 原版 | ③ `robot_side/tonypi_server.py` |
+|---|---|---|---|
+| JSON 连续控制 + 0.60s 看门狗 | ✓（含滞回） | ✓ | ✓ |
+| `CMD:nod` / `CMD:shake` / `CMD:stand` | ✗ 忽略 | ✗ 忽略 | ✓ 头部舵机序列 |
+| 行走中收到 CMD | 拒绝 | 允许 | 允许 |
+| 无 SDK 时 dry-run | ✓ 自动 | ✗ | ✓ 可强制 |
+| 端口可配置 | ✗ | ✗ | ✓ 环境变量 |
 
-**本项目扩展版** `robot_side/tonypi_server.py`（推荐）：在课程行为基础上新增：
+**结论：main 分支版可以直接用上**——闭环控制、点动脉冲、停止/看门狗全部兼容本项目
+（本项目输出值 `0.35/0.25/0.21` 都在其死区 `0.20` 之上），团队机器人在跑的就是它。
+只有 GUI 的“点头/摇头”按钮需要 ③ 扩展版；① 和 ③ 都监听 `5075`，二选一，先停旧服务。
 
-- `CMD:nod` / `CMD:shake`：头部 PWM 舵机小幅摆动（1 号俯仰 / 2 号偏航，脉宽限制与课程 SDK 一致），用于连通性验证；
-- `CMD:stand`：强制回到站立模式；
-- `TONYPI_DRY_RUN=1` 或缺少 `hiwonder` 时只打印动作不驱动舵机；
-- 其余协议（死区 `0.20`、看门狗 `0.60 s`、动作节拍、原 CMD 映射、UDP 颜色转发）与课程版保持一致。
-
-部署到 TonyPi：
+部署 ③：
 
 ```bash
 scp robot_side/tonypi_server.py pi@<TONYPI_IP>:~/
-ssh pi@<TONYPI_IP> 'python3 ~/tonypi_server.py'
+ssh pi@<TONYPI_IP> 'pkill -f TCP_connect.py; python3 ~/tonypi_server.py'
 ```
-
-细节与差异清单见 `robot_side/README.md`。
 
 无论哪种服务：
 
