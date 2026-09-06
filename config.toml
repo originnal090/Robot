@@ -1,0 +1,55 @@
+[video]
+source = "synthetic"
+width = 640
+height = 480
+fps = 10.0
+frame_timeout_seconds = 0.75
+
+[detection]
+# Tuned on 200 captured robot frames (see artifacts/eval-output): the ball reads
+# A 133-190 while background clutter stays at A <= ~138, so A is the discriminator.
+# Wide L/B bounds avoid clipping the shaded edges of the small (~25 px) ball, which
+# used to break circularity; minimum_circularity 0.60 keeps small rasterized disks.
+lab_min = [30, 132, 100]
+lab_max = [220, 215, 150]
+processing_width = 640
+processing_height = 480
+gaussian_blur_kernel = 3
+morphology_kernel = 3
+minimum_contour_area = 50.0
+minimum_circularity = 0.60
+# Rejects warm wood/foam textures (A <= ~147 in the captured scene): a candidate blob
+# must contain >= 15% strongly red pixels (A >= 160). The real ball scores ~0.6.
+core_a_min = 160
+minimum_core_fraction = 0.15
+minimum_aspect_ratio = 0.60
+maximum_aspect_ratio = 1.67
+confirmation_frames = 3
+release_frames = 3
+
+[controller]
+align_enter_error = 0.08
+align_exit_error = 0.14
+arrival_radius_ratio = 0.18
+slow_radius_ratio = 0.10
+search_steer = 0.35
+search_reverse_seconds = 2.0
+max_search_seconds = 12.0
+align_steer_gain = 1.2
+approach_steer_gain = 0.9
+align_steer_max = 0.60
+approach_steer_max = 0.35
+far_speed = 0.25
+near_speed = 0.21
+minimum_active_steer = 0.25
+align_frames = 3
+misalign_frames = 2
+arrival_frames = 3
+lost_frames = 3
+
+[robot]
+backend = "recording"
+host = "127.0.0.1"
+port = 5075
+connect_timeout_seconds = 3.0
+send_interval_seconds = 0.10

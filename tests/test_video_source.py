@@ -1,0 +1,201 @@
+"""Tests for the hand-rolled MJPEG HTTP source (FFmpeg-free decoding path)."""
+
+from __future__ import annotations
+
+import socket
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
+
+import cv2
+import numpy as np
+import pytest
+
+from hcirobot.video import MjpegHttpSource
+
+_SIZE = (48, 64)
+
+
+def make_jpeg(color_bgr: tuple[int, int, int]) -> bytes:
+    image = np.full((*_SIZE, 3), color_bgr, dtype=np.uint8)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    return encoded.tobytes()
+
+
+def assert_frame_matches(frame: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+    assert frame.shape == (*_SIZE, 3)
+    assert frame.dtype == np.uint8
+    center = frame[_SIZE[0] // 2, _SIZE[1] // 2]
+    for index in range(3):
+        assert abs(int(center[index]) - color_bgr[index]) <= 12
+
+
+class _StreamHandler(BaseHTTPRequestHandler):
+    """Serves configured byte segments as a single multipart MJPEG response."""
+
+    frames: ClassVar[list[bytes]] = []
+    prefix: bytes = b""
+    infix: bytes = b""
+    suffix: bytes = b""
+    hold_open: threading.Event | None = None
+    abrupt: bool = False
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        self.wfile.write(self.prefix)
+        for index, frame in enumerate(self.frames):
+            if index:
+                self.wfile.write(self.infix)
+            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+        self.wfile.write(self.suffix)
+        self.wfile.flush()
+        if self.hold_open is not None:
+            self.hold_open.wait(5.0)
+        if self.abrupt:
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def log_message(self, format: str, *args: object) -> None:
+        return None
+
+
+@contextmanager
+def mjpeg_server(handler: type[BaseHTTPRequestHandler]) -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/?action=stream"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_parses_frames_and_content_from_multipart_stream() -> None:
+    colors = [(0, 0, 255), (0, 255, 0), (255, 255, 255)]
+
+    class Handler(_StreamHandler):
+        frames: ClassVar[list[bytes]] = [make_jpeg(color) for color in colors]
+
+    with mjpeg_server(Handler) as url:
+        source = MjpegHttpSource(url, timeout_seconds=2.0)
+        try:
+            decoded = list(source)
+        finally:
+            source.close()
+
+    assert len(decoded) == len(colors)
+    for frame, color in zip(decoded, colors, strict=True):
+        assert_frame_matches(frame, color)
+
+
+def test_close_unblocks_pending_read_from_another_thread() -> None:
+    class Handler(_StreamHandler):
+        frames: ClassVar[list[bytes]] = [make_jpeg((0, 128, 255))]
+        hold_open = threading.Event()  # never set: server stays silent after frame 1
+
+    with mjpeg_server(Handler) as url:
+        source = MjpegHttpSource(url, timeout_seconds=5.0)
+        try:
+            iterator = iter(source)
+            first = next(iterator)
+            assert_frame_matches(first, (0, 128, 255))
+            closer = threading.Timer(0.2, source.close)
+            closer.start()
+            started = time.monotonic()
+            remaining = list(iterator)  # blocked in read until close() fires
+            elapsed = time.monotonic() - started
+            closer.join(timeout=2.0)
+        finally:
+            Handler.hold_open.set()
+            source.close()
+
+    assert remaining == []
+    assert elapsed < 3.0  # would be ~5s (socket read timeout) without close()
+
+
+def test_server_disconnect_ends_iteration_normally() -> None:
+    colors = [(255, 255, 255), (0, 0, 0)]
+
+    class Handler(_StreamHandler):
+        frames: ClassVar[list[bytes]] = [make_jpeg(color) for color in colors]
+        suffix = b"\xff\xd8" + b"\x11\x22\x33" * 16  # truncated frame, then hard cut
+        abrupt = True
+
+    with mjpeg_server(Handler) as url:
+        source = MjpegHttpSource(url, timeout_seconds=2.0)
+        try:
+            decoded = list(source)
+        finally:
+            source.close()
+
+    assert len(decoded) == 2
+    for frame, color in zip(decoded, colors, strict=True):
+        assert_frame_matches(frame, color)
+
+
+def test_malformed_segments_are_skipped_without_raising() -> None:
+    colors = [(0, 255, 255), (255, 0, 255)]
+    garbage = b"leading junk without any jpeg markers \x00\x01\x02"
+    fake = b"\xff\xd8" + bytes(64) + b"\xff\xd9"  # valid markers, undecodable body
+
+    class Handler(_StreamHandler):
+        frames: ClassVar[list[bytes]] = [make_jpeg(color) for color in colors]
+        prefix = garbage
+        infix = garbage + fake + garbage
+        suffix = fake
+
+    with mjpeg_server(Handler) as url:
+        source = MjpegHttpSource(url, timeout_seconds=2.0)
+        try:
+            decoded = list(source)
+        finally:
+            source.close()
+
+    assert len(decoded) == 2
+    for frame, color in zip(decoded, colors, strict=True):
+        assert_frame_matches(frame, color)
+
+
+def test_open_times_out_against_silent_server() -> None:
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            release.wait(3.0)  # accept the request but never answer
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    with mjpeg_server(Handler) as url:
+        started = time.monotonic()
+        with pytest.raises(ConnectionError):
+            MjpegHttpSource(url, timeout_seconds=0.25)
+        elapsed = time.monotonic() - started
+    release.set()
+
+    assert 0.2 <= elapsed < 2.0
+
+
+def test_open_failure_raises_connection_error() -> None:
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    with pytest.raises(ConnectionError):
+        MjpegHttpSource(f"http://127.0.0.1:{port}/?action=stream", timeout_seconds=1.0)

@@ -1,0 +1,351 @@
+from __future__ import annotations
+
+import contextlib
+import itertools
+import json
+import queue
+import re
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import cv2
+from numpy.typing import NDArray
+
+from .controller import ControlDecision, VisualApproachController
+from .detector import RedBallDetector
+from .model import ControlState, Detection, RobotCommand
+from .robot import RobotBackend
+from .video import annotate
+
+
+@dataclass(frozen=True, slots=True)
+class RunResult:
+    frames: int
+    final_state: ControlState
+    states_seen: tuple[ControlState, ...]
+    termination: str = "completed"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeEvent:
+    kind: str
+    message: str = ""
+    frame: NDArray[Any] | None = field(default=None, repr=False, compare=False)
+    detection: Detection | None = None
+    decision: ControlDecision | None = None
+    frame_count: int = 0
+    seq: int = 0
+    session_id: int = 0
+
+
+EventSink = Callable[[RuntimeEvent], None]
+
+_ACTION_NAME = re.compile(r"[A-Za-z0-9_]{1,32}")
+_session_counter = itertools.count(1)
+
+
+@dataclass(frozen=True, slots=True)
+class ManualCommand:
+    """Raw velocity pulse that overrides autonomy while active."""
+
+    velocity: float
+    steer: float
+    until: float
+
+
+class SessionControl:
+    """Thread-safe requests consumed by the control worker."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._arm = threading.Event()
+        self._estop = threading.Event()
+        self._lock = threading.Lock()
+        self._manual: ManualCommand | None = None
+        self._action: str | None = None
+        self._robot: RobotBackend | None = None
+        self.session_id = next(_session_counter)
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def attach_robot(self, robot: RobotBackend) -> None:
+        """Register the backend so stop/estop can unblock a stuck send."""
+        with self._lock:
+            self._robot = robot
+
+    def request_arm(self) -> None:
+        if not self._estop.is_set():
+            self._arm.set()
+
+    def request_stop(self) -> None:
+        self._stop.set()
+        self._cancel_robot()
+
+    def request_estop(self) -> None:
+        self._estop.set()
+        self._stop.set()
+        self._cancel_robot()
+
+    def request_manual(self, velocity: float, steer: float, seconds: float) -> None:
+        if not -1.0 <= velocity <= 1.0:
+            raise ValueError("manual velocity must be between -1 and 1")
+        if not -1.0 <= steer <= 1.0:
+            raise ValueError("manual steer must be between -1 and 1")
+        if not 0.0 < seconds <= 5.0:
+            raise ValueError("manual duration must be between 0 and 5 seconds")
+        with self._lock:
+            self._manual = ManualCommand(velocity, steer, time.monotonic() + seconds)
+
+    def current_manual(self) -> ManualCommand | None:
+        with self._lock:
+            if self._manual is None:
+                return None
+            if time.monotonic() >= self._manual.until:
+                self._manual = None
+                return None
+            return self._manual
+
+    def request_action(self, name: str) -> None:
+        if not _ACTION_NAME.fullmatch(name):
+            raise ValueError("action name must be 1-32 alphanumeric or underscore characters")
+        with self._lock:
+            self._action = name
+
+    def consume_action(self) -> str | None:
+        with self._lock:
+            action, self._action = self._action, None
+            return action
+
+    def consume_arm(self) -> bool:
+        if self._arm.is_set():
+            self._arm.clear()
+            return True
+        return False
+
+    def consume_estop(self) -> bool:
+        if self._estop.is_set():
+            self._estop.clear()
+            return True
+        return False
+
+    def _cancel_robot(self) -> None:
+        with self._lock:
+            robot = self._robot
+        cancel = getattr(robot, "cancel", None)
+        if cancel is None:
+            return
+        with contextlib.suppress(Exception):  # cancel is best-effort unblocking.
+            cancel()
+
+
+_END = object()
+
+
+def _publish(output: queue.Queue, stop: threading.Event, item: object) -> bool:
+    while not stop.is_set():
+        try:
+            output.put(item, timeout=0.05)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
+def _capture_frames(source, output: queue.Queue, stop: threading.Event) -> None:
+    try:
+        for frame in source:
+            if not _publish(output, stop, frame):
+                return
+        _publish(output, stop, _END)
+    except Exception as exc:  # noqa: BLE001 - transport exception crosses worker boundary.
+        _publish(output, stop, exc)
+
+
+def _emit(sink: EventSink | None, event: RuntimeEvent) -> None:
+    if sink is not None:
+        sink(event)
+
+
+def run_loop(
+    source,
+    detector: RedBallDetector,
+    controller: VisualApproachController,
+    robot: RobotBackend,
+    *,
+    armed: bool,
+    max_frames: int = 0,
+    frame_timeout_seconds: float = 0.75,
+    output_dir: Path | None = None,
+    clock=time.monotonic,
+    session: SessionControl | None = None,
+    event_sink: EventSink | None = None,
+) -> RunResult:
+    if frame_timeout_seconds <= 0:
+        raise ValueError("frame timeout must be positive")
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    session = session or SessionControl()
+    session_id = session.session_id
+    event_seq = itertools.count(1)
+
+    def emit(kind: str, message: str = "", **kwargs: Any) -> None:
+        _emit(event_sink, RuntimeEvent(kind, message, seq=next(event_seq), session_id=session_id, **kwargs))
+
+    states_seen: list[ControlState] = []
+    frame_count = 0
+    termination = "completed"
+    if armed:
+        controller.arm(clock())
+
+    frames: queue.Queue = queue.Queue(maxsize=1)
+    capture_stop = threading.Event()
+    capture_thread = threading.Thread(
+        target=_capture_frames,
+        args=(source, frames, capture_stop),
+        name="video-capture",
+        daemon=True,
+    )
+    capture_thread.start()
+    emit("started", "session started")
+    cleanup_error: Exception | None = None
+    last_frame_received = time.monotonic()
+
+    def finish_safe(reason: str) -> None:
+        controller.fail_safe(reason)
+        robot.send(RobotCommand.stop())
+
+    try:
+        while True:
+            action = session.consume_action()
+            if action is not None:
+                robot.send_action(action)
+                emit("action", action)
+            if session.consume_estop():
+                controller.estop("operator_estop")
+                robot.send(RobotCommand.stop())
+                termination = "estop"
+                emit("estop", "operator emergency stop")
+                break
+            if session.stopped:
+                robot.send(RobotCommand.stop())
+                termination = "stop_requested"
+                emit("stopping", "stop requested")
+                break
+            if session.consume_arm() and controller.state is ControlState.IDLE:
+                controller.arm(clock())
+                emit("armed", "autonomy armed")
+
+            try:
+                item = frames.get(timeout=min(frame_timeout_seconds, 0.05))
+            except queue.Empty:
+                if time.monotonic() - last_frame_received < frame_timeout_seconds:
+                    continue
+                if controller.state is ControlState.IDLE:
+                    termination = "preview_timeout"
+                    break
+                finish_safe("video_timeout")
+                termination = "video_timeout"
+                states_seen.append(ControlState.LOST_SAFE)
+                break
+            last_frame_received = time.monotonic()
+            if item is _END:
+                if controller.state not in (ControlState.ARRIVED, ControlState.IDLE):
+                    finish_safe("video_ended")
+                    termination = "video_ended"
+                    if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
+                        states_seen.append(ControlState.LOST_SAFE)
+                break
+            if isinstance(item, Exception):
+                raise item
+
+            detection = detector.process(item)
+            decision = controller.update(detection, clock())
+            manual = session.current_manual()
+            if manual is not None:
+                robot.send_raw(
+                    {
+                        "v": round(manual.velocity, 4),
+                        "steer": round(manual.steer, 4),
+                        "grab": False,
+                        "t": datetime.now(UTC).isoformat(),
+                    }
+                )
+            else:
+                robot.send(decision.command)
+            frame_count += 1
+            rendered = annotate(item, detection, decision)
+            emit(
+                "frame",
+                decision.reason,
+                frame=rendered,
+                detection=detection,
+                decision=decision,
+                frame_count=frame_count,
+            )
+            if not states_seen or states_seen[-1] is not decision.state:
+                states_seen.append(decision.state)
+                payload = {
+                    "frame": frame_count,
+                    "state": decision.state.value,
+                    "reason": decision.reason,
+                    "v": round(decision.command.velocity, 3),
+                    "steer": round(decision.command.steer, 3),
+                }
+                message = json.dumps(payload, ensure_ascii=False)
+                print(message, flush=True)
+                emit("state", message, frame_count=frame_count)
+            if output_dir is not None:
+                cv2.imwrite(str(output_dir / f"frame-{frame_count:04d}.png"), rendered)
+            if decision.state in (ControlState.ARRIVED, ControlState.LOST_SAFE):
+                termination = decision.state.value.lower()
+                break
+            if max_frames > 0 and frame_count >= max_frames:
+                termination = "max_frames"
+                break
+    except ConnectionError as exc:
+        if session.consume_estop():
+            controller.estop("operator_estop")
+            termination = "estop"
+            emit("estop", "operator emergency stop")
+        elif session.stopped:
+            termination = "stop_requested"
+            emit("stopping", "stop requested")
+        else:
+            controller.fail_safe("robot_connection_lost")
+            termination = "robot_connection_lost"
+            emit("error", f"robot connection lost: {exc}")
+        if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
+            states_seen.append(ControlState.LOST_SAFE)
+    except Exception:
+        controller.fail_safe("runtime_error")
+        try:
+            robot.send(RobotCommand.stop())
+        except (ConnectionError, OSError):
+            pass
+        raise
+    finally:
+        capture_stop.set()
+        try:
+            robot.close()
+        except Exception as exc:  # noqa: BLE001 - cleanup must continue.
+            cleanup_error = exc
+        try:
+            source.close()
+        except Exception as exc:  # noqa: BLE001 - robot cleanup already ran.
+            cleanup_error = cleanup_error or exc
+        capture_thread.join(timeout=0.5)
+        if capture_thread.is_alive():
+            cleanup_error = cleanup_error or RuntimeError("video capture thread did not stop")
+
+    result = RunResult(frame_count, controller.state, tuple(states_seen), termination)
+    emit("finished", termination, frame_count=frame_count)
+    if cleanup_error is not None:
+        raise cleanup_error
+    return result

@@ -1,0 +1,36 @@
+[project]
+name = "hcirobot"
+version = "0.1.0"
+description = "TonyPi visual search-align-approach baseline"
+readme = "GUIDE.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "pillow>=11.0",
+]
+
+[project.scripts]
+hcirobot = "hcirobot.cli:main"
+hcirobot-gui = "hcirobot.gui:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hcirobot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
