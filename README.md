@@ -12,6 +12,9 @@
 - **视觉闭环**：LAB 红球检测（3 帧确认/释放）+ `SEARCHING → ALIGNING →
   APPROACHING → ARRIVED` 状态机，搜索自动换向、对准滞回、到达锁存；
   丢失目标立即停止前进，搜索超时/视频断流/异常一律进入安全态。
+- **反应式避障**：机器人端超声波距离回传（`DIST` 遥测）为主、视觉启发式为
+  降级兜底，受阻自动“停车—后退—转向—重找球”；连续受阻锁存 `BLOCKED`。
+  这是反应式局部避障，不含地图与全局规划。
 - **默认不武装**：CLI 需显式 `--arm`，GUI 需显式点“武装自治”；所有停止路径
   （停止、急停、断流、崩溃、关窗）都会尽力补发零向量。
 - **桌面操作台**：实时画面与遥测、运行中热调检测/控制参数、手动行为按钮
@@ -69,10 +72,11 @@ uv run ruff check src tests tools robot_side
 | JSON 连续控制 + 0.60s 看门狗 | ✓（含滞回） | ✓ |
 | GUI 点动/停止/闭环控制 | ✓ | ✓ |
 | `CMD:nod` / `CMD:shake`（头部动作） | ✗ 忽略 | ✓ |
+| 超声波距离遥测（`DIST` 行，避障必需） | ✗ | ✓ |
 | 行走中收到 CMD | 拒绝（更安全） | 允许 |
 
 **团队 main 分支的 `TCP_connect.py` 可直接用上**：本项目的输出值全部在其死区
-`0.20` 之上，协议逐项兼容。只有点头/摇头按钮需要部署 `robot_side` 扩展版
+`0.20` 之上，协议逐项兼容。点头/摇头和避障需要部署 `robot_side` 扩展版
 （部署步骤见 [robot_side/README.md](robot_side/README.md)，两服务都用 5075，
 注意先停旧服务）。
 
@@ -90,8 +94,9 @@ uv run ruff check src tests tools robot_side
 src/hcirobot/
   detector.py      红球检测（真机帧标定阈值）
   controller.py    搜寻/对准/接近状态机
+  navigation.py    反应式避障策略与视觉启发式
   app.py           会话运行循环（安全看门狗、事件、手动注入）
-  robot.py         TCP/记录后端（可取消、CMD 动作）
+  robot.py         TCP/记录后端（可取消、CMD 动作、距离遥测读取）
   video.py         MJPEG/摄像头/文件/合成视频源
   gui.py           Tk 桌面操作台
 robot_side/        机器人端扩展服务（点头/摇头/stand）
@@ -105,4 +110,4 @@ GUIDE.md           完整指南：部署、标定、安全流程、排障
 软件“站立/零向量”**不是机械急停**。真机测试请遵守：
 架空先行 → 一人值守物理断电 → 唯一控制权（停掉 Unity/厂商跟随脚本）→
 先 `recording` 后端验证视觉 → 再低速地面测试。网络端口无鉴权，仅在隔离
-局域网使用。完整安全流程见 [GUIDE.md](GUIDE.md) 第 11 节。
+局域网使用。完整安全流程见 [GUIDE.md](GUIDE.md) 第 12 节。

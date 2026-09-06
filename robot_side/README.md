@@ -71,6 +71,56 @@ Board.setPWMServoPulse(servo_id, pulse=1500, use_time=1000)
 本服务据此限制：俯仰摆动 ±150µs（1500±150，落在 [1000, 2000] 内），
 偏航摆动 ±200µs，每步 250ms，序列结束回到中立位 1500。
 
+## 超声波距离遥测（DIST 行，本服务新增）
+
+本服务会在**连接期间**每拍向当前客户端推送一行超声波距离（PC 端避障数据源）：
+
+```
+DIST:<毫米>\n          例：DIST:317\n
+```
+
+- 单位为**毫米**（int）；发送间隔 `DIST_INTERVAL_S`（默认 0.3s，可用环境变量
+  `TONYPI_DIST_INTERVAL` 覆盖）。
+- 数值来自课程 SDK `HiwonderSDK/hiwonder/Sonar.py`（已对照 zip 原文核实）：
+  `Sonar()` 无构造参数（I²C bus 1、addr 0x77），`getDistance()` 返回毫米，
+  读数 >5000 钳位到 5000，I²C 异常（**传感器未连接**）时返回哨兵值 **99999**。
+  99999 会**原样发送**，由 PC 端策略过滤（视为无效读数）。
+- Sonar 读取抛异常时该拍跳过并记日志，不影响服务其它部分。
+- 写入与课程转发一致走连接锁：只发给当前唯一客户端，无连接时不发送。
+
+PC 端对应契约（`hcirobot.robot.TcpRobotClient`）：
+
+- `latest_distance()` → `(毫米, time.monotonic() 收到时刻)` 或 `None`（尚未收到）；
+  消费方（navigation/GUI）应按时间戳判断新鲜度。
+- `on_message(kind, payload)` 回调收到 `("distance", "<毫米>")` 与
+  `("color", "<TAG>")`；回调在读取线程执行，**不得阻塞**。
+
+### 模拟源：TONYPI_SONAR_SIM
+
+设置 `TONYPI_SONAR_SIM` 后**不接触真实传感器**，按确定性公式生成距离
+（相对连接建立时刻），用于 dry-run、PC 端联调和自动化测试：
+
+| 格式 | 含义 | 示例 |
+| --- | --- | --- |
+| `flat:<v>` | 恒值 | `TONYPI_SONAR_SIM=flat:500` |
+| `sweep:<min>:<max>:<period_s>` | min..max 三角波扫掠，从 min 出发半周期到 max | `TONYPI_SONAR_SIM=sweep:100:800:2.0` |
+| `steps:<v1>@<t1>,<v2>@<t2>,...` | 分段恒值：`t<t1` 为 v1，`t≥t1` 为 v2，…，末段无限延续 | `TONYPI_SONAR_SIM=steps:600@1.0,200@3.5` |
+
+源选择优先级：`TONYPI_SONAR_SIM` 模拟源 > 真实 Sonar > 不发送。
+即：dry-run（`TONYPI_DRY_RUN=1`）或导入 hiwonder.Sonar 失败时没有真实 Sonar，
+只有设置 `TONYPI_SONAR_SIM` 才会有 DIST 输出；正式硬件模式不设模拟源即读真实传感器。
+
+快速验证（PC 端另开终端）：
+
+```bash
+ssh pi@<ip> 'TONYPI_DRY_RUN=1 TONYPI_SONAR_SIM=sweep:100:800:2.0 \
+  PYTHONPATH=/home/pi/TonyPi/HiwonderSDK python3 /home/pi/TonyPi/tonypi_server.py'
+# 客户端应每 0.3s 收到一条 DIST:100..800 之间的锯齿值
+```
+
+**注意**：课程原版与仓库 main 分支的 `TCP_connect.py` 都**没有**距离遥测能力，
+因此障碍物反应式避障必须部署本服务（`tonypi_server.py`）。
+
 ## 部署到 TonyPi
 
 ```bash

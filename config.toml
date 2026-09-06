@@ -53,3 +53,22 @@ host = "127.0.0.1"
 port = 5075
 connect_timeout_seconds = 3.0
 send_interval_seconds = 0.10
+
+[obstacle]
+# Reactive avoidance only: sonar telemetry from robot_side is the primary source,
+# the vision heuristic is an experimental fallback when sonar data is stale/absent.
+enabled = true
+stop_mm = 250.0        # enter caution: hold position
+avoid_mm = 150.0       # deep obstruction: trigger avoid maneuver
+clear_mm = 350.0       # hysteresis: must see this far before resuming
+stale_after_s = 1.0    # sonar reading older than this falls back to vision
+trigger_frames = 2     # consecutive valid readings below stop_mm before acting
+max_avoids = 3         # more avoid maneuvers than this -> latched BLOCKED
+backup_velocity = -0.35
+backup_seconds = 0.5
+turn_steer = 0.35
+turn_seconds = 0.6
+cooldown_seconds = 1.0
+vision_enabled = true
+vision_trigger_frames = 4
+vision_occupancy_ratio = 0.35

@@ -233,3 +233,192 @@ def test_cancel_and_close_are_safe_without_connection() -> None:
     client.close()
     with pytest.raises(ConnectionError):
         client.send(RobotCommand(0.0, 0.0))
+
+
+class _LineServer:
+    """最小服务端：接受一个连接，让测试直接向客户端读取线程喂遥测行。"""
+
+    def __init__(self) -> None:
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.listener.settimeout(5)
+        self.port = self.listener.getsockname()[1]
+        self.conn: socket.socket | None = None
+
+    def accept(self) -> socket.socket:
+        conn, _ = self.listener.accept()
+        self.conn = conn
+        return conn
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+        self.listener.close()
+
+
+def _wait_for_distance(client: TcpRobotClient, timeout: float = 2.0) -> tuple[float, float] | None:
+    deadline = time.monotonic() + timeout
+    got = None
+    while time.monotonic() < deadline:
+        got = client.latest_distance()
+        if got is not None:
+            break
+        time.sleep(0.01)
+    return got
+
+
+def test_recording_robot_latest_distance_is_none() -> None:
+    assert RecordingRobot().latest_distance() is None
+
+
+def test_tcp_client_reader_parses_dist_lines_with_fresh_timestamp() -> None:
+    server = _LineServer()
+    client = TcpRobotClient("127.0.0.1", server.port, minimum_send_interval=0)
+    client.connect()
+    conn = server.accept()
+    started = time.monotonic()
+    try:
+        conn.sendall(b"DIST:320\n")
+        got = _wait_for_distance(client)
+        assert got is not None
+        mm, ts = got
+        assert mm == 320.0
+        assert started <= ts <= time.monotonic()  # 收到时刻是新鲜的 monotonic 时间戳
+        # 跨包分片的行也能正确拼装
+        conn.sendall(b"DIST:2")
+        conn.sendall(b"5\n")
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            latest = client.latest_distance()
+            if latest is not None and latest[0] == 25.0:
+                break
+            time.sleep(0.01)
+        assert latest is not None and latest[0] == 25.0
+    finally:
+        client.close()
+        server.close()
+
+
+def test_tcp_client_reader_ignores_invalid_lines() -> None:
+    server = _LineServer()
+    client = TcpRobotClient("127.0.0.1", server.port, minimum_send_interval=0)
+    client.connect()
+    conn = server.accept()
+    try:
+        # 非法行（垃圾行 / 非整数 / 空 payload / 前后缀）全部忽略，不污染后续 DIST
+        conn.sendall(b"HELLO\nDIST:abc\nDIST:\nxDIST:99x\nDIST: 77 \n")
+        got = _wait_for_distance(client)
+        assert got is not None
+        assert got[0] == 77.0
+    finally:
+        client.close()
+        server.close()
+
+
+def test_tcp_client_reader_dispatches_color_and_distance_callbacks() -> None:
+    events: list[tuple[str, str]] = []
+    server = _LineServer()
+    client = TcpRobotClient(
+        "127.0.0.1",
+        server.port,
+        minimum_send_interval=0,
+        on_message=lambda kind, payload: events.append((kind, payload)),
+    )
+    client.connect()
+    conn = server.accept()
+    try:
+        conn.sendall(b"COLOR_SIGNAL:RED\nDIST:10\nCOLOR_SIGNAL:GREEN\n")
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and len(events) < 3:
+            time.sleep(0.01)
+        assert events == [("color", "RED"), ("distance", "10"), ("color", "GREEN")]
+    finally:
+        client.close()
+        server.close()
+
+
+def test_close_stops_reader_thread_and_latest_distance_stays_readable() -> None:
+    server = _LineServer()
+    client = TcpRobotClient("127.0.0.1", server.port, minimum_send_interval=0)
+    client.connect()
+    conn = server.accept()
+    try:
+        conn.sendall(b"DIST:64\n")
+        got = _wait_for_distance(client)
+        assert got is not None and got[0] == 64.0
+        client.close()
+        reader = client._reader
+        assert reader is not None
+        reader.join(2.0)
+        assert not reader.is_alive()  # close 后读取线程退出
+        still = client.latest_distance()  # 关闭后最后读数仍可读
+        assert still is not None and still[0] == 64.0
+    finally:
+        server.close()
+
+
+def test_cancel_stops_reader_thread() -> None:
+    server = _LineServer()
+    client = TcpRobotClient("127.0.0.1", server.port, minimum_send_interval=0)
+    client.connect()
+    server.accept()  # 完成握手即可；取消测试不需要向连接写数据
+    try:
+        client.cancel()
+        reader = client._reader
+        assert reader is not None
+        reader.join(2.0)
+        assert not reader.is_alive()  # cancel 后读取线程退出
+    finally:
+        client.close()
+        server.close()
+
+
+def test_mock_server_distance_source_streaming_end_to_end() -> None:
+    values = iter([10, None, 20])
+
+    def source() -> int | None:
+        return next(values, 20)
+
+    server = MockRobotServer(port=0, watchdog=5.0, distance_source=source)
+    ready = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, args=(ready,), daemon=True)
+    thread.start()
+    assert ready.wait(2)
+    client = TcpRobotClient("127.0.0.1", server.bound_port, minimum_send_interval=0)
+    client.connect()
+    try:
+        # 第 1 拍 10 → 第 2 拍 None（跳过）→ 第 3 拍 20：流未中断且 latest_distance 生效
+        deadline = time.monotonic() + 3.0
+        got = None
+        while time.monotonic() < deadline:
+            got = client.latest_distance()
+            if got is not None and got[0] == 20.0:
+                break
+            time.sleep(0.02)
+        assert got is not None and got[0] == 20.0
+        assert 0.0 < got[1] <= time.monotonic()
+    finally:
+        client.close()
+        server.stop()
+        thread.join(2)
+
+
+def test_mock_server_none_distance_source_never_sends_but_control_still_works() -> None:
+    server = MockRobotServer(port=0, watchdog=5.0, distance_source=lambda: None)
+    ready = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, args=(ready,), daemon=True)
+    thread.start()
+    assert ready.wait(2)
+    client = TcpRobotClient("127.0.0.1", server.bound_port, minimum_send_interval=0)
+    client.connect()
+    try:
+        client.send(RobotCommand(0.1, 0.0))
+        time.sleep(0.7)  # 覆盖至少两拍距离遥测
+        assert client.latest_distance() is None  # None 源不产生 DIST
+    finally:
+        client.close()
+        server.stop()
+        thread.join(2)
+    assert any("v" in item for item in server.commands)  # 控制通道不受影响

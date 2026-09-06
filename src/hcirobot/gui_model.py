@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -32,11 +33,27 @@ class GuiModel:
     horizontal_error: str = "--"
     radius_ratio: str = "--"
     command: str = ZERO_COMMAND
+    obstacle_state: str = "无数据"
+    obstacle_reason: str = ""
+    obstacle_distance: str = "--"
+    vision_blocked: str = "--"
+    avoid_count: int = 0
+    obstacle_enabled: bool = False
+    latched_blocked: bool = False
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=500))
 
     @property
     def can_start(self) -> bool:
-        return self.session_state in (SessionState.STOPPED, SessionState.FAILED) and not self.estop_latched
+        return (
+            self.session_state in (SessionState.STOPPED, SessionState.FAILED)
+            and not self.estop_latched
+            and not self.latched_blocked
+        )
+
+    @property
+    def can_toggle_obstacle(self) -> bool:
+        """The obstacle switch is only read at session start, so freeze it once live."""
+        return self.session_state in (SessionState.STOPPED, SessionState.FAILED) and not self.armed
 
     @property
     def can_arm(self) -> bool:
@@ -65,10 +82,10 @@ class GuiModel:
     @property
     def can_reset(self) -> bool:
         return self.session_state in (SessionState.STOPPED, SessionState.FAILED) and (
-            self.estop_latched or bool(self.fault)
+            self.estop_latched or self.latched_blocked or bool(self.fault)
         )
 
-    def begin_start(self) -> None:
+    def begin_start(self, obstacle_enabled: bool = False) -> None:
         self.session_state = SessionState.STARTING
         self.video_status = "正在打开"
         self.robot_status = "正在连接"
@@ -81,7 +98,14 @@ class GuiModel:
         self.horizontal_error = "--"
         self.radius_ratio = "--"
         self.command = ZERO_COMMAND
-        self.append_log("开始创建预览会话；自治保持未武装")
+        # Snapshot of the obstacle switch; the worker reads the frozen value.
+        self.obstacle_enabled = obstacle_enabled
+        self._reset_obstacle_telemetry()
+        message = "开始创建预览会话；自治保持未武装"
+        if obstacle_enabled:
+            # Obstacle stopping is live while disarmed; maneuvers still need arm.
+            message += "；避障停车生效，倒退/转向机动仅在武装后执行"
+        self.append_log(message)
 
     def request_stop(self) -> None:
         if self.can_stop:
@@ -98,6 +122,7 @@ class GuiModel:
         self.armed = False
         self.control_state = "LOST_SAFE"
         self.command = ZERO_COMMAND
+        self._reset_obstacle_telemetry()
         if active:
             self.session_state = SessionState.STOPPING
             self.video_status = "正在关闭"
@@ -107,11 +132,13 @@ class GuiModel:
         if self.session_state not in (SessionState.STOPPED, SessionState.FAILED):
             return
         self.estop_latched = False
+        self.latched_blocked = False
         self.fault = ""
         self.control_state = "IDLE"
         self.session_state = SessionState.STOPPED
         self.command = ZERO_COMMAND
-        self.append_log("故障与急停锁存已复位；自治仍未武装")
+        self._reset_obstacle_telemetry()
+        self.append_log("故障、急停与避障锁存已复位；自治仍未武装")
 
     def fail(self, message: str) -> None:
         self.session_state = SessionState.FAILED
@@ -121,6 +148,7 @@ class GuiModel:
         self.fault = message
         self.control_state = "LOST_SAFE"
         self.command = ZERO_COMMAND
+        self._reset_obstacle_telemetry()
         self.append_log(f"故障：{message}")
 
     def apply_event(self, event: RuntimeEvent) -> None:
@@ -144,6 +172,10 @@ class GuiModel:
             self.latch_estop()
         elif event.kind == "action":
             self.append_log(f"手动动作已下发：{event.message}")
+        elif event.kind == "obstacle":
+            # Reached only after the session-id filter above, so stale policy
+            # telemetry from a replaced session is dropped like any other event.
+            self._apply_obstacle_event(event)
         elif event.kind == "frame" and event.decision is not None and event.detection is not None:
             if self.session_state is not SessionState.RUNNING:
                 return  # a stale frame must never revive a stopped session
@@ -174,7 +206,61 @@ class GuiModel:
             self.target = "未确认"
             self.horizontal_error = "--"
             self.radius_ratio = "--"
+            self._reset_obstacle_telemetry()
             self.append_log(f"会话结束：{event.message}")
+
+    def _reset_obstacle_telemetry(self) -> None:
+        """Clear live obstacle telemetry; latched_blocked deliberately survives."""
+        self.obstacle_state = "无数据"
+        self.obstacle_reason = ""
+        self.obstacle_distance = "--"
+        self.vision_blocked = "--"
+        self.avoid_count = 0
+
+    def _apply_obstacle_event(self, event: RuntimeEvent) -> None:
+        try:
+            payload = json.loads(event.message)
+            if not isinstance(payload, dict):
+                raise TypeError("payload is not a JSON object")
+            state = str(payload["state"]).strip()
+            if not state:
+                raise ValueError("payload has an empty state")
+        except (ValueError, KeyError, TypeError) as exc:
+            # Malformed telemetry degrades to a log line; it must never crash the GUI.
+            self.append_log(f"避障消息解析失败：{type(exc).__name__}: {exc}")
+            return
+        previous_state = self.obstacle_state
+        self.obstacle_state = state
+        self.obstacle_reason = str(payload.get("reason", ""))
+        distance = payload.get("distance")
+        if distance is not None:
+            try:
+                self.obstacle_distance = f"{float(distance):.0f}"
+            except (TypeError, ValueError):
+                self.obstacle_distance = "--"
+        vision_blocked = payload.get("vision_blocked")
+        if isinstance(vision_blocked, bool):
+            self.vision_blocked = "是" if vision_blocked else "否"
+        if "avoid_count" in payload:
+            try:
+                self.avoid_count = int(payload["avoid_count"])
+            except (TypeError, ValueError):
+                pass
+        elif state == "AVOIDING" and previous_state != "AVOIDING":
+            # No explicit counter in the payload: count each entry into AVOIDING.
+            self.avoid_count += 1
+        action = str(payload.get("action", "")).strip()
+        detail = f"（{action}）" if action else ""
+        # Optional newer-payload key: maneuvers exist but are held back because
+        # autonomy is disarmed. Tolerant: missing or non-bool means no note.
+        if payload.get("suppressed") is True:
+            detail += "；机动被压制（未武装）"
+        if state == "BLOCKED":
+            if not self.latched_blocked:
+                self.latched_blocked = True
+                self.append_log(f"避障锁存 BLOCKED{detail}：{self.obstacle_reason or '未知原因'}")
+        else:
+            self.append_log(f"避障 {state}{detail}：{self.obstacle_reason}")
 
     def append_log(self, message: str) -> None:
         self.logs.append(message)

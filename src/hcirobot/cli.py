@@ -8,6 +8,7 @@ from .app import run_loop
 from .config import controller_config, detector_config, load_config
 from .controller import VisualApproachController
 from .detector import RedBallDetector
+from .navigation import ObstaclePolicy, obstacle_config
 from .robot import RecordingRobot, TcpRobotClient
 from .video import MjpegHttpSource, OpenCvVideoSource, SyntheticBallSource, SyntheticConfig
 
@@ -20,10 +21,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-host")
     parser.add_argument("--robot-port", type=int)
     parser.add_argument("--arm", action="store_true", help="allow autonomous movement")
+    parser.add_argument("--no-obstacle", action="store_true", help="disable reactive obstacle avoidance")
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--realtime", action="store_true", help="pace synthetic video at configured FPS")
     return parser
+
+
+def build_obstacle_policy(config: dict, backend: str, disabled: bool) -> ObstaclePolicy | None:
+    if disabled or backend != "tcp":
+        return None
+    values = config.get("obstacle", {})
+    if not values.get("enabled", True):
+        return None
+    return ObstaclePolicy(obstacle_config(values))
 
 
 def build_source(value: str, video: dict, realtime: bool):
@@ -74,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             armed=args.arm,
             max_frames=args.max_frames,
             frame_timeout_seconds=float(config["video"]["frame_timeout_seconds"]),
+            obstacle_policy=build_obstacle_policy(config, backend_name, args.no_obstacle),
             output_dir=args.output_dir,
         )
         states = ",".join(state.value for state in result.states_seen)

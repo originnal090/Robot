@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 from .controller import ControlDecision, VisualApproachController
 from .detector import RedBallDetector
 from .model import ControlState, Detection, RobotCommand
+from .navigation import ObstaclePolicy
 from .robot import RobotBackend
 from .video import annotate
 
@@ -46,6 +47,7 @@ class RuntimeEvent:
 EventSink = Callable[[RuntimeEvent], None]
 
 _ACTION_NAME = re.compile(r"[A-Za-z0-9_]{1,32}")
+_OBSTACLE_EVENT_MIN_INTERVAL_S = 0.2  # CAUTION/CLEAR flicker near a threshold must not spam events.
 _session_counter = itertools.count(1)
 
 
@@ -186,9 +188,12 @@ def run_loop(
     clock=time.monotonic,
     session: SessionControl | None = None,
     event_sink: EventSink | None = None,
+    obstacle_policy: ObstaclePolicy | None = None,
 ) -> RunResult:
     if frame_timeout_seconds <= 0:
         raise ValueError("frame timeout must be positive")
+    if obstacle_policy is not None and getattr(robot, "latest_distance", None) is None:
+        raise ValueError("obstacle policy requires a robot backend with distance telemetry")
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
     session = session or SessionControl()
@@ -201,6 +206,10 @@ def run_loop(
     states_seen: list[ControlState] = []
     frame_count = 0
     termination = "completed"
+    last_obstacle_key: tuple[str, str, str] | None = None
+    last_obstacle_emitted = float("-inf")
+    is_armed = armed
+    manual_was_active = False
     if armed:
         controller.arm(clock())
 
@@ -238,9 +247,11 @@ def run_loop(
                 termination = "stop_requested"
                 emit("stopping", "stop requested")
                 break
-            if session.consume_arm() and controller.state is ControlState.IDLE:
-                controller.arm(clock())
-                emit("armed", "autonomy armed")
+            if session.consume_arm():
+                is_armed = True
+                if controller.state is ControlState.IDLE:
+                    controller.arm(clock())
+                    emit("armed", "autonomy armed")
 
             try:
                 item = frames.get(timeout=min(frame_timeout_seconds, 0.05))
@@ -268,6 +279,40 @@ def run_loop(
             detection = detector.process(item)
             decision = controller.update(detection, clock())
             manual = session.current_manual()
+            obstacle = None
+            vision_blocked = None
+            if obstacle_policy is not None:
+                vision_blocked = obstacle_policy.observe_frame(item)
+                sonar = robot.latest_distance()
+                obstacle = obstacle_policy.update(sonar, vision_blocked, clock())
+                if obstacle_policy.latched_blocked:
+                    controller.fail_safe("obstacle_blocked")
+                    robot.send(RobotCommand.stop())
+                    termination = "obstacle_blocked"
+                    if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
+                        states_seen.append(ControlState.LOST_SAFE)
+                    emit(
+                        "obstacle",
+                        json.dumps(
+                            {
+                                "state": obstacle.state.value,
+                                "reason": obstacle.reason,
+                                "action": obstacle.action,
+                                "distance": obstacle_policy.last_distance_mm,
+                                "vision_blocked": vision_blocked,
+                                "avoid_count": obstacle_policy.avoid_count,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        frame_count=frame_count,
+                    )
+                    break
+            if manual is not None and not manual_was_active and obstacle_policy is not None:
+                # First frame of a manual pulse: abort any in-flight avoidance
+                # phase so no residual backup/turn vector bursts out after it.
+                obstacle_policy.cancel_maneuver()
+            manual_was_active = manual is not None
+            maneuver_suppressed = obstacle is not None and obstacle.action == "maneuver" and not is_armed
             if manual is not None:
                 robot.send_raw(
                     {
@@ -277,6 +322,21 @@ def run_loop(
                         "t": datetime.now(UTC).isoformat(),
                     }
                 )
+            elif maneuver_suppressed:
+                # An un-armed session must never self-activate an avoidance
+                # motion: the maneuver degrades to a plain hold.
+                robot.send(RobotCommand.stop())
+            elif obstacle is not None and obstacle.action == "maneuver":
+                robot.send_raw(
+                    {
+                        "v": round(obstacle.velocity, 4),
+                        "steer": round(obstacle.steer, 4),
+                        "grab": False,
+                        "t": datetime.now(UTC).isoformat(),
+                    }
+                )
+            elif obstacle is not None and obstacle.action == "hold":
+                robot.send(RobotCommand.stop())
             else:
                 robot.send(decision.command)
             frame_count += 1
@@ -289,6 +349,31 @@ def run_loop(
                 decision=decision,
                 frame_count=frame_count,
             )
+            if obstacle is not None:
+                action_effective = "hold" if maneuver_suppressed else obstacle.action
+                obstacle_key = (obstacle.state.value, action_effective, obstacle.reason)
+                now_s = clock()
+                if (
+                    obstacle_key != last_obstacle_key
+                    and now_s - last_obstacle_emitted >= _OBSTACLE_EVENT_MIN_INTERVAL_S
+                ):
+                    last_obstacle_key = obstacle_key
+                    last_obstacle_emitted = now_s
+                    payload = {
+                        "state": obstacle.state.value,
+                        "reason": obstacle.reason,
+                        "action": obstacle.action,
+                        "distance": obstacle_policy.last_distance_mm if obstacle_policy else None,
+                        "vision_blocked": vision_blocked,
+                        "avoid_count": obstacle_policy.avoid_count if obstacle_policy else None,
+                    }
+                    if maneuver_suppressed:
+                        payload["suppressed"] = True
+                    emit(
+                        "obstacle",
+                        json.dumps(payload, ensure_ascii=False),
+                        frame_count=frame_count,
+                    )
             if not states_seen or states_seen[-1] is not decision.state:
                 states_seen.append(decision.state)
                 payload = {

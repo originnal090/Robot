@@ -6,6 +6,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
+from typing import Any
 
 import cv2
 from PIL import Image, ImageTk
@@ -101,6 +102,8 @@ class RobotControlApp:
         style.configure("TCombobox", padding=6, fieldbackground=PANEL_ALT, foreground=TEXT)
         style.configure("TLabelframe", background=PANEL, foreground=TEXT, bordercolor=BORDER)
         style.configure("TLabelframe.Label", background=PANEL, foreground=MUTED)
+        style.configure("Panel.TCheckbutton", background=PANEL, foreground=TEXT)
+        style.map("Panel.TCheckbutton", background=[("active", PANEL), ("selected", PANEL)])
 
     def _build_window(self) -> None:
         self.root.title("TonyPi 视觉自治控制台")
@@ -206,12 +209,14 @@ class RobotControlApp:
         ttk.Separator(sidebar).grid(row=6, column=0, columnspan=3, sticky="ew", pady=10)
         self._build_tuning_panel(sidebar, row=7)
         ttk.Separator(sidebar).grid(row=9, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_manual_panel(sidebar, row=10)
+        self._build_obstacle_panel(sidebar, row=10)
         ttk.Separator(sidebar).grid(row=12, column=0, columnspan=3, sticky="ew", pady=10)
-        ttk.Label(sidebar, text="运行日志", style="PanelTitle.TLabel").grid(row=13, column=0, columnspan=3, sticky="w")
+        self._build_manual_panel(sidebar, row=13)
+        ttk.Separator(sidebar).grid(row=15, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Label(sidebar, text="运行日志", style="PanelTitle.TLabel").grid(row=16, column=0, columnspan=3, sticky="w")
         log_frame = ttk.Frame(sidebar, style="Panel.TFrame")
-        log_frame.grid(row=14, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        sidebar.rowconfigure(14, weight=1)
+        log_frame.grid(row=17, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        sidebar.rowconfigure(17, weight=1)
         self.log_text = tk.Text(
             log_frame,
             height=8,
@@ -293,6 +298,36 @@ class RobotControlApp:
         self.apply_params_button.configure(state="disabled")
         ttk.Button(buttons, text="恢复默认", width=10, command=self._restore_params).pack(side="left", padx=8)
 
+    def _build_obstacle_panel(self, sidebar: ttk.Frame, row: int) -> None:
+        self.obstacle_panel = ttk.Labelframe(sidebar, text=" 避障 ", style="TLabelframe", padding=(10, 6))
+        self.obstacle_panel.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        # Default comes from config [obstacle] enabled (set in _load_defaults);
+        # the switch is only read when a session starts, so it freezes mid-run.
+        self.obstacle_var = tk.BooleanVar(value=False)
+        self.obstacle_checkbutton = ttk.Checkbutton(
+            self.obstacle_panel,
+            text="启用避障",
+            variable=self.obstacle_var,
+            style="Panel.TCheckbutton",
+        )
+        self.obstacle_checkbutton.pack(anchor="w")
+        grid = ttk.Frame(self.obstacle_panel, style="Panel.TFrame")
+        grid.pack(anchor="w", fill="x", pady=(4, 0))
+        self.obstacle_values: dict[str, ttk.Label] = {}
+        specs = (
+            ("distance", "距离(mm)"),
+            ("vision", "视觉受阻"),
+            ("state", "策略状态"),
+            ("avoids", "避障次数"),
+        )
+        for index, (key, title) in enumerate(specs):
+            cell = ttk.Frame(grid, style="Panel.TFrame")
+            cell.grid(row=index // 2, column=index % 2, sticky="w", padx=(0, 18), pady=1)
+            ttk.Label(cell, text=title, style="Panel.TLabel").pack(anchor="w")
+            value = ttk.Label(cell, text="--", style="Value.TLabel")
+            value.pack(anchor="w")
+            self.obstacle_values[key] = value
+
     def _build_manual_panel(self, sidebar: ttk.Frame, row: int) -> None:
         ttk.Label(sidebar, text="手动测试", style="PanelTitle.TLabel").grid(
             row=row, column=0, columnspan=3, sticky="w"
@@ -369,6 +404,10 @@ class RobotControlApp:
         self.backend_var.set(str(config["robot"]["backend"]))
         self.host_var.set(str(config["robot"]["host"]))
         self.port_var.set(str(config["robot"]["port"]))
+        obstacle = config.get("obstacle")
+        # Missing section/key defaults to enabled, matching the CLI and the
+        # worker-side policy builder; config.toml stays the off switch.
+        self.obstacle_var.set(bool(obstacle.get("enabled", True)) if isinstance(obstacle, dict) else True)
         try:
             self._set_tuning_from_config(config)
         except Exception as exc:  # noqa: BLE001 - fall back to the dataclass defaults.
@@ -412,19 +451,20 @@ class RobotControlApp:
     def _start_session(self) -> None:
         if not self.model.can_start:
             return
-        self.model.begin_start()
-        self._clear_frame_view()
-        self.active_detector = None
-        self.active_controller = None
-        self._refresh_view()
-        self.session_control = SessionControl()
         values = {
             "config": self.config_var.get().strip(),
             "source": self.source_var.get().strip(),
             "backend": self.backend_var.get(),
             "host": self.host_var.get().strip(),
             "port": self.port_var.get().strip(),
+            "obstacle": bool(self.obstacle_var.get()),
         }
+        self.model.begin_start(obstacle_enabled=values["obstacle"])
+        self._clear_frame_view()
+        self.active_detector = None
+        self.active_controller = None
+        self._refresh_view()
+        self.session_control = SessionControl()
         self.session_thread = threading.Thread(
             target=self._session_worker,
             args=(values, self.session_control),
@@ -433,11 +473,19 @@ class RobotControlApp:
         )
         self.session_thread.start()
 
-    def _session_worker(self, values: dict[str, str], control: SessionControl) -> None:
+    def _session_worker(self, values: dict[str, Any], control: SessionControl) -> None:
         source = None
         robot = None
+        run_loop_entered = False
         try:
             config = load_config(Path(values["config"]))
+            # Built before any hardware/video resource is opened, so a bad
+            # obstacle config surfaces through the normal error event path.
+            obstacle_policy = self._build_obstacle_policy(
+                config,
+                values["backend"],
+                bool(values["obstacle"]),
+            )
             source = build_source(values["source"], config["video"], realtime=values["source"] == "synthetic")
             if values["backend"] == "tcp":
                 robot = TcpRobotClient(
@@ -455,6 +503,10 @@ class RobotControlApp:
             controller = VisualApproachController(controller_config(config["controller"]))
             self.active_detector = detector
             self.active_controller = controller
+            run_kwargs: dict[str, Any] = {}
+            if obstacle_policy is not None:
+                run_kwargs["obstacle_policy"] = obstacle_policy
+            run_loop_entered = True
             run_loop(
                 source,
                 detector,
@@ -464,15 +516,48 @@ class RobotControlApp:
                 frame_timeout_seconds=float(config["video"]["frame_timeout_seconds"]),
                 session=control,
                 event_sink=self._publish_event,
+                **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.
             message = f"{type(exc).__name__}: {exc}"
-            if source is not None and robot is None:
-                try:
-                    source.close()
-                except Exception as cleanup_exc:  # noqa: BLE001 - include cleanup failure.
-                    message += f"; source cleanup failed: {cleanup_exc}"
+            if not run_loop_entered:
+                # Once run_loop is entered, its finally owns the cleanup (and may
+                # still raise its own cleanup_error afterwards); before that, a
+                # leaked TCP connection would lock every later session out of the
+                # single-connection robot_side server until the GUI restarts.
+                if robot is not None:
+                    try:
+                        robot.close()
+                    except Exception as cleanup_exc:  # noqa: BLE001 - keep cleaning up.
+                        message += f"; robot cleanup failed: {cleanup_exc}"
+                if source is not None:
+                    try:
+                        source.close()
+                    except Exception as cleanup_exc:  # noqa: BLE001 - keep cleaning up.
+                        message += f"; source cleanup failed: {cleanup_exc}"
             self._publish_event(RuntimeEvent("error", message))
+
+    def _build_obstacle_policy(self, config: dict, backend: str, enabled: bool):
+        """Obstacle policy for this session, or None when reactive avoidance is off.
+
+        The navigation import is deliberately lazy: it only happens for tcp
+        sessions with the switch on, and any failure (missing module, invalid
+        config) propagates to the worker's error path instead of killing the GUI.
+        An explicit ``enabled = false`` in config.toml wins over the switch and
+        is logged instead of silently skipped; a missing section/key defaults to
+        enabled, matching the CLI.
+        """
+        if backend != "tcp" or not enabled:
+            return None
+        obstacle_section = config.get("obstacle")
+        if obstacle_section is None:
+            obstacle_section = {}
+        if not isinstance(obstacle_section, dict) or not obstacle_section.get("enabled", True):
+            self._publish_event(RuntimeEvent("state", "避障已被配置文件禁用；本次会话不启用避障"))
+            return None
+        from hcirobot.navigation import ObstaclePolicy, obstacle_config
+
+        return ObstaclePolicy(obstacle_config(obstacle_section))
 
     def _publish_event(self, event: RuntimeEvent) -> None:
         if event.kind == "frame":
@@ -700,6 +785,14 @@ class RobotControlApp:
         self.telemetry_values["error"].configure(text=model.horizontal_error)
         self.telemetry_values["radius"].configure(text=model.radius_ratio)
         self.telemetry_values["command"].configure(text=model.command)
+        self.obstacle_values["distance"].configure(text=model.obstacle_distance)
+        self.obstacle_values["vision"].configure(text=model.vision_blocked)
+        self.obstacle_values["state"].configure(text=model.obstacle_state)
+        self.obstacle_values["avoids"].configure(text=str(model.avoid_count))
+        self.obstacle_values["state"].configure(
+            foreground=DANGER if model.latched_blocked else ACCENT
+        )
+        self.obstacle_checkbutton.configure(state="normal" if model.can_toggle_obstacle else "disabled")
         self.start_button.configure(state="normal" if model.can_start else "disabled")
         self.arm_button.configure(state="normal" if model.can_arm else "disabled")
         self.stop_button.configure(state="normal" if model.can_stop else "disabled")

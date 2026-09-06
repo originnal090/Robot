@@ -9,6 +9,11 @@
                     left_trigger→stand_up_front
         本服务新增: nod（点头）、shake（摇头）、stand（强制回到站立并停步）
         未知 CMD：忽略并计数（session.unknown_cmds）。
+    DIST:<毫米>\\n
+        本服务新增（PC→机器人方向只读）：每 DIST_INTERVAL_S（默认 0.3s）向当前
+        客户端推送一拍超声波距离。99999 为课程 SDK 的"传感器未连接"哨兵值，
+        原样发送，由 PC 端策略过滤。可用 TONYPI_SONAR_SIM 注入模拟源
+        （详见 robot_side/README.md）。课程原版与 main 分支版均无此能力。
 
 头部舵机（已对照课程 HiwonderSDK 核实）：
     Board.setPWMServoPulse(servo_id, pulse=1500, use_time=1000)
@@ -41,6 +46,7 @@ HOST = os.environ.get("TONYPI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("TONYPI_PORT", "5075"))
 UDP_COLOR_HOST = os.environ.get("TONYPI_UDP_COLOR_HOST", "127.0.0.1")
 UDP_COLOR_PORT = int(os.environ.get("TONYPI_UDP_COLOR_PORT", "6001"))
+DIST_INTERVAL_S = float(os.environ.get("TONYPI_DIST_INTERVAL", "0.3"))
 
 DEADZONE = 0.20        # 摇杆死区
 WATCHDOG_S = 0.60      # 通讯超时 -> 站立
@@ -97,7 +103,24 @@ def _load_hardware() -> tuple[ModuleType | None, ModuleType | None]:
     return Board, ActionGroupControl
 
 
+def _load_sonar() -> ModuleType | None:
+    """try-import 超声波模块（hiwonder.Sonar）；dry-run 或导入失败时返回 None。
+
+    与 _load_hardware 分开单独 try：有的镜像只缺 smbus2，舵机仍可用，
+    距离遥测单独降级即可。
+    """
+    if dry_run_enabled():
+        return None
+    try:
+        from hiwonder import Sonar
+    except Exception as exc:  # noqa: BLE001 - 无 SDK 的环境必须能继续
+        print("[WARN] hiwonder Sonar not available, DIST telemetry disabled:", exc)
+        return None
+    return Sonar
+
+
 BOARD, AGC = _load_hardware()
+SONAR_MODULE = _load_sonar()
 
 
 def _hardware_present() -> bool:
@@ -272,7 +295,11 @@ def move_head(servo_id: int, pulse: int, use_time_ms: int, board: ModuleType | N
     if board is None or dry_run_enabled():
         print(f"[DRY] head servo {servo_id} -> pulse {pulse} in {use_time_ms}ms")
         return
-    board.setPWMServoPulse(servo_id, pulse, use_time_ms)
+    try:
+        board.setPWMServoPulse(servo_id, pulse, use_time_ms)
+    except Exception as exc:  # noqa: BLE001 - 单次舵机故障不能拖垮服务
+        print("[ERR] head servo:", exc)
+        return
     time.sleep(use_time_ms / 1000.0 + 0.02)  # 等舵机到位（ColorTrack 同款做法）
 
 
@@ -290,6 +317,98 @@ def execute(plan: Plan, board: ModuleType | None = None, agc: ModuleType | None 
             print(f"[CMD] {item[1]} (no mapping, ignored)")
 
 
+# ================== 超声波距离遥测（本服务新增） ==================
+# Sonar API 已对照课程 zip 原文（HiwonderSDK/hiwonder/Sonar.py）核实：
+#   Sonar()            无构造参数（I2C bus 1, addr 0x77）
+#   getDistance()      -> int 毫米；读数 >5000 钳位到 5000；
+#                         I2C 异常（传感器未连接）时返回哨兵值 99999
+def create_sonar() -> Any | None:
+    """构造真实 Sonar 实例；无 SDK、dry-run 或初始化失败时返回 None。"""
+    if SONAR_MODULE is None or dry_run_enabled():
+        return None
+    try:
+        return SONAR_MODULE.Sonar()
+    except Exception as exc:  # noqa: BLE001 - 传感器初始化失败不能拖垮服务
+        print("[WARN] Sonar init failed, DIST telemetry disabled:", exc)
+        return None
+
+
+def parse_sonar_sim(spec: str) -> Callable[[float], int]:
+    """解析 TONYPI_SONAR_SIM 模拟源；入参为相对连接建立时刻的秒数，返回毫米。
+
+    支持的格式（确定性，便于测试）：
+        flat:500                恒值 500
+        sweep:100:800:2.0       min..max 三角波扫掠，period_s 为一个完整周期，
+                                从 min 出发，半周期到达 max
+        steps:500@1.0,200@3.5   分段恒值：t<1.0 → 500，[1.0,3.5) → 200，
+                                ≥3.5 起最后一段无限延续
+    """
+    text = (spec or "").strip()
+    parts = text.split(":")
+    kind = parts[0].strip().lower()
+    if kind == "flat" and len(parts) == 2:
+        base = int(float(parts[1]))
+        return lambda _t: base
+    if kind == "sweep" and len(parts) == 4:
+        lo, hi = int(float(parts[1])), int(float(parts[2]))
+        period = float(parts[3])
+        if period <= 0:
+            raise ValueError("sweep period_s must be > 0")
+        if hi < lo:
+            raise ValueError("sweep needs min <= max")
+        span = hi - lo
+
+        def sweep(t: float) -> int:
+            phase = (t % period) / period  # 0..1
+            tri = 1.0 - abs(2.0 * phase - 1.0)  # 0 → 1 → 0 三角波
+            return round(lo + span * tri)
+
+        return sweep
+    if kind == "steps" and len(parts) >= 2:
+        # 语义：v1 生效于 [0, t1)，v2 生效于 [t1, t2)，依此类推；末段无限延续
+        marks: list[tuple[float, int]] = []  # (值, 该值生效区间的结束时刻)
+        for item in ":".join(parts[1:]).split(","):
+            value_text, _, at_text = item.partition("@")
+            marks.append((int(float(value_text)), float(at_text)))
+        if not marks:
+            raise ValueError("steps needs v1@t1[,v2@t2,...]")
+        marks.sort(key=lambda mark: mark[1])
+
+        def steps(t: float) -> int:
+            value = marks[0][0]
+            for idx in range(len(marks) - 1):
+                if t >= marks[idx][1]:
+                    value = marks[idx + 1][0]
+                else:
+                    break
+            return value
+
+        return steps
+    raise ValueError(f"unsupported TONYPI_SONAR_SIM spec: {spec!r}")
+
+
+def build_distance_source() -> Callable[[], int | None] | None:
+    """选择距离遥测源：模拟源优先，其次真实 Sonar；都没有则 None（不发送）。
+
+    dry-run（TONYPI_DRY_RUN=1）或导入失败时没有真实 Sonar，只有设置
+    TONYPI_SONAR_SIM 才会发送 DIST。真实模式下 getDistance() 的异常由
+    _distance_loop 捕获记日志并跳过该拍；99999 哨兵原样发送。
+    """
+    spec = os.environ.get("TONYPI_SONAR_SIM", "").strip()
+    if spec:
+        try:
+            sample = parse_sonar_sim(spec)
+        except ValueError as exc:
+            print("[WARN] bad TONYPI_SONAR_SIM, DIST telemetry disabled:", exc)
+            return None
+        t0 = time.monotonic()  # steps/sweep 的时间原点 = 连接建立时刻
+        return lambda: sample(time.monotonic() - t0)
+    sonar = create_sonar()
+    if sonar is not None:
+        return lambda: int(sonar.getDistance())
+    return None
+
+
 # ================== 服务层（课程 TCP/UDP 结构保持不变） ==================
 class TonyPiService:
     def __init__(self, host: str = HOST, port: int = PORT, session: RobotSession | None = None) -> None:
@@ -297,11 +416,26 @@ class TonyPiService:
         self.port = port
         self.session = session or RobotSession()
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()  # 连接级写锁：串行化对当前连接的整行写
         self._stop = threading.Event()
         self._conn: socket.socket | None = None
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _send_line(self, conn: socket.socket, data: bytes, tag: str) -> bool:
+        """在连接级写锁保护下发送一整行帧；返回是否发送成功。
+
+        颜色转发与距离遥测两个线程可能并发写同一连接，统一走本函数
+        串行化，避免 sendall 交叉破坏 "\\n" 行帧。
+        """
+        try:
+            with self._write_lock:
+                conn.sendall(data)
+        except OSError as exc:
+            print(f"[{tag}] send error:", exc)
+            return False
+        return True
 
     def _send_to_unity_text(self, text: str) -> None:
         """发送一行文本到当前客户端；若无连接则忽略（课程行为）。"""
@@ -310,12 +444,8 @@ class TonyPiService:
             conn = self._conn
         if not conn:
             return
-        try:
-            conn.sendall(data)
-            if PRINT_FWD:
-                print("[FWD] -> Unity:", text.strip())
-        except OSError as exc:
-            print("[FWD] send error:", exc)
+        if self._send_line(conn, data, "FWD") and PRINT_FWD:
+            print("[FWD] -> Unity:", text.strip())
 
     def _udp_color_listener(self) -> None:
         """监听本地 UDP 颜色信号并转发（课程行为，原样保留）。"""
@@ -351,6 +481,28 @@ class TonyPiService:
             if group:
                 run_group(group)
             self._stop.wait(STEP_INTERVAL_S)
+
+    def _distance_loop(self, source: Callable[[], int | None], done: threading.Event) -> None:
+        """连接期间每 DIST_INTERVAL_S 向当前客户端推送一拍 DIST:<毫米>。
+
+        Sonar/模拟源抛异常记日志并跳过该拍；99999（课程 SDK"未连接"哨兵）
+        原样发送，由 PC 端策略过滤。锁内取当前连接，发送统一经 :meth:`_send_line`
+        的连接级写锁串行化，避免与颜色转发并发写交叉破坏行帧。
+        """
+        interval = DIST_INTERVAL_S if DIST_INTERVAL_S > 0 else 0.3
+        while not self._stop.is_set() and not done.is_set():
+            try:
+                value = source()
+            except Exception as exc:  # noqa: BLE001 - 传感器故障不能拖垮服务
+                print("[DIST] read error:", exc)
+                value = None
+            if value is not None:
+                data = f"DIST:{int(value)}\n".encode()
+                with self._lock:
+                    conn = self._conn
+                if conn is not None and self._send_line(conn, data, "DIST"):
+                    print("[DIST]", value, "mm")
+            done.wait(interval)
 
     def _handle_connection(self, conn: socket.socket) -> None:
         conn.settimeout(1.0)
@@ -398,7 +550,24 @@ class TonyPiService:
                     self._conn = conn
                     plan = self.session.force_stand()
                 execute(plan)
-                self._handle_connection(conn)
+                # 距离遥测：每个连接一个发送线程；模拟源时间原点 = 连接建立时刻
+                distance_done = threading.Event()
+                telemetry: threading.Thread | None = None
+                source = build_distance_source()
+                if source is not None:
+                    telemetry = threading.Thread(
+                        target=self._distance_loop,
+                        args=(source, distance_done),
+                        name="distance",
+                        daemon=True,
+                    )
+                    telemetry.start()
+                try:
+                    self._handle_connection(conn)
+                finally:
+                    distance_done.set()
+                    if telemetry is not None:
+                        telemetry.join(timeout=1.0)
                 print("[TCP] Disconnected:", addr)
                 with self._lock:
                     self._conn = None
