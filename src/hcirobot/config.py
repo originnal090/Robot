@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import dataclasses
 import tomllib
 from pathlib import Path
 
 from .controller import ControllerConfig
 from .detector import DetectorConfig
+from .unity_udp import UnityStatusConfig
 
 
 def load_config(path: Path) -> dict:
@@ -25,3 +27,15 @@ def detector_config(values: dict) -> DetectorConfig:
 
 def controller_config(values: dict) -> ControllerConfig:
     return ControllerConfig(**values)
+
+
+def unity_status_config(values: dict | None) -> UnityStatusConfig:
+    values = values or {}
+    if not isinstance(values, dict):
+        raise TypeError("configuration section unity must be a table")
+    known = {
+        field.name: values[field.name]
+        for field in dataclasses.fields(UnityStatusConfig)
+        if field.name in values
+    }
+    return UnityStatusConfig(**known)

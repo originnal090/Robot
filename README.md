@@ -1,11 +1,12 @@
-# hcirobot · TonyPi 纯视觉“搜寻—对准—接近”控制台
+# hcirobot · TonyPi/Unity“搜寻—对准—接近”控制台
 
-不依赖 Unity 的 TonyPi 人形机器人闭环基线：机器人摄像头画面 → 红球检测 →
-有限状态机决策 → 兼容课程协议的 TCP 命令 → 机器人动作，并配套桌面操作台、
-真机帧调参工具和可部署到机器人的扩展服务。
+TonyPi 人形机器人闭环基线：机器人或 Unity 虚拟摄像头画面 → 红球检测 →
+有限状态机决策 → 兼容课程协议的 TCP 命令 → 实体或虚拟机器人动作，并配套
+反应式避障、桌面操作台、真机帧调参和 Unity 客观试验工具。
 
-范围边界：这是**单目视觉伺服/目标趋近**，不含 Unity/PICO、障碍物避让、地图、
-定位或路径规划；像素半径只是距离代理。
+范围边界：这是**单目视觉伺服/目标趋近 + 反应式局部避障**。Unity 在本项目中是
+虚拟机器人和试验场，不是第二套控制器。当前仍不含地图、定位、SLAM、NavMesh
+或 A*/全局路径规划；像素半径只是距离代理。
 
 ## 功能特性
 
@@ -34,8 +35,17 @@ RedBallDetector（LAB + 轮廓 + 强红核门控 + 帧确认）
         ▼
 VisualApproachController（IDLE/SEARCHING/ALIGNING/APPROACHING/ARRIVED/LOST_SAFE）
         ▼  SessionControl（武装/停止/急停/手动注入，跨线程）
-RobotBackend（RecordingRobot 记录 | TcpRobotClient → TonyPi :5075）
+RobotBackend（RecordingRobot 记录 | TcpRobotClient → TonyPi/Unity :5075）
+
+Unity 仿真链路：
+Unity Camera :8080 --MJPEG--> Python
+Python --JSONL/CMD :5075--> Unity Rigidbody 虚拟机器人
+Unity --DIST:<mm> :5075--> Python 反应式避障
+Python --autonomy_status UDP :6102--> Unity recorder/状态面板
 ```
+
+**唯一控制权**：同一时刻只能有一个程序写入运动端口 `5075`。跑 Unity 时关闭
+真机服务、课程 `RobotSyncManager` 和手动控制；跑真机时停止 Unity Play Mode。
 
 ## 快速开始
 
@@ -64,6 +74,61 @@ uv run hcirobot --arm --source synthetic --backend recording
 uv run pytest -W error
 uv run ruff check src tests tools robot_side
 ```
+
+## Unity 虚拟机器人快速开始
+
+安装 Unity 2022.3 LTS 或更新兼容版本并按 `unity/README.md` 导入本地包后，通过
+Unity 菜单生成 Quick Start 场景，进入 Play Mode；Unity 不属于 Python 依赖，
+`uv sync` 不会安装它。随后：
+
+```bash
+# 1. 只检查模拟器端点，不要求本机安装 Unity Editor，只要求端点已经在运行
+uv run python tools/check_unity_simulator.py
+
+# 2. 使用完整 Unity 模板运行；先不加 --arm 检查图传和零输出
+uv run hcirobot --config config.unity.toml
+
+# 3. 确认唯一控制权和安全边界后，再武装虚拟机器人
+uv run hcirobot --config config.unity.toml --arm
+
+# 4. 汇总 Unity recorder JSONL；JSON 默认写 stdout，也可同时写 CSV
+uv run python tools/eval_unity_trials.py artifacts/unity-trials \
+  --json-out artifacts/unity-report.json \
+  --csv-out artifacts/unity-trials.csv
+```
+
+### 可视化一键演示
+
+```bash
+uv run python tools/run_unity_demo.py
+```
+
+该脚本会依次：启动 Unity 编辑器（窗口模式）打开 Quick Start 演示场景并进入
+Play Mode → 等待 `5075/8080` 端点就绪 → 启动 `hcirobot-gui --config
+config.unity.toml --demo`。Unity 已在运行时自动跳过编辑器启动；
+`--unity-only` / `--gui-only` / `--no-autoarm` 可拆步执行。
+
+看什么：
+
+- **Unity Game 视图**：全局第三人称视角看机器人追球，右上角画中画是机器人
+  第一视角（MJPEG 同源画面），左上角 HUD 实时显示控制状态、目标检测、实际
+  输出、当前动作和障碍距离；
+- **Python GUI**：同一画面上叠加绿圈球识别、状态机状态、`intent`（控制器
+  意图）与 `actual`（最终下发命令及其来源）对比、`DIST` 距离。
+
+`--demo` 的自动武装只在控制后端为本机（loopback）TCP 时生效，指向真机或
+非回环地址时只自动预览、仍需手动点击“武装自治”。
+
+
+首批场景矩阵：无障碍左/中/右目标；近且居中、近但偏心、远处大球和遮挡球；
+正前/左右偏置单障碍与 `150/250/350 mm` 边界；持续受阻到 `BLOCKED`；视频冻结、
+TCP 断开、DIST 过期；窄通道、U 型障碍和死胡同作为当前能力边界案例。
+
+“通过”不能只看 Python 报 `ARRIVED`：还必须满足真实最终距离、朝向误差、稳定
+停车、无碰撞/跌倒/出界和时间上限。Unity recorder 默认还要求稳定停车 `0.5 s`；
+评估工具默认真值阈值是 `0.35 m`、`15°`、`30 s`，均可用命令行覆盖。当前控制器
+到达计数存在已知语义：它不要求目标同时
+居中，因此“近但偏心”可能产生 false arrival；试验工具会保留并统计该问题。
 
 ## 机器人端服务怎么选
 
@@ -100,9 +165,11 @@ src/hcirobot/
   video.py         MJPEG/摄像头/文件/合成视频源
   gui.py           Tk 桌面操作台
 robot_side/        机器人端扩展服务（点头/摇头/stand）
-tools/             真机帧检测评估工具
-tests/             73 项自动化测试（含真机帧 fixture）
-GUIDE.md           完整指南：部署、标定、安全流程、排障
+tools/             检测评估、Unity 端点检查和 trial 真值汇总工具
+tests/             自动化测试（含真机帧 fixture 与 Unity 工具测试）
+config.unity.toml  本机 Unity 虚拟机器人完整配置模板
+unity/             Unity 本地包、协议和安装后步骤（由 Unity 侧实现维护）
+GUIDE.md           完整指南：部署、仿真、标定、安全流程、排障
 ```
 
 ## 安全须知

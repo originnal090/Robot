@@ -33,6 +33,7 @@ class GuiModel:
     horizontal_error: str = "--"
     radius_ratio: str = "--"
     command: str = ZERO_COMMAND
+    output_source: str = "--"
     obstacle_state: str = "无数据"
     obstacle_reason: str = ""
     obstacle_distance: str = "--"
@@ -98,6 +99,7 @@ class GuiModel:
         self.horizontal_error = "--"
         self.radius_ratio = "--"
         self.command = ZERO_COMMAND
+        self.output_source = "--"
         # Snapshot of the obstacle switch; the worker reads the frozen value.
         self.obstacle_enabled = obstacle_enabled
         self._reset_obstacle_telemetry()
@@ -187,8 +189,8 @@ class GuiModel:
             radius = event.decision.radius_ratio
             self.horizontal_error = "--" if error is None else f"{error:+.3f}"
             self.radius_ratio = "--" if radius is None else f"{radius:.3f}"
-            command = event.decision.command
-            self.command = f"v={command.velocity:.2f}  steer={command.steer:+.2f}"
+            self.command = f"v={event.output_v:.2f}  steer={event.output_steer:+.2f}"
+            self.output_source = str(event.output_source or "--")
         elif event.kind == "state":
             self.append_log(event.message)
         elif event.kind == "stopping":
@@ -203,6 +205,7 @@ class GuiModel:
             self.armed = False
             self.control_state = "LOST_SAFE" if self.estop_latched else "IDLE"
             self.command = ZERO_COMMAND
+            self.output_source = "--"
             self.target = "未确认"
             self.horizontal_error = "--"
             self.radius_ratio = "--"

@@ -9,3 +9,18 @@ __pycache__/
 dist/
 artifacts/
 .zcode/
+.pytest-tmp/
+.pytest-tmp-*/
+
+# Unity project/generated state. Keep Assets/, Packages/, ProjectSettings/ and all .meta files.
+unity/**/Library/
+unity/**/Temp/
+unity/**/Obj/
+unity/**/Logs/
+unity/**/UserSettings/
+unity/**/Build/
+unity/**/Builds/
+unity/**/MemoryCaptures/
+unity/**/*.csproj
+unity/**/*.sln
+unity/**/*.user

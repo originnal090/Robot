@@ -1,6 +1,6 @@
-# TonyPi 纯视觉“搜寻—对准—接近”基线完整指南
+# TonyPi/Unity“搜寻—对准—接近”基线完整指南
 
-> 本项目从课程压缩包中的 Orange Pi 红球检测、TonyPi TCP 控制和厂商 `Follow.py` / `KickBall.py` 提炼而来。当前版本不包含 Unity/PICO、障碍物检测、地图、定位、SLAM 或全局路径规划。
+> 本项目从课程压缩包中的 Orange Pi 红球检测、TonyPi TCP 控制和厂商 `Follow.py` / `KickBall.py` 提炼而来。当前版本包含超声波优先、视觉兜底的反应式局部避障，并可把 Unity 作为虚拟机器人和客观试验场；仍不包含地图、定位、SLAM、NavMesh 或全局路径规划。
 
 ## 1. 先说结论
 
@@ -12,7 +12,7 @@
 
 但课程 `Example` 没有把识别结果接回机器人运动，因此原始材料不是“感知—决策—动作—再感知”的自主闭环。本项目补上的正是这个缺口：Orange Pi 根据目标在图像中的横向位置和像素半径，控制机器人搜寻目标、对准目标、向目标接近并在近处停止。
 
-这属于**单目视觉伺服/目标趋近**，不是自主寻路。像素半径只是距离代理，无法替代真实深度；系统也不知道障碍物、地图和自身世界坐标。
+这属于**单目视觉伺服/目标趋近 + 反应式局部避障**，不是地图式自主寻路。真机运行时像素半径只是距离代理；前向超声波只提供局部障碍距离。Unity 可提供世界真值用于试验评价，但这些真值不会回馈给当前控制器，因此不会把现有算法变成地图导航。
 
 ## 2. 课程材料要求解读
 
@@ -82,7 +82,7 @@ TonyPi MJPEG -> Orange Pi 视频代理 8080 -> Unity
 | 本机合成视频 + 假机器人 | 中 | 状态机、检测消抖和可重复测试 |
 | Orange Pi 读取 TonyPi 图传 | 中 | 网络地址、MJPEG 稳定性、OpenCV 环境 |
 | TonyPi 真机闭环 | 中高 | 阈值现场标定、动作延迟、控制权、安全停机 |
-| 加入障碍物避让 | 高 | 需要额外传感器输入和局部避障策略 |
+| 反应式障碍物避让（已实现） | 高 | 传感器新鲜度、滞回、机动安全和场地标定 |
 | 地图式自主导航 | 很高 | 需要定位、地图/建图、距离感知和路径规划 |
 
 真正困难的部分不是画出红球轮廓，而是网络配置、现场光照、动作组阻塞、断流恢复、误检和实体机器人安全。
@@ -122,8 +122,30 @@ RobotBackend
 | `src/hcirobot/app.py` | 单一闭环运行入口和异常清理 |
 | `src/hcirobot/cli.py` | 命令行参数与配置装配 |
 | `src/hcirobot/mock_server.py` | 本机 TCP 假机器人 |
-| `config.toml` | 视频、检测、控制和机器人参数 |
-| `tests/` | 检测、状态机、TCP 和端到端测试 |
+| `config.toml` | 默认视频、检测、控制、机器人和避障参数 |
+| `config.unity.toml` | 本机 Unity MJPEG/TCP/DIST/状态 UDP 完整配置模板 |
+| `tools/check_unity_simulator.py` | 不依赖 Unity 安装的 TCP、看门狗、DIST 和 MJPEG 端点诊断 |
+| `tools/eval_unity_trials.py` | Unity recorder JSONL 真值指标汇总与可选 CSV 导出 |
+| `unity/` | Unity 本地包、协议和 Quick Start 场景资料 |
+| `tests/` | 检测、状态机、TCP、Unity 工具和端到端测试 |
+
+### 4.1 Unity 作为虚拟机器人
+
+```text
+Unity 虚拟摄像头 :8080 ──MJPEG──> Python RedBallDetector/Controller
+Python TcpRobotClient ──JSONL/CMD :5075──> Unity 虚拟机器人
+Unity 前向测距 ──DIST:<mm> :5075──> Python ObstaclePolicy
+Python 自治状态 ──UDP :6102──> Unity 状态接收器/试验记录器
+Unity 世界真值、碰撞和轨迹 ──JSONL──> tools/eval_unity_trials.py
+```
+
+Unity 复用 TonyPi 协议语义：转向优先、`0.20` 死区、负转向为左、正转向为右、
+`0.60 s` 无控制帧看门狗停车。`6101/UDP` 仍保留给课程感知协议，自治状态使用
+`6102/UDP`。Unity 提供的世界坐标、真实距离和碰撞只进入 recorder，不进入控制器。
+
+**唯一控制权是硬约束**：同一时刻只允许一个运动命令所有者连接 `5075`。Unity
+Play Mode、TonyPi 服务、课程 `RobotSyncManager`、GUI 手动控制和其他自主程序之间
+必须显式二选一，不能依赖“最后一条命令覆盖”来仲裁。
 
 ## 5. 状态机与动作
 
@@ -133,7 +155,7 @@ RobotBackend
 | `SEARCHING` | 武装后尚无目标，或连续丢失目标 | 原地小步转向，每 2 秒换向 |
 | `ALIGNING` | 目标连续 3 帧确认 | 停止前进，按横向误差转向 |
 | `APPROACHING` | 连续 3 帧进入对准区 | 每帧只选择低速前进或原地小幅修正方向 |
-| `ARRIVED` | 居中目标连续 3 帧达到像素半径阈值 | 锁存全停 |
+| `ARRIVED` | 当前确认目标连续 3 帧达到像素半径阈值 | 锁存全停 |
 | `LOST_SAFE` | 搜索超时、视频结束、运行异常或急停 | 锁存全停 |
 
 横向误差归一化为：
@@ -162,7 +184,8 @@ error_x = 2 * center_x / frame_width - 1
 - `uv`；
 - Python 3.11 或更高；
 - Windows、Linux 或 Orange Pi Linux 均可运行核心项目；
-- TonyPi 真机端仍需课程镜像自带的 `hiwonder` 和动作组。
+- TonyPi 真机端仍需课程镜像自带的 `hiwonder` 和动作组；
+- Unity 仿真需另行安装 Unity 2022.3 LTS 或兼容的新版本；Unity 不是 Python/uv 依赖。
 
 同步环境：
 
@@ -277,8 +300,8 @@ uv run hcirobot --arm --source synthetic --backend recording --output-dir artifa
 
 ```bash
 uv run pytest
-uv run ruff check src tests
-uv run python -m compileall -q src tests
+uv run ruff check src tests tools robot_side
+uv run python -m compileall -q src tests tools robot_side
 ```
 
 测试覆盖：
@@ -295,7 +318,113 @@ uv run python -m compileall -q src tests
 - 合成图像到动作输出的完整闭环；
 - GUI 动态武装、停止和急停会话；
 - 窗口按钮状态、日志上限和 Tk 创建/销毁；
-- 视频结束进入安全态。
+- 视频结束进入安全态；
+- Unity 端点检查器的 TCP JSONL/CMD/零向量/看门狗/DIST/MJPEG 行为；
+- Unity recorder JSONL 的真值计算、false arrival、目录输入、CSV 和错误校验。
+
+### 6.6 Unity 安装后联调与试验
+
+1. 按 `unity/README.md` 把仓库中的 Unity 本地包导入 Unity 2022.3 LTS 或兼容版本；
+2. 用包提供的 Quick Start Scene Builder 生成地面、虚拟机器人、摄像头、红球、障碍、网络桥和 recorder；
+3. 确认真机 `5075` 服务、课程 `RobotSyncManager` 和其他控制器均已停止，再进入 Play Mode；
+4. 先运行端点检查：
+
+```bash
+uv run python tools/check_unity_simulator.py
+```
+
+检查器只使用 Python 标准库，不调用 Unity CLI，也不要求 Unity 安装在运行检查器的
+机器上；它只要求 `127.0.0.1:5075` 和 MJPEG URL 可达。它会发送合法 JSONL、
+`CMD:stand` 和零向量，等待新鲜 `DIST`，静默等待 `0.60 s` 看门狗，并读取一个带
+完整 SOI/EOI 和尺寸段的 JPEG。如果 Unity 额外回报 watchdog/state 行会自动验证；
+没有可观察状态时，连接和 DIST 持续存活只能证明看门狗观察窗口已过去，仍需在
+Scene/Game 视图确认虚拟机器人已经停车。退出码：`0` 全部端点通过，`1` 检查失败，
+`2` 参数非法。
+
+5. 使用仿真模板启动 Python。第一次不武装：
+
+```bash
+uv run hcirobot --config config.unity.toml
+```
+
+确认 MJPEG 连续、TCP 已连、DIST 新鲜、Unity 收到 `6102/UDP` 状态且虚拟机器人不动；
+之后再运行：
+
+```bash
+uv run hcirobot --config config.unity.toml --arm
+```
+
+`config.unity.toml` 是 `config.toml` 的完整副本，只把视频改到本机 `8080`、机器人
+后端改成 `tcp 127.0.0.1:5075`，保持避障启用，并增加 `[unity]` 状态 UDP
+`127.0.0.1:6102`。CLI 原生支持 `--config`，模板作为 Unity 联调的单一参数基准；
+也可用 `--unity-status/--no-unity-status`、`--unity-host`、`--unity-port` 显式覆盖状态通道。
+
+#### 可视化一键演示（直观看效果）
+
+最直接的闭环观察方式：
+
+```bash
+uv run python tools/run_unity_demo.py
+```
+
+脚本按顺序做三件事：启动 Unity 编辑器（窗口模式）并通过 `ValidationBootstrap.LaunchDemo`
+打开 Quick Start 场景进入 Play Mode；轮询 `5075/8080` 直到仿真端点就绪（默认
+超时 180 s）；最后启动 `hcirobot-gui --config config.unity.toml --demo`。Unity
+端点已在线时跳过编辑器启动；`--unity-only`、`--gui-only`、`--no-autoarm`
+支持拆步。`--unity` 可覆盖 Unity.exe 路径，`--project` 可覆盖工程目录。
+
+Unity Game 视图包含三层可视化：全局第三人称 `Observer Camera`（跟随虚拟机器人，
+直接看到追球和避障全过程）；右上角画中画为机器人第一视角相机（与 MJPEG 同源）；
+左上角 `AutonomyStatusHud` 订阅 `6102/UDP`，实时显示控制状态、武装、目标
+检测（confirmed/fresh/中心/半径）、实际输出 v/steer 与来源、当前动作模式、
+障碍距离和避障计数，状态超时会标记 STALE。
+
+Python GUI 侧：`hcirobot-gui` 现在接受 `--config` 与 `--demo`。视频叠加层新增
+`intent v/steer`（控制器意图）与 `actual v/steer [来源]`（最终下发命令，含
+`autonomy/manual/obstacle_hold/obstacle_maneuver/unarmed_hold` 等来源）两行，
+有距离时追加 `dist=<mm> obstacle=<state>`；遥测条新增“来源”字段。`--demo`
+自动开始预览并在画面正常后自动武装——自动武装仅当控制后端为本机（loopback）
+TCP 时生效，指向真机或非回环地址时保持只预览。
+
+安全提醒：演示脚本和 `--demo` 都不绕过唯一控制权约束；运行前同样要确认没有
+其他程序占用 `5075/8080/6102`。
+
+6. Unity recorder 产生 JSONL 后评估：
+
+```bash
+uv run python tools/eval_unity_trials.py artifacts/unity-trials \
+  --json-out artifacts/unity-report.json \
+  --csv-out artifacts/unity-trials.csv
+```
+
+工具接受一个 JSONL 文件或递归扫描目录，按 `trial_id` 分组。它优先使用 recorder
+直接给出的真值指标，也能从 robot/target 世界坐标和 yaw 推导最终距离、朝向误差、
+轨迹长度与直线效率。输出包含成功率、碰撞率、真实最终距离/朝向、耗时、轨迹长度、
+直线效率、最小 clearance、avoid count 和 false arrival。缺失关键真值、NaN、非法
+布尔值、冲突场景或坏 JSON 默认立即报错；`--allow-invalid` 可跳过并把诊断写入报告。
+
+默认通过阈值为真实最终距离 `<=0.35 m`、朝向误差 `<=15°`、耗时 `<=30 s`、无碰撞，
+且控制器已到达；Unity recorder 还要求稳定停车至少 `0.5 s`。可用
+`--max-final-distance-m`、`--max-heading-error-deg`、
+`--max-duration-s` 覆盖。直线效率是“初始直线距离/实际轨迹长度”，不是 SPL；没有
+可行路径基准时不应把它称为 SPL。
+
+### 6.7 Unity 场景矩阵与通过定义
+
+| 场景组 | 最少案例 | 主要判定 |
+|---|---|---|
+| 无障碍 | 目标初始左/中/右 | 符号、搜索、对准、接近、真实停车 |
+| 到达边界 | 近且居中、近但偏左/右、远处大球、遮挡球 | false arrival 与视觉代理局限 |
+| 单障碍 | 正前方、左偏、右偏；覆盖 150/250/350mm | 停车、后退、转向、恢复 |
+| 持续受阻 | 多次避障后仍受阻 | `BLOCKED` 锁存和停止 |
+| 故障 | 视频冻结、TCP 断开、DIST 过期 | 看门狗/安全态和零输出 |
+| 能力边界 | 窄通道、U 型障碍、死胡同 | 记录失败，不强行标记为当前能力通过 |
+
+单次 trial 的“通过”必须同时满足：控制状态到达、真实距离阈值、真实朝向阈值、稳定
+停车、无碰撞、未跌倒/出界、时间上限。仅在 Python 日志看到 `ARRIVED` 不算通过。
+当前控制器存在已知到达偏心语义：到达计数基于目标半径，不要求该帧同时保持居中；
+所以“近但偏心”可能进入 `ARRIVED`。本轮不偷偷改变控制算法，使用 false arrival 指标
+把它客观暴露，待 Unity 真值试验证据充分后再单独修复。
 
 ## 7. 配置说明
 
@@ -689,12 +818,12 @@ LAB 阈值：
 
 ### Unity/PICO
 
-保留课程现有边界：
+Unity 虚拟机器人、`6102/UDP` 版本化 `autonomy_status`、试验记录器和联调工具已
+加入（见第 4.1、6.6、6.7 节）。后续仍可扩展 PICO 显示和人工模式仲裁，但必须保持：
 
-- 视频继续使用 MJPEG `8080`；
-- 感知显示可继续使用 UDP `6101` schema 1；
-- 人工和自主控制必须增加显式模式仲裁，不能同时写 TCP `5075`；
-- 自主状态应新增版本化 `autonomy_status`，至少包含模式、状态、目标新鲜度、输出命令、故障和急停；
+- 视频使用 MJPEG `8080`；课程感知显示可继续使用 UDP `6101` schema 1；
+- 人工和自主控制显式互斥，不能同时写 TCP `5075`；
+- `autonomy_status` 保留 session/seq、目标新鲜度、实际输出、故障和急停；
 - 不要用 `COLOR_SIGNAL:RED` 表达完整自主状态。
 
 ### 真正路径规划

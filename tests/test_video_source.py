@@ -128,6 +128,44 @@ def test_close_unblocks_pending_read_from_another_thread() -> None:
     assert elapsed < 3.0  # would be ~5s (socket read timeout) without close()
 
 
+def test_stalled_stream_recovers_after_read_timeout() -> None:
+    """A stall longer than the socket timeout must not end the stream.
+
+    Regression: reading through the buffered HTTPResponse bricked it after one
+    timeout ("cannot read from timed out object"), so a live camera with frame
+    gaps died after its first frame. The raw-socket reader must keep polling.
+    """
+    first = make_jpeg((0, 0, 255))
+    late = make_jpeg((0, 255, 0))
+    released = threading.Event()
+
+    class Handler(_StreamHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.end_headers()
+            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + first + b"\r\n")
+            self.wfile.flush()
+            released.wait(5.0)  # silence longer than the 0.2 s read timeout
+            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + late + b"\r\n")
+            self.wfile.flush()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    with mjpeg_server(Handler) as url:
+        source = MjpegHttpSource(url, timeout_seconds=0.2)
+        try:
+            iterator = iter(source)
+            assert_frame_matches(next(iterator), (0, 0, 255))
+            second = next(iterator)  # must survive the stall and deliver the late frame
+        finally:
+            released.set()
+            source.close()
+
+    assert_frame_matches(second, (0, 255, 0))
+
+
 def test_server_disconnect_ends_iteration_normally() -> None:
     colors = [(255, 255, 255), (0, 0, 0)]
 

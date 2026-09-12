@@ -117,6 +117,7 @@ def test_blocked_video_read_enters_safe_state() -> None:
 
 def test_runtime_error_explicitly_sends_stop() -> None:
     robot = RecordingRobot()
+    events = []
     with pytest.raises(ValueError, match="synthetic detector failure"):
         run_loop(
             SyntheticBallSource(SyntheticConfig()),
@@ -124,14 +125,22 @@ def test_runtime_error_explicitly_sends_stop() -> None:
             VisualApproachController(ControllerConfig()),
             robot,
             armed=True,
+            event_sink=events.append,
         )
     assert robot.commands[-1] == RobotCommand.stop()
+    error = events[-1]
+    assert error.kind == "error"
+    assert error.output_source == "shutdown"
+    assert (error.output_v, error.output_steer, error.output_grab) == (0.0, 0.0, False)
+    assert error.armed is False
 
 
 def test_synthetic_closed_loop_reaches_target() -> None:
     robot = RecordingRobot()
     result = run_loop(
-        SyntheticBallSource(SyntheticConfig()),
+        # Realtime pacing keeps the sampled synthetic sequence deterministic
+        # under latest-wins frame dropping.
+        SyntheticBallSource(SyntheticConfig(realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(ControllerConfig()),
         robot,

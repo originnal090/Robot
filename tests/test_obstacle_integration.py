@@ -108,7 +108,9 @@ def default_runtime(robot, *, policy, armed=False, session=None, sink=None, max_
     if clock is not None:
         kwargs["clock"] = clock
     return run_loop(
-        SyntheticBallSource(SyntheticConfig()),
+        # Realtime pacing: the capture loop keeps only the latest frame, so an
+        # unpaced source sheds frames before the consumer can process them.
+        SyntheticBallSource(SyntheticConfig(realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(ControllerConfig()),
         robot,
@@ -144,6 +146,12 @@ def test_hold_suppresses_every_motion_command() -> None:
     payloads = obstacle_events(events)
     assert payloads and payloads[0]["state"] == "CAUTION"
     assert payloads[0]["action"] == "hold"
+    frames = [event for event in events if event.kind == "frame"]
+    assert any(event.output_source == "obstacle_hold" for event in frames)
+    assert all(
+        (event.output_v, event.output_steer, event.output_grab) == (0.0, 0.0, False)
+        for event in frames
+    )
 
 
 def test_maneuver_streams_raw_vectors_then_autonomy_resumes() -> None:
@@ -175,6 +183,13 @@ def test_maneuver_streams_raw_vectors_then_autonomy_resumes() -> None:
     states = [payload["state"] for payload in obstacle_events(events)]
     # CLEAR while far, BACKUP (deep reading skips the CAUTION debounce), TURN, COOLDOWN, CLEAR again.
     assert states == ["CLEAR", "BACKUP", "TURN", "COOLDOWN", "CLEAR"]
+    maneuver_frames = [
+        event for event in events if event.kind == "frame" and event.output_source == "obstacle_maneuver"
+    ]
+    assert maneuver_frames
+    assert any(event.output_v < 0 for event in maneuver_frames)
+    assert any(event.output_v == 0 and event.output_steer != 0 for event in maneuver_frames)
+    assert all(event.obstacle_state is not None for event in maneuver_frames)
     assert result.termination in ("arrived", "video_ended", "max_frames")
 
 
@@ -213,6 +228,13 @@ def test_manual_override_wins_over_obstacle_hold() -> None:
     assert obstacle_events(events), "policy must keep evaluating while manual is active"
     assert policy.state is ObstacleState.CAUTION
     assert policy.avoid_count == 0
+    frames = [event for event in events if event.kind == "frame"]
+    assert frames
+    assert all(event.output_source == "manual" for event in frames)
+    assert all(event.output_v == pytest.approx(0.3) for event in frames)
+    assert all(event.output_steer == pytest.approx(-0.2) for event in frames)
+    assert all(event.armed for event in frames)
+    assert all(event.obstacle_state in {"UNKNOWN", "CAUTION"} for event in frames)
 
 
 def test_obstacle_payloads_carry_telemetry_keys() -> None:
@@ -249,6 +271,10 @@ def test_unarmed_session_never_streams_maneuver_vectors() -> None:
         payload.get("action") == "maneuver" and payload.get("suppressed") is True for payload in payloads
     ), "the suppressed maneuver must still be reported as an event"
     assert policy.avoid_count >= 1
+    suppressed_frames = [event for event in events if event.kind == "frame"]
+    assert any(event.output_source == "unarmed_hold" for event in suppressed_frames)
+    assert all(event.output_v == 0 and event.output_steer == 0 for event in suppressed_frames)
+    assert all(not event.armed for event in suppressed_frames)
 
     # The very same obstructed scene with an armed session streams the maneuver.
     armed_robot = TelemetryRobot([120.0] * 60, StepClock())
@@ -320,7 +346,7 @@ def test_tcp_mock_distance_near_obstacle_forces_stop_and_avoid() -> None:
     def distance_source() -> float:
         return 900.0 if time.monotonic() < switch_at else 200.0
 
-    server = MockRobotServer(port=0, distance_source=distance_source)
+    server = MockRobotServer(port=0, watchdog=2.0, distance_source=distance_source)
     thread = threading.Thread(target=server.serve_forever, args=(ready,), daemon=True)
     thread.start()
     assert ready.wait(5.0), "mock robot server did not start"

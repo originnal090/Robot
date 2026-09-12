@@ -54,6 +54,16 @@ port = 5075
 connect_timeout_seconds = 3.0
 send_interval_seconds = 0.10
 
+[unity]
+# Optional schema-v1 autonomy_status stream for the Unity simulator/recorder.
+enabled = false
+host = "127.0.0.1"
+port = 6102
+frame_rate_hz = 10.0
+target_freshness_ms = 500
+source = "hcirobot"
+maximum_datagram_bytes = 4096
+
 [obstacle]
 # Reactive avoidance only: sonar telemetry from robot_side is the primary source,
 # the vision heuristic is an experimental fallback when sonar data is stale/absent.

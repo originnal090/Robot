@@ -42,6 +42,14 @@ class RuntimeEvent:
     frame_count: int = 0
     seq: int = 0
     session_id: int = 0
+    output_v: float = 0.0
+    output_steer: float = 0.0
+    output_grab: bool = False
+    output_source: str = "shutdown"
+    armed: bool = False
+    obstacle_state: str | None = None
+    distance_mm: float | None = None
+    avoid_count: int | None = None
 
 
 EventSink = Callable[[RuntimeEvent], None]
@@ -160,10 +168,31 @@ def _publish(output: queue.Queue, stop: threading.Event, item: object) -> bool:
     return False
 
 
+def _publish_latest(output: queue.Queue, stop: threading.Event, frame) -> bool:
+    """Enqueue a video frame with latest-wins semantics.
+
+    A blocking put would backpressure the capture thread all the way to the
+    socket: whenever detection+control run slower than the camera, frames pile
+    up in kernel buffers and the loop reacts to ever-staler images (growing
+    latency, align oscillation). Dropping the queued frame instead bounds the
+    latency to one frame plus one processing step.
+    """
+    while not stop.is_set():
+        try:
+            output.put_nowait(frame)
+            return True
+        except queue.Full:
+            try:
+                output.get_nowait()  # discard the stale frame
+            except queue.Empty:
+                pass
+    return False
+
+
 def _capture_frames(source, output: queue.Queue, stop: threading.Event) -> None:
     try:
         for frame in source:
-            if not _publish(output, stop, frame):
+            if not _publish_latest(output, stop, frame):
                 return
         _publish(output, stop, _END)
     except Exception as exc:  # noqa: BLE001 - transport exception crosses worker boundary.
@@ -199,16 +228,56 @@ def run_loop(
     session = session or SessionControl()
     session_id = session.session_id
     event_seq = itertools.count(1)
+    is_armed = armed
+    output_v = 0.0
+    output_steer = 0.0
+    output_grab = False
+    output_source = "shutdown"
 
     def emit(kind: str, message: str = "", **kwargs: Any) -> None:
-        _emit(event_sink, RuntimeEvent(kind, message, seq=next(event_seq), session_id=session_id, **kwargs))
+        event_values = {
+            "output_v": output_v,
+            "output_steer": output_steer,
+            "output_grab": output_grab,
+            "output_source": output_source,
+            "armed": is_armed,
+            "obstacle_state": obstacle_policy.state.value if obstacle_policy is not None else None,
+            "distance_mm": obstacle_policy.last_distance_mm if obstacle_policy is not None else None,
+            "avoid_count": obstacle_policy.avoid_count if obstacle_policy is not None else None,
+        }
+        event_values.update(kwargs)
+        _emit(
+            event_sink,
+            RuntimeEvent(kind, message, seq=next(event_seq), session_id=session_id, **event_values),
+        )
+
+    def send_command(command: RobotCommand, source_name: str) -> None:
+        nonlocal output_v, output_steer, output_grab, output_source
+        robot.send(command)
+        output_v = command.velocity
+        output_steer = command.steer
+        output_grab = command.grab
+        output_source = source_name
+
+    def send_vector(velocity: float, steer: float, source_name: str) -> None:
+        nonlocal output_v, output_steer, output_grab, output_source
+        payload = {
+            "v": round(velocity, 4),
+            "steer": round(steer, 4),
+            "grab": False,
+            "t": datetime.now(UTC).isoformat(),
+        }
+        robot.send_raw(payload)
+        output_v = float(payload["v"])
+        output_steer = float(payload["steer"])
+        output_grab = False
+        output_source = source_name
 
     states_seen: list[ControlState] = []
     frame_count = 0
     termination = "completed"
     last_obstacle_key: tuple[str, str, str] | None = None
     last_obstacle_emitted = float("-inf")
-    is_armed = armed
     manual_was_active = False
     if armed:
         controller.arm(clock())
@@ -228,7 +297,7 @@ def run_loop(
 
     def finish_safe(reason: str) -> None:
         controller.fail_safe(reason)
-        robot.send(RobotCommand.stop())
+        send_command(RobotCommand.stop(), "shutdown")
 
     try:
         while True:
@@ -238,12 +307,14 @@ def run_loop(
                 emit("action", action)
             if session.consume_estop():
                 controller.estop("operator_estop")
-                robot.send(RobotCommand.stop())
+                is_armed = False
+                send_command(RobotCommand.stop(), "estop")
                 termination = "estop"
                 emit("estop", "operator emergency stop")
                 break
             if session.stopped:
-                robot.send(RobotCommand.stop())
+                is_armed = False
+                send_command(RobotCommand.stop(), "shutdown")
                 termination = "stop_requested"
                 emit("stopping", "stop requested")
                 break
@@ -287,7 +358,8 @@ def run_loop(
                 obstacle = obstacle_policy.update(sonar, vision_blocked, clock())
                 if obstacle_policy.latched_blocked:
                     controller.fail_safe("obstacle_blocked")
-                    robot.send(RobotCommand.stop())
+                    is_armed = False
+                    send_command(RobotCommand.stop(), "shutdown")
                     termination = "obstacle_blocked"
                     if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
                         states_seen.append(ControlState.LOST_SAFE)
@@ -314,33 +386,33 @@ def run_loop(
             manual_was_active = manual is not None
             maneuver_suppressed = obstacle is not None and obstacle.action == "maneuver" and not is_armed
             if manual is not None:
-                robot.send_raw(
-                    {
-                        "v": round(manual.velocity, 4),
-                        "steer": round(manual.steer, 4),
-                        "grab": False,
-                        "t": datetime.now(UTC).isoformat(),
-                    }
-                )
+                send_vector(manual.velocity, manual.steer, "manual")
             elif maneuver_suppressed:
                 # An un-armed session must never self-activate an avoidance
                 # motion: the maneuver degrades to a plain hold.
-                robot.send(RobotCommand.stop())
+                send_command(RobotCommand.stop(), "unarmed_hold")
             elif obstacle is not None and obstacle.action == "maneuver":
-                robot.send_raw(
-                    {
-                        "v": round(obstacle.velocity, 4),
-                        "steer": round(obstacle.steer, 4),
-                        "grab": False,
-                        "t": datetime.now(UTC).isoformat(),
-                    }
-                )
+                send_vector(obstacle.velocity, obstacle.steer, "obstacle_maneuver")
             elif obstacle is not None and obstacle.action == "hold":
-                robot.send(RobotCommand.stop())
+                send_command(RobotCommand.stop(), "obstacle_hold")
             else:
-                robot.send(decision.command)
+                source_name = "autonomy" if is_armed else "unarmed_hold"
+                send_command(decision.command, source_name)
             frame_count += 1
-            rendered = annotate(item, detection, decision)
+            rendered = annotate(
+                item,
+                detection,
+                decision,
+                output_v=output_v,
+                output_steer=output_steer,
+                output_source=output_source,
+                distance_mm=obstacle_policy.last_distance_mm if obstacle_policy is not None else None,
+                obstacle_state=(
+                    obstacle_policy.state.value
+                    if obstacle_policy is not None and obstacle_policy.last_distance_mm is not None
+                    else None
+                ),
+            )
             emit(
                 "frame",
                 decision.reason,
@@ -380,8 +452,9 @@ def run_loop(
                     "frame": frame_count,
                     "state": decision.state.value,
                     "reason": decision.reason,
-                    "v": round(decision.command.velocity, 3),
-                    "steer": round(decision.command.steer, 3),
+                    "v": round(output_v, 3),
+                    "steer": round(output_steer, 3),
+                    "source": output_source,
                 }
                 message = json.dumps(payload, ensure_ascii=False)
                 print(message, flush=True)
@@ -395,25 +468,37 @@ def run_loop(
                 termination = "max_frames"
                 break
     except ConnectionError as exc:
+        is_armed = False
+        output_v = 0.0
+        output_steer = 0.0
+        output_grab = False
         if session.consume_estop():
             controller.estop("operator_estop")
+            output_source = "estop"
             termination = "estop"
             emit("estop", "operator emergency stop")
         elif session.stopped:
+            output_source = "shutdown"
             termination = "stop_requested"
             emit("stopping", "stop requested")
         else:
             controller.fail_safe("robot_connection_lost")
+            output_source = "shutdown"
             termination = "robot_connection_lost"
             emit("error", f"robot connection lost: {exc}")
         if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
             states_seen.append(ControlState.LOST_SAFE)
-    except Exception:
+    except Exception as exc:
         controller.fail_safe("runtime_error")
+        is_armed = False
         try:
-            robot.send(RobotCommand.stop())
+            send_command(RobotCommand.stop(), "shutdown")
         except (ConnectionError, OSError):
-            pass
+            output_v = 0.0
+            output_steer = 0.0
+            output_grab = False
+            output_source = "shutdown"
+        emit("error", f"runtime error: {type(exc).__name__}: {exc}", frame_count=frame_count)
         raise
     finally:
         capture_stop.set()
@@ -421,6 +506,11 @@ def run_loop(
             robot.close()
         except Exception as exc:  # noqa: BLE001 - cleanup must continue.
             cleanup_error = exc
+        is_armed = False
+        output_v = 0.0
+        output_steer = 0.0
+        output_grab = False
+        output_source = "estop" if termination == "estop" else "shutdown"
         try:
             source.close()
         except Exception as exc:  # noqa: BLE001 - robot cleanup already ran.
@@ -430,6 +520,12 @@ def run_loop(
             cleanup_error = cleanup_error or RuntimeError("video capture thread did not stop")
 
     result = RunResult(frame_count, controller.state, tuple(states_seen), termination)
+    if cleanup_error is not None:
+        emit(
+            "error",
+            f"cleanup error: {type(cleanup_error).__name__}: {cleanup_error}",
+            frame_count=frame_count,
+        )
     emit("finished", termination, frame_count=frame_count)
     if cleanup_error is not None:
         raise cleanup_error

@@ -305,6 +305,11 @@ class TcpRobotClient:
             if self._socket is None:
                 raise ConnectionError("robot client is not connected")
             self._throttle_unlocked()
+            # cancel() sets the event before it closes the socket, so a send
+            # woken from the throttle wait can still race an in-flight close;
+            # the flag re-check is the authoritative "must not send" verdict.
+            if self._cancel.is_set():
+                raise ConnectionError("robot client is cancelled")
             sock = self._socket
             if sock is None:  # cancel() fired while the throttle wait was sleeping
                 raise ConnectionError("robot client is cancelled")

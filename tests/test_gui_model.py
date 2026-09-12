@@ -25,6 +25,9 @@ def frame_event(
         decision=decision,
         frame_count=frame_count,
         session_id=session_id,
+        output_v=velocity,
+        output_steer=steer,
+        output_source="autonomy",
     )
 
 

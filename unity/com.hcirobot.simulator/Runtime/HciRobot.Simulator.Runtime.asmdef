@@ -1,0 +1,14 @@
+{
+  "name": "HciRobot.Simulator.Runtime",
+  "rootNamespace": "HciRobot.Simulator",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

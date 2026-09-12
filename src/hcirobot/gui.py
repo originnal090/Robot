@@ -13,11 +13,12 @@ from PIL import Image, ImageTk
 
 from .app import RuntimeEvent, SessionControl, run_loop
 from .cli import build_source
-from .config import controller_config, detector_config, load_config
+from .config import controller_config, detector_config, load_config, unity_status_config
 from .controller import ControllerConfig, VisualApproachController
 from .detector import DetectorConfig, RedBallDetector
 from .gui_model import GuiModel, SessionState
 from .robot import RecordingRobot, TcpRobotClient
+from .unity_udp import UnityStatusPublisher, fanout_event_sinks
 
 BG = "#101417"
 PANEL = "#181e22"
@@ -32,6 +33,14 @@ BORDER = "#344047"
 MANUAL_JOG_LEVEL = 0.35
 MANUAL_JOG_SECONDS = 0.35
 MANUAL_STOP_SECONDS = 0.3
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+
+
+def _auto_arm_allowed(backend: str, host: str) -> bool:
+    """Demo auto-arm is restricted to loopback TCP so it can only ever reach a simulator."""
+    normalized_host = (host or "").strip().lower().strip("[]")
+    return backend.strip().lower() == "tcp" and normalized_host in _LOOPBACK_HOSTS
 
 
 def _default_tuning() -> dict[str, str]:
@@ -58,10 +67,18 @@ def _default_tuning() -> dict[str, str]:
 
 
 class RobotControlApp:
-    def __init__(self, root: tk.Tk, config_path: Path = Path("config.toml")) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        config_path: Path = Path("config.toml"),
+        *,
+        demo: bool = False,
+    ) -> None:
         self.root = root
         self.model = GuiModel()
         self.config_path = config_path
+        self.demo = demo
+        self.demo_auto_arm_done = False
         self.events: queue.Queue[RuntimeEvent] = queue.Queue()
         self.latest_frame: RuntimeEvent | None = None
         self.session_control: SessionControl | None = None
@@ -78,6 +95,9 @@ class RobotControlApp:
         self._refresh_view()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(30, self._drain_events)
+        if self.demo:
+            self.model.append_log("演示模式：将自动开始预览" + ("并自动武装（仅限本机 TCP 后端）" if demo else ""))
+            self.root.after(200, self._demo_start)
 
     def _build_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -177,7 +197,13 @@ class RobotControlApp:
         telemetry = ttk.Frame(viewer, style="Panel.TFrame", padding=(12, 9))
         telemetry.grid(row=1, column=0, sticky="ew")
         self.telemetry_values: dict[str, ttk.Label] = {}
-        for key, title in (("target", "目标"), ("error", "横向误差"), ("radius", "半径比例"), ("command", "输出")):
+        for key, title in (
+            ("target", "目标"),
+            ("error", "横向误差"),
+            ("radius", "半径比例"),
+            ("command", "输出"),
+            ("source", "来源"),
+        ):
             cell = ttk.Frame(telemetry, style="Panel.TFrame")
             cell.pack(side="left", fill="x", expand=True)
             ttk.Label(cell, text=title, style="Panel.TLabel").pack(anchor="w")
@@ -448,6 +474,29 @@ class RobotControlApp:
         if selected:
             self.config_var.set(selected)
 
+    def _demo_start(self) -> None:
+        """Demo mode entry: auto-start the preview session once the window is up."""
+        if self._closing:
+            return
+        if not self.model.can_start:
+            self.root.after(200, self._demo_start)
+            return
+        self._start_session()
+
+    def _demo_try_arm(self) -> None:
+        """Arm automatically in demo mode, but only for a loopback TCP backend."""
+        if self.demo_auto_arm_done or not self.model.can_arm or self.session_control is None:
+            return
+        if not _auto_arm_allowed(self.backend_var.get(), self.host_var.get().strip()):
+            self.demo_auto_arm_done = True
+            self.model.append_log(
+                "演示模式：当前后端不是本机 TCP，保持未武装；请手动点击“武装自治”"
+            )
+            self._sync_logs()
+            return
+        self._arm()
+        self.demo_auto_arm_done = True
+
     def _start_session(self) -> None:
         if not self.model.can_start:
             return
@@ -476,9 +525,11 @@ class RobotControlApp:
     def _session_worker(self, values: dict[str, Any], control: SessionControl) -> None:
         source = None
         robot = None
+        unity_publisher = None
         run_loop_entered = False
         try:
             config = load_config(Path(values["config"]))
+            unity_publisher = UnityStatusPublisher(unity_status_config(config.get("unity")))
             # Built before any hardware/video resource is opened, so a bad
             # obstacle config surfaces through the normal error event path.
             obstacle_policy = self._build_obstacle_policy(
@@ -515,7 +566,7 @@ class RobotControlApp:
                 armed=False,
                 frame_timeout_seconds=float(config["video"]["frame_timeout_seconds"]),
                 session=control,
-                event_sink=self._publish_event,
+                event_sink=fanout_event_sinks(self._publish_event, unity_publisher),
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.
@@ -535,7 +586,13 @@ class RobotControlApp:
                         source.close()
                     except Exception as cleanup_exc:  # noqa: BLE001 - keep cleaning up.
                         message += f"; source cleanup failed: {cleanup_exc}"
-            self._publish_event(RuntimeEvent("error", message))
+            error_event = RuntimeEvent("error", message)
+            self._publish_event(error_event)
+            if unity_publisher is not None:
+                unity_publisher.publish(error_event)
+        finally:
+            if unity_publisher is not None:
+                unity_publisher.close()
 
     def _build_obstacle_policy(self, config: dict, backend: str, enabled: bool):
         """Obstacle policy for this session, or None when reactive avoidance is off.
@@ -604,6 +661,8 @@ class RobotControlApp:
                 self._render_frame(frame_event)
             except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the loop.
                 self.model.append_log(f"帧处理异常：{type(exc).__name__}: {exc}")
+        if self.demo:
+            self._demo_try_arm()
         self._refresh_view()
 
     def _handle_event(self, event: RuntimeEvent) -> None:
@@ -785,6 +844,7 @@ class RobotControlApp:
         self.telemetry_values["error"].configure(text=model.horizontal_error)
         self.telemetry_values["radius"].configure(text=model.radius_ratio)
         self.telemetry_values["command"].configure(text=model.command)
+        self.telemetry_values["source"].configure(text=model.output_source)
         self.obstacle_values["distance"].configure(text=model.obstacle_distance)
         self.obstacle_values["vision"].configure(text=model.vision_blocked)
         self.obstacle_values["state"].configure(text=model.obstacle_state)
@@ -819,9 +879,25 @@ class RobotControlApp:
         self.log_text.configure(state="disabled")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="hcirobot-gui",
+        description="TonyPi 视觉自治控制台（支持 --config 指定配置、--demo 一键演示）",
+    )
+    parser.add_argument("--config", default="config.toml", help="TOML 配置文件路径")
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help=(
+            "演示模式：自动开始预览，并在条件满足时自动武装"
+            "（仅当控制后端为本机 TCP 时才自动武装）"
+        ),
+    )
+    args = parser.parse_args(argv)
     root = tk.Tk()
-    RobotControlApp(root)
+    RobotControlApp(root, Path(args.config), demo=args.demo)
     root.mainloop()
     return 0
 

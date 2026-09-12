@@ -70,11 +70,13 @@ class MjpegHttpSource:
             self._response = urllib.request.urlopen(request, timeout=timeout_seconds)
         except OSError as exc:  # URLError and socket timeouts both subclass OSError.
             raise ConnectionError(f"cannot open MJPEG stream: {url}: {exc}") from exc
-        # Poll in short slices so close() from another thread is noticed promptly:
-        # on Windows a blocking recv is not woken by shutdown() from another thread.
-        sock = self._detach_socket(self._response)
-        if sock is not None:
-            sock.settimeout(min(timeout_seconds, self._POLL_SECONDS))
+        # Read the body from the raw socket, not response.read1(): after one
+        # socket timeout the buffered response object is permanently bricked
+        # ("cannot read from timed out object"), while raw recv() stays usable.
+        # Short poll slices keep close() from another thread responsive.
+        self._socket = self._detach_socket(self._response)
+        if self._socket is not None:
+            self._socket.settimeout(min(timeout_seconds, self._POLL_SECONDS))
 
     def __iter__(self) -> Iterator[Frame]:
         buffer = bytearray()
@@ -106,7 +108,7 @@ class MjpegHttpSource:
             self._response = None
         if response is None:
             return
-        sock = self._detach_socket(response)
+        sock = self._socket or self._detach_socket(response)
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)  # tear the TCP connection down now
@@ -121,18 +123,24 @@ class MjpegHttpSource:
                 pass
 
     def _read_chunk(self) -> bytes:
-        deadline = time.monotonic() + self._timeout
+        # A live robot camera (or an unfocused Unity editor) routinely stalls
+        # for longer than one frame interval. Stall policy belongs to
+        # run_loop's frame timeout, which triggers the safe stop and closes
+        # this source; here a timeout just means "poll again".
         while True:
             with self._lock:
                 response = self._response
             if response is None:
                 return b""  # close() from another thread ends the stream.
+            if self._socket is not None:
+                try:
+                    return self._socket.recv(self._CHUNK_BYTES)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    return b""  # reset, truncated body, or closed underneath us
             try:
                 chunk = response.read1(self._CHUNK_BYTES)
-            except TimeoutError:
-                if time.monotonic() >= deadline:
-                    return b""  # stream stalled longer than the read timeout
-                continue
             except (OSError, ValueError, EOFError, AttributeError, http.client.HTTPException):
                 return b""  # reset, truncated body, or closed underneath us
             return chunk if chunk else b""  # b"" means clean EOF
@@ -188,7 +196,17 @@ class SyntheticBallSource:
         return None
 
 
-def annotate(frame: Frame, detection, decision) -> Frame:
+def annotate(
+    frame: Frame,
+    detection,
+    decision,
+    *,
+    output_v: float | None = None,
+    output_steer: float | None = None,
+    output_source: str | None = None,
+    distance_mm: float | None = None,
+    obstacle_state: str | None = None,
+) -> Frame:
     output = frame.copy()
     height, width = output.shape[:2]
     center_x = width // 2
@@ -199,9 +217,15 @@ def annotate(frame: Frame, detection, decision) -> Frame:
         cv2.circle(output, center, 3, (0, 255, 255), -1)
     lines = [
         f"state={decision.state.value} reason={decision.reason}",
-        f"v={decision.command.velocity:.2f} steer={decision.command.steer:.2f}",
-        f"detected={detection.detected} candidate={detection.candidate_detected}",
+        f"intent v={decision.command.velocity:+.2f} steer={decision.command.steer:+.2f}",
     ]
+    if output_v is not None and output_steer is not None:
+        source = f" [{output_source}]" if output_source else ""
+        lines.append(f"actual v={output_v:+.2f} steer={output_steer:+.2f}{source}")
+    if distance_mm is not None:
+        state = f" obstacle={obstacle_state}" if obstacle_state else ""
+        lines.append(f"dist={distance_mm:.0f}mm{state}")
+    lines.append(f"detected={detection.detected} candidate={detection.candidate_detected}")
     for index, text in enumerate(lines):
         cv2.putText(
             output,
