@@ -5,6 +5,7 @@ import itertools
 import json
 import queue
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -66,6 +67,10 @@ class ManualCommand:
     velocity: float
     steer: float
     until: float
+    source: str = "manual"
+
+
+_MANUAL_SOURCES = frozenset({"manual", "gamepad"})
 
 
 class SessionControl:
@@ -74,6 +79,7 @@ class SessionControl:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._arm = threading.Event()
+        self._disarm = threading.Event()
         self._estop = threading.Event()
         self._lock = threading.Lock()
         self._manual: ManualCommand | None = None
@@ -86,13 +92,20 @@ class SessionControl:
         return self._stop.is_set()
 
     def attach_robot(self, robot: RobotBackend) -> None:
-        """Register the backend so stop/estop can unblock a stuck send."""
+        """Register the backend so stop/estop can cancel connect or a stuck send."""
         with self._lock:
             self._robot = robot
+            stopped = self._stop.is_set()
+        if stopped:
+            self._cancel_robot()
 
     def request_arm(self) -> None:
         if not self._estop.is_set():
             self._arm.set()
+
+    def request_disarm(self) -> None:
+        """Preempt autonomy without stopping the session (gamepad takeover)."""
+        self._disarm.set()
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -103,15 +116,17 @@ class SessionControl:
         self._stop.set()
         self._cancel_robot()
 
-    def request_manual(self, velocity: float, steer: float, seconds: float) -> None:
+    def request_manual(self, velocity: float, steer: float, seconds: float, *, source: str = "manual") -> None:
         if not -1.0 <= velocity <= 1.0:
             raise ValueError("manual velocity must be between -1 and 1")
         if not -1.0 <= steer <= 1.0:
             raise ValueError("manual steer must be between -1 and 1")
         if not 0.0 < seconds <= 5.0:
             raise ValueError("manual duration must be between 0 and 5 seconds")
+        if source not in _MANUAL_SOURCES:
+            raise ValueError("manual source must be one of: " + ", ".join(sorted(_MANUAL_SOURCES)))
         with self._lock:
-            self._manual = ManualCommand(velocity, steer, time.monotonic() + seconds)
+            self._manual = ManualCommand(velocity, steer, time.monotonic() + seconds, source)
 
     def current_manual(self) -> ManualCommand | None:
         with self._lock:
@@ -139,6 +154,12 @@ class SessionControl:
             return True
         return False
 
+    def consume_disarm(self) -> bool:
+        if self._disarm.is_set():
+            self._disarm.clear()
+            return True
+        return False
+
     def consume_estop(self) -> bool:
         if self._estop.is_set():
             self._estop.clear()
@@ -156,6 +177,17 @@ class SessionControl:
 
 
 _END = object()
+
+
+def _safe_print(message: str) -> None:
+    """Print state lines without dying under pythonw (stdout is None) or a closed pipe."""
+    stream = sys.stdout
+    if stream is None:
+        return
+    try:
+        print(message, flush=True, file=stream)
+    except (OSError, ValueError):
+        pass
 
 
 def _publish(output: queue.Queue, stop: threading.Event, item: object) -> bool:
@@ -189,14 +221,21 @@ def _publish_latest(output: queue.Queue, stop: threading.Event, frame) -> bool:
     return False
 
 
-def _capture_frames(source, output: queue.Queue, stop: threading.Event) -> None:
+def _capture_frames(source, output: queue.Queue, stop: threading.Event, frame_recorder=None) -> None:
     try:
         for frame in source:
+            if frame_recorder is not None:
+                frame_recorder.offer(frame)  # tap before latest-wins: record every frame
             if not _publish_latest(output, stop, frame):
                 return
         _publish(output, stop, _END)
     except Exception as exc:  # noqa: BLE001 - transport exception crosses worker boundary.
         _publish(output, stop, exc)
+    finally:
+        # A session that ends mid-capture must not leave a recording running.
+        if frame_recorder is not None:
+            with contextlib.suppress(Exception):
+                frame_recorder.stop_session()
 
 
 def _emit(sink: EventSink | None, event: RuntimeEvent) -> None:
@@ -218,6 +257,7 @@ def run_loop(
     session: SessionControl | None = None,
     event_sink: EventSink | None = None,
     obstacle_policy: ObstaclePolicy | None = None,
+    frame_recorder=None,
 ) -> RunResult:
     if frame_timeout_seconds <= 0:
         raise ValueError("frame timeout must be positive")
@@ -279,6 +319,7 @@ def run_loop(
     last_obstacle_key: tuple[str, str, str] | None = None
     last_obstacle_emitted = float("-inf")
     manual_was_active = False
+    save_frames = True  # flips off permanently once writing a frame fails
     if armed:
         controller.arm(clock())
 
@@ -286,7 +327,7 @@ def run_loop(
     capture_stop = threading.Event()
     capture_thread = threading.Thread(
         target=_capture_frames,
-        args=(source, frames, capture_stop),
+        args=(source, frames, capture_stop, frame_recorder),
         name="video-capture",
         daemon=True,
     )
@@ -318,6 +359,13 @@ def run_loop(
                 termination = "stop_requested"
                 emit("stopping", "stop requested")
                 break
+            # consume_disarm() runs first so a stray request is cleared even
+            # when the session is already disarmed.
+            if session.consume_disarm() and is_armed:
+                is_armed = False
+                controller.reset()
+                send_command(RobotCommand.stop(), "disarmed")
+                emit("disarmed", "manual takeover: autonomy disarmed")
             if session.consume_arm():
                 is_armed = True
                 if controller.state is ControlState.IDLE:
@@ -386,7 +434,7 @@ def run_loop(
             manual_was_active = manual is not None
             maneuver_suppressed = obstacle is not None and obstacle.action == "maneuver" and not is_armed
             if manual is not None:
-                send_vector(manual.velocity, manual.steer, "manual")
+                send_vector(manual.velocity, manual.steer, manual.source)
             elif maneuver_suppressed:
                 # An un-armed session must never self-activate an avoidance
                 # motion: the maneuver degrades to a plain hold.
@@ -457,12 +505,28 @@ def run_loop(
                     "source": output_source,
                 }
                 message = json.dumps(payload, ensure_ascii=False)
-                print(message, flush=True)
+                _safe_print(message)
                 emit("state", message, frame_count=frame_count)
-            if output_dir is not None:
-                cv2.imwrite(str(output_dir / f"frame-{frame_count:04d}.png"), rendered)
+            if output_dir is not None and save_frames:
+                # Disk-full or an unwritable path must degrade to "stop saving",
+                # never kill the control loop (frame writing is a side output).
+                try:
+                    if not cv2.imwrite(str(output_dir / f"frame-{frame_count:04d}.png"), rendered):
+                        raise OSError("cv2.imwrite returned false")
+                except Exception as exc:  # noqa: BLE001 - side output only.
+                    save_frames = False
+                    emit("warning", f"帧保存失败，本次会话不再保存：{type(exc).__name__}: {exc}")
             if decision.state in (ControlState.ARRIVED, ControlState.LOST_SAFE):
                 termination = decision.state.value.lower()
+                if decision.state is ControlState.ARRIVED and controller.config.arrival_action:
+                    # One-shot arrival action (course button namespace, e.g.
+                    # right_grip = crouch-and-extinguish).  A send failure must
+                    # not mask the arrival: warn and still end the session.
+                    try:
+                        robot.send_action(controller.config.arrival_action)
+                        emit("action", controller.config.arrival_action, frame_count=frame_count)
+                    except (ConnectionError, OSError, ValueError) as exc:
+                        emit("warning", f"到达动作下发失败：{exc}", frame_count=frame_count)
                 break
             if max_frames > 0 and frame_count >= max_frames:
                 termination = "max_frames"
@@ -491,6 +555,7 @@ def run_loop(
     except Exception as exc:
         controller.fail_safe("runtime_error")
         is_armed = False
+        termination = "runtime_error"
         try:
             send_command(RobotCommand.stop(), "shutdown")
         except (ConnectionError, OSError):
@@ -498,6 +563,8 @@ def run_loop(
             output_steer = 0.0
             output_grab = False
             output_source = "shutdown"
+        if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
+            states_seen.append(ControlState.LOST_SAFE)
         emit("error", f"runtime error: {type(exc).__name__}: {exc}", frame_count=frame_count)
         raise
     finally:

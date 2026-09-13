@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import math
@@ -39,6 +40,167 @@ class RobotBackend(Protocol):
     def close(self) -> None: ...
 
 
+def parse_endpoint(text: str, *, default_port: int = 5075) -> tuple[str, int]:
+    """Parse ``host[:port]`` (IPv6 bracket form allowed) into a validated pair."""
+    value = (text or "").strip()
+    if not value:
+        raise ValueError("endpoint must not be empty")
+    if value.startswith("["):
+        host, _, rest = value[1:].partition("]")
+        port_text = rest.lstrip(":")
+    else:
+        host, sep, port_text = value.rpartition(":")
+        if not sep:
+            host, port_text = value, ""
+    host = host.strip()
+    if not host:
+        raise ValueError("endpoint host must not be empty")
+    try:
+        port = int(port_text) if port_text else default_port
+    except ValueError as exc:
+        raise ValueError(f"endpoint port must be an integer: {port_text!r}") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("endpoint port must be between 1 and 65535")
+    return host, port
+
+
+class MirrorTcpRobot:
+    """Best-effort command mirror to a secondary TCP service (e.g. the Unity twin).
+
+    A copy of every command is forwarded, but an unreachable/slow mirror must
+    never disturb the primary robot session: connect failures and send errors
+    are swallowed, reconnection is attempted on a fixed backoff, and telemetry
+    is not consumed (the primary stays the source of truth for DIST).
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int = 5075,
+        *,
+        connect_timeout: float = 2.0,
+        minimum_send_interval: float = 0.1,
+        reconnect_seconds: float = 5.0,
+        on_status: Callable[[str], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._client = TcpRobotClient(host, port, connect_timeout, minimum_send_interval)
+        self._reconnect_seconds = reconnect_seconds
+        self._on_status = on_status
+        self._clock = clock
+        self._connected = False
+        self._next_attempt = float("-inf")
+        self.failures = 0
+
+    @property
+    def target(self) -> str:
+        return f"{self._client.host}:{self._client.port}"
+
+    def _ensure_connected(self) -> bool:
+        if self._connected:
+            return True
+        if self._clock() < self._next_attempt:
+            return False
+        self._next_attempt = self._clock() + self._reconnect_seconds
+        try:
+            self._client.connect()
+        except (ConnectionError, OSError, TimeoutError):
+            self._connected = False
+            return False
+        self._connected = True
+        self._report(f"镜像已连接：{self.target}")
+        return True
+
+    def _forward(self, data: bytes) -> bool:
+        if not self._ensure_connected():
+            return False
+        try:
+            self._client._send_bytes(data)
+            return True
+        except (ConnectionError, OSError):
+            self._drop()
+            return False
+
+    def send(self, command: RobotCommand) -> None:
+        self._forward(encode_legacy_command(command))
+
+    def send_action(self, name: str) -> None:
+        validate_action_name(name)
+        self._forward(f"CMD:{name}\n".encode())
+
+    def send_raw(self, payload: dict) -> None:
+        self._forward(encode_raw_payload(payload))
+
+    def latest_distance(self) -> tuple[float, float] | None:
+        return None  # mirror telemetry must not shadow the primary
+
+    def cancel(self) -> None:
+        with contextlib.suppress(Exception):
+            self._client.cancel()
+        self._connected = False
+
+    def close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._client.close()
+        self._connected = False
+
+    def _drop(self) -> None:
+        # TcpRobotClient._send_bytes already retired its socket on the error,
+        # so the next _ensure_connected() opens a fresh connection.
+        self._connected = False
+        self.failures += 1
+        self._report(f"镜像断开（{self.target}），{self._reconnect_seconds:.0f}s 后自动重连")
+
+    def _report(self, message: str) -> None:
+        callback = self._on_status
+        if callback is None:
+            return
+        with contextlib.suppress(Exception):
+            callback(message)
+
+
+class FanoutRobot:
+    """Broadcast backend: every command reaches the primary and all mirrors."""
+
+    def __init__(self, primary: RobotBackend, mirrors: tuple = ()) -> None:
+        self.primary = primary
+        self.mirrors = tuple(mirrors)
+
+    def send(self, command: RobotCommand) -> None:
+        self.primary.send(command)
+        for mirror in self.mirrors:
+            with contextlib.suppress(Exception):
+                mirror.send(command)
+
+    def send_action(self, name: str) -> None:
+        self.primary.send_action(name)
+        for mirror in self.mirrors:
+            with contextlib.suppress(Exception):
+                mirror.send_action(name)
+
+    def send_raw(self, payload: dict) -> None:
+        self.primary.send_raw(payload)
+        for mirror in self.mirrors:
+            with contextlib.suppress(Exception):
+                mirror.send_raw(payload)
+
+    def latest_distance(self) -> tuple[float, float] | None:
+        return self.primary.latest_distance()
+
+    def cancel(self) -> None:
+        for backend in (self.primary, *self.mirrors):
+            cancel = getattr(backend, "cancel", None)
+            if cancel is None:
+                continue
+            with contextlib.suppress(Exception):
+                cancel()
+
+    def close(self) -> None:
+        for backend in (self.primary, *self.mirrors):
+            with contextlib.suppress(Exception):
+                backend.close()
+
+
 def encode_legacy_command(command: RobotCommand) -> bytes:
     """Encode the JSON Lines format consumed by Example/TCP_connect.py."""
     payload = {
@@ -65,7 +227,11 @@ def validate_raw_payload(payload: dict) -> None:
         raise ValueError(f"raw payload missing keys: {', '.join(missing)}")
     for key in ("v", "steer"):
         value = payload[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
             raise ValueError(f"raw payload {key} must be a finite number")
         if not -1.0 <= float(value) <= 1.0:
             raise ValueError(f"raw payload {key} must be between -1 and 1")
@@ -133,26 +299,38 @@ class TcpRobotClient:
         self.minimum_send_interval = minimum_send_interval
         self.on_message = on_message
         self._socket: socket.socket | None = None
+        self._closing_socket: socket.socket | None = None
         self._last_send = 0.0
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._cancel = threading.Event()
+        self._closed = False
         self._distance: tuple[float, float] | None = None
         self._data_lock = threading.Lock()
         self._reader: threading.Thread | None = None
 
     def connect(self) -> None:
         with self._lock:
-            if self._socket is not None:
-                return
-            self._cancel.clear()
+            with self._state_lock:
+                if self._cancel.is_set():
+                    raise ConnectionError("robot client is cancelled")
+                if self._closed:
+                    raise ConnectionError("robot client is closed")
+                if self._socket is not None:
+                    return
             sock = self._connect_cancellable()
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.settimeout(self.connect_timeout)
-            self._socket = sock
-            reader = self._reader
-            if reader is None or not reader.is_alive():
+            with self._state_lock:
+                if self._cancel.is_set():
+                    sock.close()
+                    raise ConnectionError("robot connect cancelled")
+                self._socket = sock
                 reader = threading.Thread(
-                    target=self._recv_loop, name="robot-telemetry", daemon=True
+                    target=self._recv_loop,
+                    args=(sock,),
+                    name="robot-telemetry",
+                    daemon=True,
                 )
                 self._reader = reader
                 reader.start()
@@ -175,7 +353,9 @@ class TcpRobotClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(f"timed out connecting to robot {self.host}:{self.port}")
-                _, writable, _ = select.select([], [sock], [], min(_CONNECT_POLL_SECONDS, remaining))
+                _, writable, _ = select.select(
+                    [], [sock], [], min(_CONNECT_POLL_SECONDS, remaining)
+                )
                 if not writable:
                     continue
                 error = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
@@ -206,38 +386,37 @@ class TcpRobotClient:
         with self._data_lock:
             return self._distance
 
-    def _recv_loop(self) -> None:
-        """Parse robot telemetry lines (``DIST:<int>`` / ``COLOR_SIGNAL:<TAG>``).
+    def _recv_loop(self, sock: socket.socket) -> None:
+        """Parse telemetry for the exact socket that spawned this reader.
 
-        Must never acquire ``self._lock``: close()/cancel() hold it while joining
-        this thread. Windows cannot be relied on to wake a blocking recv from
-        another thread's shutdown(), so the loop polls with short select() slices
-        and re-checks the cancel flag and the lock-protected socket slot each
-        iteration instead.
+        Binding the socket prevents a late reader from consuming a replacement
+        connection. On EOF/error it unregisters only its own socket, so passive
+        disconnects are immediately visible to send() without clobbering a newer
+        connection installed by another lifecycle operation.
         """
         buffer = b""
-        while not self._cancel.is_set():
-            sock = self._socket
-            if sock is None:  # close()/send failure retired the socket
-                break
-            try:
-                readable, _, _ = select.select([sock], [], [], _RECV_POLL_SECONDS)
-            except (OSError, ValueError):
-                break
-            if not readable:
-                continue
-            try:
-                chunk = sock.recv(4096)
-            except TimeoutError:
-                continue
-            except OSError:
-                break
-            if not chunk:
-                break  # peer closed the connection
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                self._handle_telemetry_line(line)
+        try:
+            while not self._cancel.is_set():
+                try:
+                    readable, _, _ = select.select([sock], [], [], _RECV_POLL_SECONDS)
+                except (OSError, ValueError):
+                    break
+                if not readable:
+                    continue
+                try:
+                    chunk = sock.recv(4096)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                if not chunk:
+                    break  # peer closed the connection
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    self._handle_telemetry_line(line)
+        finally:
+            self._retire_socket(sock)
 
     def _handle_telemetry_line(self, raw: bytes) -> None:
         text = raw.decode("utf-8", errors="replace").strip()
@@ -271,27 +450,31 @@ class TcpRobotClient:
         is idempotent and every call below tolerates ``OSError``.
         """
         self._cancel.set()
-        sock = self._socket
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                sock.close()
-            except OSError:
-                pass
+        with self._state_lock:
+            sock, self._socket = self._socket, None
+            closing, self._closing_socket = self._closing_socket, None
+        self._close_socket(sock)
+        if closing is not sock:
+            self._close_socket(closing)
         self._join_reader()
 
     def close(self) -> None:
         with self._lock:
-            if self._socket is not None:
+            with self._state_lock:
+                self._closed = True
+                sock, self._socket = self._socket, None
+                self._closing_socket = sock
+            if sock is not None:
                 try:
-                    self._socket.sendall(encode_legacy_command(RobotCommand.stop()))
+                    sock.sendall(encode_legacy_command(RobotCommand.stop()))
                 except OSError:
                     pass
-                self._close_unlocked()
-        self._join_reader()
+                finally:
+                    with self._state_lock:
+                        if self._closing_socket is sock:
+                            self._closing_socket = None
+                    self._close_socket(sock)
+            self._join_reader()
 
     def _join_reader(self) -> None:
         reader = self._reader
@@ -302,7 +485,9 @@ class TcpRobotClient:
         with self._lock:
             if self._cancel.is_set():
                 raise ConnectionError("robot client is cancelled")
-            if self._socket is None:
+            with self._state_lock:
+                sock = self._socket
+            if sock is None:
                 raise ConnectionError("robot client is not connected")
             self._throttle_unlocked()
             # cancel() sets the event before it closes the socket, so a send
@@ -310,13 +495,13 @@ class TcpRobotClient:
             # the flag re-check is the authoritative "must not send" verdict.
             if self._cancel.is_set():
                 raise ConnectionError("robot client is cancelled")
-            sock = self._socket
-            if sock is None:  # cancel() fired while the throttle wait was sleeping
-                raise ConnectionError("robot client is cancelled")
+            with self._state_lock:
+                if self._socket is not sock:
+                    raise ConnectionError("robot client is not connected")
             try:
                 sock.sendall(data)
             except OSError as exc:
-                self._close_unlocked()
+                self._retire_socket(sock)
                 raise ConnectionError(f"failed to send robot command: {exc}") from exc
             self._last_send = time.monotonic()
 
@@ -325,12 +510,21 @@ class TcpRobotClient:
         if remaining > 0:
             self._cancel.wait(remaining)
 
-    def _close_unlocked(self) -> None:
-        sock, self._socket = self._socket, None
+    def _retire_socket(self, sock: socket.socket) -> None:
+        with self._state_lock:
+            if self._socket is sock:
+                self._socket = None
+        self._close_socket(sock)
+
+    @staticmethod
+    def _close_socket(sock: socket.socket | None) -> None:
         if sock is None:
             return
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-        sock.close()
+        try:
+            sock.close()
+        except OSError:
+            pass

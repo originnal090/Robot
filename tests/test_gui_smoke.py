@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import time
 import tkinter as tk
@@ -10,6 +11,18 @@ from hcirobot.gui import RobotControlApp
 from hcirobot.gui_model import ZERO_COMMAND, SessionState
 
 
+def drain_non_gamepad_events(app: RobotControlApp) -> list:
+    """Pop every queued event, tolerating gamepad monitor notes (kind='gamepad')."""
+    others = []
+    while True:
+        try:
+            event = app.events.get_nowait()
+        except queue.Empty:
+            return others
+        if event.kind != "gamepad":
+            others.append(event)
+
+
 def test_tk_window_constructs_and_defaults_to_disarmed() -> None:
     try:
         root = tk.Tk()
@@ -17,14 +30,27 @@ def test_tk_window_constructs_and_defaults_to_disarmed() -> None:
         pytest.skip(f"Tk display unavailable: {exc}")
     root.withdraw()
     app = RobotControlApp(root)
-    root.update()
-    assert app.root.title() == "TonyPi 视觉自治控制台"
-    assert not app.model.armed
-    assert str(app.arm_button["state"]) == "disabled"
-    # Manual controls and tuning apply stay disabled while no session runs.
-    assert all(str(button["state"]) == "disabled" for button in app.manual_buttons)
-    assert str(app.apply_params_button["state"]) == "disabled"
-    root.destroy()
+    try:
+        root.update()
+        assert app.root.title() == "TonyPi 视觉自治控制台"
+        assert not app.model.armed
+        assert str(app.arm_button["state"]) == "disabled"
+        # Manual controls and tuning apply stay disabled while no session runs.
+        assert all(str(button["state"]) == "disabled" for button in app.manual_buttons)
+        assert str(app.apply_params_button["state"]) == "disabled"
+        # The top-bar gamepad cell must reflect the probed state (name, 未检测到
+        # or 未装 pygame) instead of the initial placeholder.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and str(app.status_values["gamepad"]["text"]) in (
+            "--",
+            "未连接",
+        ):
+            root.update()
+            time.sleep(0.02)
+        assert str(app.status_values["gamepad"]["text"]) not in ("--", "未连接")
+    finally:
+        app.gamepad_monitor.stop()
+        root.destroy()
 
 
 def test_session_runs_manual_actions_and_stops_cleanly() -> None:
@@ -74,6 +100,7 @@ def test_session_runs_manual_actions_and_stops_cleanly() -> None:
         app._closing = True
         if app.session_thread is not None and app.session_thread.is_alive():
             app.session_thread.join(timeout=5.0)
+        app.gamepad_monitor.stop()
     assert app.session_thread is not None
     assert not app.session_thread.is_alive()
     deadline = time.monotonic() + 5.0
@@ -143,6 +170,7 @@ def test_obstacle_panel_tracks_telemetry_and_recording_skips_policy() -> None:
         app._closing = True
         if app.session_thread is not None and app.session_thread.is_alive():
             app.session_thread.join(timeout=5.0)
+        app.gamepad_monitor.stop()
     assert app.session_thread is not None
     assert not app.session_thread.is_alive()
     deadline = time.monotonic() + 5.0
@@ -172,12 +200,13 @@ def test_obstacle_policy_builder_logs_config_disabled_and_defaults_to_enabled() 
         assert "避障已被配置文件禁用" in event.message
         # A missing section/key defaults to enabled, matching the CLI.
         assert app._build_obstacle_policy({}, "tcp", True) is not None
-        assert app.events.empty()
+        assert not drain_non_gamepad_events(app)
         # The recording backend and an off switch stay silent, as before.
         assert app._build_obstacle_policy({"obstacle": {"enabled": False}}, "recording", True) is None
         assert app._build_obstacle_policy({"obstacle": {"enabled": False}}, "tcp", False) is None
-        assert app.events.empty()
+        assert not drain_non_gamepad_events(app)
     finally:
+        app.gamepad_monitor.stop()
         try:
             root.destroy()
         except tk.TclError:

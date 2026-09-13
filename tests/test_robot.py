@@ -233,6 +233,47 @@ def test_cancel_and_close_are_safe_without_connection() -> None:
     client.close()
     with pytest.raises(ConnectionError):
         client.send(RobotCommand(0.0, 0.0))
+    with pytest.raises(ConnectionError, match="cancelled"):
+        client.connect()  # cancel 是终止态，不能隐式复活客户端
+
+
+def test_close_is_terminal_and_rejects_later_connect() -> None:
+    client = TcpRobotClient("127.0.0.1", 5075)
+    client.close()
+
+    with pytest.raises(ConnectionError, match="closed"):
+        client.connect()
+
+
+def test_cancel_unblocks_close_final_stop_send() -> None:
+    class _BlockingSocket:
+        def __init__(self) -> None:
+            self.sending = threading.Event()
+            self.released = threading.Event()
+
+        def sendall(self, _data: bytes) -> None:
+            self.sending.set()
+            self.released.wait(2.0)
+
+        def shutdown(self, _how: int) -> None:
+            self.released.set()
+
+        def close(self) -> None:
+            self.released.set()
+
+    client = TcpRobotClient("127.0.0.1", 5075)
+    sock = _BlockingSocket()
+    client._socket = sock
+    worker = threading.Thread(target=client.close)
+    worker.start()
+    assert sock.sending.wait(1.0)
+
+    client.cancel()
+    worker.join(1.0)
+
+    assert not worker.is_alive()
+    with pytest.raises(ConnectionError):
+        client.connect()
 
 
 class _LineServer:
@@ -298,6 +339,56 @@ def test_tcp_client_reader_parses_dist_lines_with_fresh_timestamp() -> None:
         assert latest is not None and latest[0] == 25.0
     finally:
         client.close()
+        server.close()
+
+
+def test_passive_disconnect_unregisters_socket_before_next_send() -> None:
+    server = _LineServer()
+    client = TcpRobotClient("127.0.0.1", server.port, minimum_send_interval=0)
+    client.connect()
+    conn = server.accept()
+    conn.shutdown(socket.SHUT_RDWR)
+    conn.close()
+    server.conn = None
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with client._state_lock:
+                if client._socket is None:
+                    break
+            time.sleep(0.01)
+        with client._state_lock:
+            assert client._socket is None
+        with pytest.raises(ConnectionError, match="not connected"):
+            client.send(RobotCommand.stop())
+    finally:
+        client.close()
+        server.close()
+
+
+def test_reader_is_bound_to_original_socket_when_slot_changes() -> None:
+    server = _LineServer()
+    client = TcpRobotClient("127.0.0.1", server.port, minimum_send_interval=0)
+    client.connect()
+    conn = server.accept()
+    replacement, peer = socket.socketpair()
+    try:
+        with client._state_lock:
+            original = client._socket
+            client._socket = replacement
+        assert original is not None
+        conn.shutdown(socket.SHUT_RDWR)
+        conn.close()
+        server.conn = None
+        reader = client._reader
+        assert reader is not None
+        reader.join(2.0)
+        assert not reader.is_alive()
+        with client._state_lock:
+            assert client._socket is replacement
+    finally:
+        client.cancel()
+        peer.close()
         server.close()
 
 
@@ -422,3 +513,115 @@ def test_mock_server_none_distance_source_never_sends_but_control_still_works() 
         server.stop()
         thread.join(2)
     assert any("v" in item for item in server.commands)  # 控制通道不受影响
+
+
+# ---------- mirror / fanout ----------
+
+
+def test_parse_endpoint_forms() -> None:
+    from hcirobot.robot import parse_endpoint
+
+    assert parse_endpoint("127.0.0.1:5075") == ("127.0.0.1", 5075)
+    assert parse_endpoint("localhost") == ("localhost", 5075)
+    assert parse_endpoint("[::1]:6100") == ("::1", 6100)
+    for bad in ("", "  ", "host:notaport", "host:0", "host:70000"):
+        with pytest.raises(ValueError):
+            parse_endpoint(bad)
+
+
+def test_fanout_broadcasts_to_primary_and_mirrors() -> None:
+    from hcirobot.model import RobotCommand
+    from hcirobot.robot import FanoutRobot
+
+    primary = RecordingRobot()
+    mirror = RecordingRobot()
+    fanout = FanoutRobot(primary, (mirror,))
+    fanout.send(RobotCommand(velocity=0.3))
+    fanout.send_action("right_grip")
+    fanout.send_raw({"v": 0.1, "steer": 0.0, "grab": False, "t": "x"})
+    assert primary.commands == mirror.commands
+    assert primary.actions == mirror.actions == ["right_grip"]
+    assert primary.raw_payloads == mirror.raw_payloads
+
+
+def test_fanout_survives_broken_mirror_and_uses_primary_telemetry() -> None:
+    from hcirobot.model import RobotCommand
+    from hcirobot.robot import FanoutRobot
+
+    class ExplodingMirror(RecordingRobot):
+        def send(self, command):
+            raise ConnectionError("mirror down")
+
+    primary = RecordingRobot()
+    fanout = FanoutRobot(primary, (ExplodingMirror(),))
+    fanout.send(RobotCommand(velocity=0.2))  # must not raise
+    assert primary.commands[-1].velocity == 0.2
+    assert fanout.latest_distance() is primary.latest_distance()
+
+
+def test_mirror_to_dead_target_never_raises_and_backoff_gates_retries() -> None:
+    from hcirobot.model import RobotCommand
+    from hcirobot.robot import MirrorTcpRobot
+
+    # Grab a free port and close it: nothing listens there.
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    dead_port = probe.getsockname()[1]
+    probe.close()
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+    clock = FakeClock()
+    mirror = MirrorTcpRobot(
+        "127.0.0.1", dead_port, connect_timeout=0.2, reconnect_seconds=5.0, clock=clock
+    )
+    assert mirror.send(RobotCommand(velocity=0.1)) is not True  # no raise, no crash
+    assert not mirror._connected
+    mirror.send(RobotCommand())  # inside backoff window: skipped without a connect
+    clock.now += 6.0
+    mirror.send(RobotCommand())  # outside window: attempts again (still dead)
+    assert not mirror._connected
+    mirror.close()
+
+
+def test_mirror_roundtrip_against_live_server() -> None:
+    from hcirobot.model import RobotCommand
+    from hcirobot.robot import MirrorTcpRobot
+
+    received: list[bytes] = []
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def serve() -> None:
+        try:
+            conn, _ = server.accept()
+            conn.settimeout(2.0)
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+            received.append(buffer)
+            conn.close()
+        except OSError:
+            pass
+
+    import threading
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    mirror = MirrorTcpRobot("127.0.0.1", port, connect_timeout=1.0)
+    mirror.send(RobotCommand(velocity=0.4))
+    mirror.close()
+    thread.join(timeout=2.0)
+    server.close()
+    assert received and b'"v":0.4' in received[0]

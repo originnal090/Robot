@@ -23,7 +23,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_UNITY = Path(r"D:\Program Files\Unity\Hub\Editor\2022.3.62f3c1\Editor\Unity.exe")
-DEFAULT_PROJECT = REPO_ROOT / "artifacts" / "unity-validation-project"
+# Tracked demo project with the full Quick Start scene; the launcher method
+# itself lives in the simulator package so any project importing it works here.
+DEFAULT_PROJECT = REPO_ROOT / "unity" / "demo-project"
+LAUNCH_METHOD = "HciRobot.Simulator.Editor.DemoLauncher.LaunchDemo"
+REBUILD_METHOD = "HciRobot.Simulator.Editor.DemoLauncher.RebuildAndPlay"
 
 
 def port_open(host: str, port: int, timeout: float = 0.5) -> bool:
@@ -44,17 +48,20 @@ def wait_for_endpoints(host: str, tcp_port: int, http_port: int, timeout: float)
     return False
 
 
-def launch_unity(unity: Path, project: Path) -> subprocess.Popen[bytes]:
+def launch_unity(unity: Path, project: Path, rebuild_scene: bool) -> subprocess.Popen[bytes]:
     if not unity.is_file():
         raise SystemExit(f"Unity editor not found: {unity}")
     if not (project / "ProjectSettings" / "ProjectVersion.txt").is_file():
-        raise SystemExit(f"Not a Unity project: {project}")
+        raise SystemExit(
+            f"Not a Unity project: {project} "
+            "(the default is unity/demo-project; see unity/README.md to build your own)"
+        )
     command = [
         str(unity),
         "-projectPath",
         str(project),
         "-executeMethod",
-        "ValidationBootstrap.LaunchDemo",
+        REBUILD_METHOD if rebuild_scene else LAUNCH_METHOD,
     ]
     print(f"[demo] starting Unity: {' '.join(command)}")
     return subprocess.Popen(command)
@@ -79,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tcp-port", type=int, default=5075)
     parser.add_argument("--http-port", type=int, default=8080)
     parser.add_argument("--startup-timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--rebuild-scene",
+        action="store_true",
+        help="discard the saved Quick Start scene and rebuild it from the current package "
+        "(wipes manual obstacle edits in the demo project)",
+    )
     parser.add_argument("--unity-only", action="store_true", help="only start Unity Play Mode")
     parser.add_argument("--gui-only", action="store_true", help="only start the Python GUI")
     parser.add_argument(
@@ -109,7 +122,7 @@ def run(args: argparse.Namespace) -> int:
         if port_open(args.host, args.http_port):
             print("[demo] MJPEG is up but TCP is not; is another client holding 5075?")
             return 1
-        launch_unity(args.unity, args.project)
+        launch_unity(args.unity, args.project, rebuild_scene=args.rebuild_scene)
         if not wait_for_endpoints(args.host, args.tcp_port, args.http_port, args.startup_timeout):
             print("[demo] Unity endpoints did not become ready in time", file=sys.stderr)
             return 1

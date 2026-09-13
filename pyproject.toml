@@ -14,6 +14,9 @@ dependencies = [
 hcirobot = "hcirobot.cli:main"
 hcirobot-gui = "hcirobot.gui:main"
 
+[project.optional-dependencies]
+gamepad = ["pygame>=2.5"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

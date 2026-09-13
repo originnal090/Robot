@@ -95,9 +95,17 @@ class ObstacleConfig:
 
 
 def obstacle_config(values: dict) -> ObstacleConfig:
-    """Build an :class:`ObstacleConfig` from a config.toml section, defaults for missing keys."""
-    known = {field.name: values[field.name] for field in dataclasses.fields(ObstacleConfig) if field.name in values}
-    return ObstacleConfig(**known)
+    """Build a validated config, using defaults only for omitted known keys."""
+    if not isinstance(values, dict):
+        raise TypeError("configuration section obstacle must be a table")
+    known_names = {field.name for field in dataclasses.fields(ObstacleConfig)}
+    unknown = set(values) - known_names
+    if unknown:
+        raise ValueError(f"unknown obstacle configuration keys: {', '.join(sorted(unknown))}")
+    config = ObstacleConfig(**values)
+    if not isinstance(config.enabled, bool) or not isinstance(config.vision_enabled, bool):
+        raise TypeError("obstacle enabled flags must be booleans")
+    return config
 
 
 class VisionObstacleHeuristic:

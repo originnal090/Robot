@@ -311,3 +311,20 @@ def test_evaluator_allow_invalid_reports_skips(tmp_path: Path) -> None:
     )
     assert report["aggregate"]["trial_count"] == 1
     assert report["input"]["invalid_records"]
+
+
+def test_demo_tool_defaults_to_tracked_full_scene_project() -> None:
+    demo = _load_tool("run_unity_demo")
+    project = demo.build_parser().parse_args([]).project
+    # The default project must be the tracked full-scene demo project, with the
+    # Quick Start scene committed so the first launch needs no scene build.
+    assert project == ROOT / "unity" / "demo-project"
+    assert (project / "ProjectSettings" / "ProjectVersion.txt").is_file()
+    scene = project / "Assets" / "Scenes" / "HCIRobotQuickStart.unity"
+    assert scene.is_file()
+    # The launcher method ships in the simulator package, so any project that
+    # imports it can be driven by --project.
+    launcher = ROOT / "unity" / "com.hcirobot.simulator" / "Editor" / "DemoLauncher.cs"
+    assert launcher.is_file()
+    assert demo.LAUNCH_METHOD == "HciRobot.Simulator.Editor.DemoLauncher.LaunchDemo"
+    assert demo.REBUILD_METHOD == "HciRobot.Simulator.Editor.DemoLauncher.RebuildAndPlay"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import socket
 import sys
 import threading
 import time
@@ -21,6 +23,133 @@ def _dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _vector_line(v: float, steer: float) -> str:
     return json.dumps({"v": v, "steer": steer, "grab": False, "t": "t0"})
+
+
+def _free_port(sock_type: int) -> int:
+    with socket.socket(socket.AF_INET, sock_type) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def test_single_file_syntax_is_python_38_compatible() -> None:
+    source = Path(ts.__file__).read_text(encoding="utf-8")
+    ast.parse(source, filename=str(ts.__file__), feature_version=(3, 8))
+    assert "TypeAlias" not in source
+
+
+def test_legacy_dry_run_mode_is_supported() -> None:
+    assert ts.load_config(environ={"TONYPI_DRY_RUN": "1"}).mode == ts.MODE_DRY_RUN
+    assert ts.load_config(environ={"TONYPI_DRY_RUN": "0"}).mode == ts.MODE_HARDWARE
+
+
+def test_explicit_mode_rejects_conflicting_legacy_flag() -> None:
+    with pytest.raises(ts.ConfigError, match="conflicts"):
+        ts.load_config(environ={"TONYPI_MODE": "hardware", "TONYPI_DRY_RUN": "1"})
+
+
+def test_hardware_mode_missing_actuator_sdk_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = __import__
+
+    def missing_hiwonder(name, *args, **kwargs):
+        if name == "hiwonder":
+            raise ImportError("missing SDK")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", missing_hiwonder)
+    with pytest.raises(ts.StartupError, match="actuator SDK unavailable"):
+        ts.prepare_runtime(ts.ServiceConfig(mode=ts.MODE_HARDWARE))
+
+
+def test_hardware_mode_forbids_sonar_sim_by_default() -> None:
+    with pytest.raises(ts.ConfigError, match="forbidden in hardware mode"):
+        ts.load_config(
+            environ={"TONYPI_MODE": "hardware", "TONYPI_SONAR_SIM": "flat:500"}
+        )
+    config = ts.load_config(
+        environ={
+            "TONYPI_MODE": "hardware",
+            "TONYPI_SONAR_SIM": "flat:500",
+            "TONYPI_ALLOW_SIM_WITH_HARDWARE": "1",
+        }
+    )
+    assert config.allow_sonar_sim_in_hardware is True
+
+
+def test_required_sonar_in_dry_run_requires_simulation() -> None:
+    with pytest.raises(ts.ConfigError, match="required Sonar"):
+        ts.load_config(environ={"TONYPI_MODE": "dry-run", "TONYPI_REQUIRE_SONAR": "1"})
+    config = ts.load_config(
+        environ={
+            "TONYPI_MODE": "dry-run",
+            "TONYPI_REQUIRE_SONAR": "1",
+            "TONYPI_SONAR_SIM": "flat:500",
+        }
+    )
+    assert config.require_sonar is True
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "match"),
+    [
+        ("TONYPI_PORT", "0", "port"),
+        ("TONYPI_DEADZONE", "1", "deadzone"),
+        ("TONYPI_WATCHDOG", "-1", "watchdog"),
+        ("TONYPI_DIST_INTERVAL", "0", "dist_interval"),
+        ("TONYPI_HEAD_STEP_MS", "19", "head_step"),
+        ("TONYPI_HEAD_PITCH_ID", "3", "servo IDs"),
+        ("TONYPI_PITCH_CENTER", "999", "pitch min/center/max"),
+        ("TONYPI_ACTION_FORWARD", "bad/name", "action group"),
+    ],
+)
+def test_config_rejects_invalid_ranges(name: str, value: str, match: str) -> None:
+    with pytest.raises(ts.ConfigError, match=match):
+        ts.load_config(environ={"TONYPI_MODE": "dry-run", name: value})
+
+
+def test_required_sonar_preflight_requires_valid_reading() -> None:
+    config = ts.ServiceConfig(mode=ts.MODE_HARDWARE, require_sonar=True)
+
+    ts.check_sonar_reading(config, ts.RuntimeHardware(sonar=SimpleNamespace(getDistance=lambda: 432)))
+
+    with pytest.raises(ts.StartupError, match="disconnected sentinel"):
+        ts.check_sonar_reading(
+            config,
+            ts.RuntimeHardware(
+                sonar=SimpleNamespace(getDistance=lambda: ts.SONAR_DISCONNECTED_SENTINEL)
+            ),
+        )
+
+    with pytest.raises(ts.StartupError, match="read failed"):
+        ts.check_sonar_reading(
+            config,
+            ts.RuntimeHardware(sonar=SimpleNamespace(getDistance=lambda: (_ for _ in ()).throw(OSError("i2c")))),
+        )
+
+
+def test_check_mode_is_action_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    tcp_port = _free_port(socket.SOCK_STREAM)
+    udp_port = _free_port(socket.SOCK_DGRAM)
+    moved = []
+    monkeypatch.setattr(ts, "execute", lambda *args, **kwargs: moved.append((args, kwargs)))
+    code = ts.main(
+        [
+            "--mode",
+            "dry-run",
+            "--check",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(tcp_port),
+            "--udp-color-host",
+            "127.0.0.1",
+            "--udp-color-port",
+            str(udp_port),
+        ]
+    )
+    assert code == 0
+    assert moved == []
 
 
 def test_vector_to_mode_deadzone_and_turn_priority() -> None:
@@ -116,12 +245,30 @@ def test_shake_moves_yaw_servo_within_safe_range() -> None:
     assert len(set(pulses)) == 3
 
 
-def test_nod_and_shake_do_not_change_gait_mode() -> None:
+def test_legacy_session_can_allow_head_command_while_moving() -> None:
     session = ts.RobotSession(now=lambda: 0.0)
     session.handle_line(_vector_line(0.5, 0.0))
     session.now = lambda: 10.0  # 越过冷却窗口
     assert session.handle_line("CMD:nod")[0][0] == "head"
-    assert session.mode == "forward"  # 头部动作不影响连续步态
+    assert session.mode == "forward"  # 兼容直接构造 RobotSession 的旧行为
+
+
+def test_configured_session_rejects_non_stand_cmd_while_moving_by_default() -> None:
+    session = ts.RobotSession.from_config(ts.ServiceConfig(mode=ts.MODE_DRY_RUN))
+    session.handle_line(_vector_line(0.5, 0.0))
+
+    assert session.handle_line("CMD:nod") == []
+    assert session.handle_line("CMD:right_grip") == []
+    assert session.handle_line("CMD:stand")
+
+
+def test_configured_session_can_explicitly_allow_cmd_while_moving() -> None:
+    config = ts.ServiceConfig(mode=ts.MODE_DRY_RUN, allow_cmd_while_moving=True)
+    session = ts.RobotSession.from_config(config)
+    session.handle_line(_vector_line(0.5, 0.0))
+
+    assert session.handle_line("CMD:nod")[0][0] == "head"
+    assert session.mode == "forward"
 
 
 def test_stand_cmd_halts_gait_and_runs_stand_group() -> None:
@@ -342,13 +489,125 @@ def test_distance_loop_sends_nothing_without_connection(monkeypatch: pytest.Monk
     assert not worker.is_alive()  # 无连接时不发送也不崩溃
 
 
-# ================== 回归：头部舵机故障不拖垮服务（M5） ==================
-def test_nod_survives_servo_fault_and_session_continues(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(ts, "dry_run_enabled", lambda: False)  # 覆盖 autouse dry-run
+def test_required_sonar_consecutive_failures_latch_fault() -> None:
+    config = ts.ServiceConfig(
+        mode=ts.MODE_DRY_RUN,
+        sonar_sim="flat:500",
+        require_sonar=True,
+        dist_interval_s=0.02,
+        sonar_failure_limit=3,
+        sonar_warn_interval_s=0.0,
+    )
+    service = ts.TonyPiService(config=config)
+    done = threading.Event()
 
+    def broken_source() -> int:
+        raise OSError("i2c lost")
+
+    worker = threading.Thread(target=service._distance_loop, args=(broken_source, done))
+    worker.start()
+    worker.join(1.0)
+    assert not worker.is_alive()
+    assert service.fault is not None
+    assert "required Sonar failed 3 consecutive reads" in service.fault
+    assert service._stop.is_set()
+
+
+def test_optional_sonar_warning_is_rate_limited(capsys: pytest.CaptureFixture[str]) -> None:
+    config = ts.ServiceConfig(
+        mode=ts.MODE_DRY_RUN,
+        dist_interval_s=0.02,
+        sonar_warn_interval_s=60.0,
+    )
+    service = ts.TonyPiService(config=config)
+    done = threading.Event()
+    calls = {"n": 0}
+
+    def broken_source() -> int:
+        calls["n"] += 1
+        if calls["n"] >= 4:
+            done.set()
+        raise OSError("optional sonar fault")
+
+    service._distance_loop(broken_source, done)
+    assert capsys.readouterr().out.count("[WARN] Sonar:") == 1
+
+
+def test_stop_closes_connection_and_listener_sockets() -> None:
+    class _Closable:
+        def __init__(self) -> None:
+            self.shutdown_calls = 0
+            self.close_calls = 0
+
+        def shutdown(self, _how: int) -> None:
+            self.shutdown_calls += 1
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    service = ts.TonyPiService()
+    sockets = [_Closable(), _Closable(), _Closable()]
+    service._conn, service._server_socket, service._udp_socket = sockets
+    service.stop()
+    assert service._stop.is_set()
+    assert all(sock.shutdown_calls == 1 for sock in sockets)
+    assert all(sock.close_calls == 1 for sock in sockets)
+
+
+def test_stale_gait_waiting_for_actuator_is_discarded_after_stand() -> None:
+    calls: list[str] = []
+
+    class _RecordingAgc:
+        def runActionGroup(self, name: str) -> None:
+            calls.append(name)
+
+    config = ts.ServiceConfig(mode=ts.MODE_HARDWARE)
+    service = ts.TonyPiService(config=config, runtime=ts.RuntimeHardware(agc=_RecordingAgc()))
+    service.session.mode = "forward"
+    service._actuator_lock.acquire()
+    worker = threading.Thread(target=service._run_current_group)
+    worker.start()
+    time.sleep(0.03)
+    with service._lock:
+        service.session.mode = "stand"
+    calls.append("stand")  # action holding the actuator completed first
+    service._actuator_lock.release()
+    worker.join(1.0)
+
+    assert not worker.is_alive()
+    assert calls == ["stand"]
+
+
+def test_actuator_execution_is_serialized() -> None:
+    config = ts.ServiceConfig(mode=ts.MODE_HARDWARE)
+
+    class _RecordingAgc:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        def runActionGroup(self, _name: str) -> None:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            time.sleep(0.03)
+            self.active -= 1
+
+    agc = _RecordingAgc()
+    service = ts.TonyPiService(config=config, runtime=ts.RuntimeHardware(agc=agc))
+    workers = [
+        threading.Thread(target=service._execute_plan, args=([("group", "stand")],))
+        for _ in range(3)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(1.0)
+    assert agc.max_active == 1
+    assert service.fault is None
+
+
+# ================== 回归：硬件执行器故障锁存并安全退出 ==================
+def test_actuator_fault_latches_and_stops_service() -> None:
     class _BrokenBoard:
         def __init__(self) -> None:
             self.calls = 0
@@ -357,21 +616,15 @@ def test_nod_survives_servo_fault_and_session_continues(
             self.calls += 1
             raise OSError("i2c servo fault")
 
+    config = ts.ServiceConfig(mode=ts.MODE_HARDWARE)
     board = _BrokenBoard()
-    session = ts.RobotSession(now=lambda: 0.0)
-    plan = session.handle_line("CMD:nod")
-    assert len([item for item in plan if item[0] == "head"]) == 3
-    ts.execute(plan, board=board)  # 舵机 I²C 故障不应沿 execute 抛出
-    assert board.calls == 3
-    assert "[ERR] head servo" in capsys.readouterr().out
-    # 服务会话继续：故障后同一会话仍能正常处理后续控制与命令
-    plan = session.handle_line(_vector_line(0.5, 0.0))
-    assert ("mode", "forward") in plan
-    assert session.tick_group() == ts.ACTION_FORWARD
-    plan = session.handle_line("CMD:shake")
-    assert len([item for item in plan if item[0] == "head"]) == 3
-    ts.execute(plan, board=board)
-    assert board.calls == 6
+    service = ts.TonyPiService(config=config, runtime=ts.RuntimeHardware(board=board))
+    assert service._execute_plan(ts.nod_plan(config)) is False
+    assert board.calls == 1  # 首次硬件故障即停止，不继续发送余下序列
+    assert service.fault is not None
+    assert "actuator failure" in service.fault
+    assert service._stop.is_set()
+    assert service.session.mode == "stand"
 
 
 # ================== 回归：并发发送不产生交错帧（L3） ==================

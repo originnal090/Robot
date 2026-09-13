@@ -122,6 +122,26 @@ def test_stop_request_zeroes_telemetry_and_finished_confirms() -> None:
     assert model.radius_ratio == "--"
 
 
+def test_fault_termination_is_not_overwritten_by_finished() -> None:
+    for termination in ("video_timeout", "robot_connection_lost", "runtime_error"):
+        model = running_model(50)
+        model.fail(f"detail for {termination}")
+        model.apply_event(RuntimeEvent("finished", termination, session_id=50))
+        assert model.session_state is SessionState.FAILED
+        assert model.control_state == "LOST_SAFE"
+        assert model.fault == f"detail for {termination}"
+        assert not model.can_arm
+
+
+def test_finished_fault_without_prior_error_creates_fault() -> None:
+    model = running_model(51)
+    model.apply_event(RuntimeEvent("finished", "video_timeout", session_id=51))
+    assert model.session_state is SessionState.FAILED
+    assert model.control_state == "LOST_SAFE"
+    assert model.fault == "视频超时"
+    assert model.can_reset
+
+
 def test_estop_zeroes_command_and_keeps_lost_safe_after_finished() -> None:
     model = running_model(1)
     model.apply_event(frame_event(ControlState.APPROACHING, session_id=1, velocity=0.2))

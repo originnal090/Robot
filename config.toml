@@ -28,6 +28,9 @@ confirmation_frames = 3
 release_frames = 3
 
 [controller]
+# 到达（ARRIVED）后自动下发的一次性动作，使用课程 CMD 按钮名：
+# right_grip = 蹲下灭火（outfire 动作组）；留空 "" 关闭。
+arrival_action = "right_grip"
 align_enter_error = 0.08
 align_exit_error = 0.14
 arrival_radius_ratio = 0.18

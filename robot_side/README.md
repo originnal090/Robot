@@ -1,160 +1,140 @@
-# robot_side：TonyPi 机器人端扩展服务
+# robot_side：TonyPi 机器人端服务
 
-`tonypi_server.py` 是课程机器人端服务 `Example/TCP_connect.py` 的**超集**：协议完全兼容，
-并在其基础上新增了头部动作（点头/摇头）与 `stand` 停步命令。部署它即可替换课程原服务，
-让 PC 端 HCI 项目的 `send_action("nod" / "shake" / "stand")` 真正生效。
+`tonypi_server.py` 保留课程 `Example/TCP_connect.py` 的 JSONL/CMD 协议，并增加
+`CMD:nod`、`CMD:shake`、`CMD:stand` 与 `DIST:<毫米>` 遥测。文件可直接复制到 TonyPi，
+运行时兼容 Python 3.8，不依赖仓库其余 Python 包。
 
-## 与课程 TCP_connect.py 的差异
+## 协议保持不变
 
-完全保留的原有行为：
+- JSONL：`{"v":float,"steer":float,"grab":bool,"t":...}\n`；转向优先，负 `v` 后退。
+- CMD：保留 `right_grip`、`right_trigger`、`left_trigger`，新增 `nod`、`shake`、`stand`。
+- DIST：连接期间按间隔发送 `DIST:<毫米>\n`；课程 SDK 的未连接哨兵 `99999` 原样发送。
+- 仍只服务一个 TCP 客户端，不做认证、自动重连或控制权仲裁。
 
-- JSONL 控制帧 `{"v":float,"steer":float,"grab":bool,"t":...}\n`，死区 0.20 → 离散步态，
-  **转向优先**；`v<0` 为后退。
-- 0.60s 看门狗：超时未收到任何数据自动回站立（`stand` 动作组）。
-- 0.30s 连续步态节拍（`go_forward` / `back` / `turn_right` / `turn_left` 循环执行）。
-- 按钮命令原映射：`CMD:right_grip→outfire`、`CMD:right_trigger→stand_up_back`、
-  `CMD:left_trigger→stand_up_front`，同名命令 0.50s 冷却防抖。
-- 新连接/断开时的站立处理（接入强制站立、断开非强制回站立）。
-- 本地 UDP(127.0.0.1:6001) 颜色信号 `RED`/`GREEN` → 转发 `COLOR_SIGNAL:<TAG>` 给客户端。
+默认值仍为 TCP `0.0.0.0:5075`、颜色 UDP `127.0.0.1:6001`、死区 `0.20`、
+看门狗 `0.60s`、步态节拍 `0.30s`、命令冷却 `0.50s`、距离节拍 `0.30s`。
 
-新增/改变的部分：
+## 必须显式选择运行模式
 
-| 项目 | 课程原版 | 本服务 |
-| --- | --- | --- |
-| `CMD:nod` | 未映射，忽略 | 头部**俯仰**舵机（1 号）小幅摆动序列：+150µs → −150µs → 回 1500µs |
-| `CMD:shake` | 未映射，忽略 | 头部**偏航**舵机（2 号）小幅摆动序列：±200µs → 回 1500µs |
-| `CMD:stand` | 未映射，忽略 | 强制切回站立模式（停下连续步态）并执行一次 `stand` 动作组 |
-| 未知 CMD | 打印后忽略 | 打印后忽略，并累计到 `session.unknown_cmds` 计数 |
-| 无 SDK / 无硬件 | 打印 `[WARN]` 后动作组 dry-run | try-import hiwonder；导入失败或 `TONYPI_DRY_RUN=1` 时全部只打印，不动任何舵机 |
-| 端口/地址 | 硬编码 | 可用环境变量 `TONYPI_HOST` / `TONYPI_PORT` / `TONYPI_UDP_COLOR_PORT` 覆盖（默认不变：0.0.0.0:5075、6001） |
+推荐始终设置 `TONYPI_MODE`：
 
-注意：nod/shake 是**一次性头部动作**，与课程按钮一致，不改变连续步态模式
-（正在行走时收到 `nod`，机器人边走边点头）；要让机器人停下请发 `CMD:stand`。
+```bash
+# 不访问硬件，只打印动作
+TONYPI_MODE=dry-run python3 tonypi_server.py
 
-## 与仓库 main 分支 `TCP_connect.py` 的关系
-
-团队仓库 `main` 分支只含一个 `TCP_connect.py`，是课程版的整理增强版（滞回
-`ENTER_DZ=0.20`/`EXIT_DZ=0.30`、**运动中拒绝所有 CMD**、无 SDK 时内置 `[DRY]` dry-run）。
-经逐项核对，PC 端本项目与它**完全兼容**：JSONL 控制帧、0.60s 看门狗、0.30s 节拍、
-死区 0.20（本项目的 `search_steer=0.35`、`minimum_active_steer=0.25`、`near_speed=0.21`
-均在其上）、CMD 行也会刷新看门狗，直接运行即可配合 GUI/CLI 使用。
-
-| 能力 | main 分支版 | 本服务（robot_side） |
-| --- | --- | --- |
-| JSON 连续控制 + 看门狗 + 步态 | ✓ | ✓（无滞回，纯 0.20 死区） |
-| 三个原 CMD 映射 | ✓ | ✓ |
-| `CMD:nod` / `CMD:shake` / `CMD:stand` | ✗（no mapping，忽略） | ✓ 头部舵机序列 |
-| 行走中收到 CMD | 拒绝（更安全） | 允许（边走边点头） |
-| 无 SDK 时 dry-run | ✓ 自动 `[DRY]` | ✓ 需 `TONYPI_DRY_RUN=1` 或导入失败 |
-| 端口等可配置 | 硬编码 | 环境变量可覆盖 |
-
-结论：**只做闭环控制/点动/停止验证时，直接用 main 分支版即可**；要用 GUI 的
-点头/摇头按钮，需部署本服务（二者都用 5075，注意先停旧服务）。本服务基于课程
-zip 版而非 main 版；如希望合并两者的能力（滞回 + CMD 拒绝 + 头部动作），可把
-main 版的 `_handle_vector` 滞回与 `_handle_cmd` 拒绝逻辑移植进 `tonypi_server.py`，
-头部序列代码可直接复用。
-
-## 头部舵机 API（已对照课程 SDK 核实）
-
-来自 `HiwonderSDK/hiwonder/Board.py`：
-
-```python
-Board.setPWMServoPulse(servo_id, pulse=1500, use_time=1000)
-# servo_id 仅接受 1、2；pulse 钳位到 [500, 2500] µs；use_time 钳位到 [20, 30000] ms
+# 真机；SDK/API 缺失或动作组目录校验失败时拒绝启动
+TONYPI_MODE=hardware PYTHONPATH=/home/pi/TonyPi/HiwonderSDK python3 tonypi_server.py
 ```
 
-来自 `Functions/ColorTrack.py` 的实际用法：
+未设置模式时安全地默认 `hardware`，因此不会因缺 SDK 自动降级。旧变量
+`TONYPI_DRY_RUN=1` 仍兼容；若同时设置并与 `TONYPI_MODE` 冲突，启动失败。
 
-- 舵机 **1 = 头部俯仰**（`y_dis`，中立 1500，ColorTrack 限幅 [1000, 2000]）
-- 舵机 **2 = 头部偏航**（`x_dis`，ColorTrack 限幅 [500, 2500]）
+硬件模式启动时要求：
 
-本服务据此限制：俯仰摆动 ±150µs（1500±150，落在 [1000, 2000] 内），
-偏航摆动 ±200µs，每步 250ms，序列结束回到中立位 1500。
+- `hiwonder.Board.setPWMServoPulse` 存在；
+- `hiwonder.ActionGroupControl.runActionGroup` 或 `runAction` 存在；
+- 若设置 `TONYPI_ACTION_GROUP_CHECK_DIR`，目录及配置的五个动作组 `.d6a` 文件必须存在；该变量只校验文件，必须指向已安装 Hiwonder SDK 实际使用的目录，不会改变 SDK 的查找路径；旧名 `TONYPI_ACTION_GROUP_DIR` 仍兼容；
+- 若 `TONYPI_REQUIRE_SONAR=1`，Sonar 模块、构造和 `getDistance` 必须可用。
 
-## 超声波距离遥测（DIST 行，本服务新增）
+## Sonar 策略
 
-本服务会在**连接期间**每拍向当前客户端推送一行超声波距离（PC 端避障数据源）：
+正式部署建议：
 
+```bash
+TONYPI_MODE=hardware
+TONYPI_REQUIRE_SONAR=1
+TONYPI_ALLOW_SIM_WITH_HARDWARE=0
 ```
-DIST:<毫米>\n          例：DIST:317\n
-```
 
-- 单位为**毫米**（int）；发送间隔 `DIST_INTERVAL_S`（默认 0.3s，可用环境变量
-  `TONYPI_DIST_INTERVAL` 覆盖）。
-- 数值来自课程 SDK `HiwonderSDK/hiwonder/Sonar.py`（已对照 zip 原文核实）：
-  `Sonar()` 无构造参数（I²C bus 1、addr 0x77），`getDistance()` 返回毫米，
-  读数 >5000 钳位到 5000，I²C 异常（**传感器未连接**）时返回哨兵值 **99999**。
-  99999 会**原样发送**，由 PC 端策略过滤（视为无效读数）。
-- Sonar 读取抛异常时该拍跳过并记日志，不影响服务其它部分。
-- 写入与课程转发一致走连接锁：只发给当前唯一客户端，无连接时不发送。
+- `TONYPI_REQUIRE_SONAR=1`：连续失败达到 `TONYPI_SONAR_FAILURE_LIMIT`（默认 3）后锁存
+  故障并安全退出；`99999`、异常、`None` 和越界值都计为失败。
+- Sonar 可选时：服务继续运行，但用 `TONYPI_SONAR_WARN_INTERVAL`（默认 5s）限频告警。
+- 硬件模式默认禁止 `TONYPI_SONAR_SIM`，避免真动作配假距离。只有明确设置
+  `TONYPI_ALLOW_SIM_WITH_HARDWARE=1` 才允许混用，不建议生产使用。
+- dry-run 若要求 Sonar，必须同时配置模拟源。
 
-PC 端对应契约（`hcirobot.robot.TcpRobotClient`）：
-
-- `latest_distance()` → `(毫米, time.monotonic() 收到时刻)` 或 `None`（尚未收到）；
-  消费方（navigation/GUI）应按时间戳判断新鲜度。
-- `on_message(kind, payload)` 回调收到 `("distance", "<毫米>")` 与
-  `("color", "<TAG>")`；回调在读取线程执行，**不得阻塞**。
-
-### 模拟源：TONYPI_SONAR_SIM
-
-设置 `TONYPI_SONAR_SIM` 后**不接触真实传感器**，按确定性公式生成距离
-（相对连接建立时刻），用于 dry-run、PC 端联调和自动化测试：
+模拟格式：
 
 | 格式 | 含义 | 示例 |
 | --- | --- | --- |
-| `flat:<v>` | 恒值 | `TONYPI_SONAR_SIM=flat:500` |
-| `sweep:<min>:<max>:<period_s>` | min..max 三角波扫掠，从 min 出发半周期到 max | `TONYPI_SONAR_SIM=sweep:100:800:2.0` |
-| `steps:<v1>@<t1>,<v2>@<t2>,...` | 分段恒值：`t<t1` 为 v1，`t≥t1` 为 v2，…，末段无限延续 | `TONYPI_SONAR_SIM=steps:600@1.0,200@3.5` |
+| `flat:<v>` | 恒值 | `flat:500` |
+| `sweep:<min>:<max>:<period_s>` | 三角波 | `sweep:100:800:2.0` |
+| `steps:<v1>@<t1>,<v2>@<t2>,...` | 分段恒值，时间严格递增 | `steps:600@1.0,200@3.5` |
 
-源选择优先级：`TONYPI_SONAR_SIM` 模拟源 > 真实 Sonar > 不发送。
-即：dry-run（`TONYPI_DRY_RUN=1`）或导入 hiwonder.Sonar 失败时没有真实 Sonar，
-只有设置 `TONYPI_SONAR_SIM` 才会有 DIST 输出；正式硬件模式不设模拟源即读真实传感器。
+## 无动作预检
 
-快速验证（PC 端另开终端）：
+`--check` 只做配置、依赖/API 和 TCP/UDP 绑定检查，不启动线程、不监听、不执行动作：
 
 ```bash
-ssh pi@<ip> 'TONYPI_DRY_RUN=1 TONYPI_SONAR_SIM=sweep:100:800:2.0 \
-  PYTHONPATH=/home/pi/TonyPi/HiwonderSDK python3 /home/pi/TonyPi/tonypi_server.py'
-# 客户端应每 0.3s 收到一条 DIST:100..800 之间的锯齿值
+TONYPI_MODE=dry-run TONYPI_SONAR_SIM=flat:500 \
+  python3 tonypi_server.py --check
+
+TONYPI_MODE=hardware TONYPI_REQUIRE_SONAR=1 \
+  PYTHONPATH=/home/pi/TonyPi/HiwonderSDK \
+  python3 tonypi_server.py --check
 ```
 
-**注意**：课程原版与仓库 main 分支的 `TCP_connect.py` 都**没有**距离遥测能力，
-因此障碍物反应式避障必须部署本服务（`tonypi_server.py`）。
+systemd 可将它放在 `ExecStartPre`；仓库模板见 `deploy/systemd/tonypi-server.service`。
 
-## 部署到 TonyPi
+## 主要配置
+
+配置集中在 `ServiceConfig`，环境变量与 CLI 覆盖会在启动前做严格范围/组合校验。
+
+| 类别 | 环境变量 |
+| --- | --- |
+| 模式 | `TONYPI_MODE`、兼容项 `TONYPI_DRY_RUN` |
+| 网络 | `TONYPI_HOST`、`TONYPI_PORT`、`TONYPI_UDP_COLOR_HOST`、`TONYPI_UDP_COLOR_PORT` |
+| 时序/命令 | `TONYPI_DIST_INTERVAL`、`TONYPI_WATCHDOG`、`TONYPI_STEP_INTERVAL`、`TONYPI_CMD_COOLDOWN`、`TONYPI_ALLOW_CMD_WHILE_MOVING`（默认 0） |
+| 动作组 | `TONYPI_ACTION_GROUP_CHECK_DIR`（只校验 SDK 实际目录）、`TONYPI_ACTION_FORWARD/BACK/TURN_RIGHT/TURN_LEFT/STAND` |
+| 舵机 | `TONYPI_HEAD_PITCH_ID`、`TONYPI_HEAD_YAW_ID`、各轴 min/center/max、摆幅和 `TONYPI_HEAD_STEP_MS` |
+| Sonar | `TONYPI_REQUIRE_SONAR`、`TONYPI_SONAR_SIM`、`TONYPI_ALLOW_SIM_WITH_HARDWARE`、失败次数/告警间隔 |
+
+Board API 的硬范围为舵机 ID 1/2、脉宽 `[500,2500]µs`、用时 `[20,30000]ms`；
+俯仰默认 `[1000,2000]`、中立 1500、摆幅 150，偏航默认 `[500,2500]`、中立 1500、
+摆幅 200。非法范围或互相矛盾的组合会在监听端口前失败。
+
+## 生命周期和故障行为
+
+- `SIGINT`、`SIGTERM`（Windows 测试还支持 `SIGBREAK`）触发停止。
+- `stop()` 会关闭活动连接、TCP 监听和 UDP socket，以解除阻塞调用。
+- 所有动作组和头部舵机操作使用同一个 actuator lock 串行执行。
+- 硬件动作首次抛错即锁存故障、关闭服务，不再继续发送余下动作；退出路径最终尝试一次
+  `stand`。若硬件总线已经故障，最终 stand 可能失败，因此软件停机不能替代物理断电。
+- 正常断开仍回站立；看门狗超时仍回站立。
+
+## dry-run 协议冒烟
+
+仓库提供完全不碰硬件的可执行检查。它找空闲端口，启动显式 dry-run 子进程和模拟
+DIST，验证连接、JSONL、CMD、看门狗及信号退出：
 
 ```bash
-# 1. 上传（PC 端执行；<ip> 换成机器人地址）
-scp robot_side/tonypi_server.py pi@<ip>:/home/pi/TonyPi/
-
-# 2. 停掉课程原服务（端口冲突：两者都用 5075）
-ssh pi@<ip> 'pkill -f TCP_connect.py'
-
-# 3. 无荷测试（强烈建议先跑一次，只打印不动舵机）
-ssh pi@<ip> 'TONYPI_DRY_RUN=1 PYTHONPATH=/home/pi/TonyPi/HiwonderSDK \
-  nohup python3 /home/pi/TonyPi/tonypi_server.py > /tmp/tonypi_server.log 2>&1 &'
-
-# 4. 确认日志无异常后，去掉 TONYPI_DRY_RUN 正式运行
-ssh pi@<ip> 'PYTHONPATH=/home/pi/TonyPi/HiwonderSDK \
-  nohup python3 /home/pi/TonyPi/tonypi_server.py > /tmp/tonypi_server.log 2>&1 &'
+uv run python tools/smoke_tonypi_protocol.py
 ```
 
-说明：
+也可直接运行目标测试：
 
-- `PYTHONPATH` 指向包含 `hiwonder` 包的目录（课程镜像通常为
-  `/home/pi/TonyPi/HiwonderSDK`；以机器人上 `hiwonder/` 实际父目录为准）。
-  不设置且导入失败时服务仍会以 dry-run 启动，日志出现 `[WARN] hiwonder SDK not available`。
-- PC 端无需改动：`TcpRobotClient.send_action("nod"/"shake"/"stand")` 发送
-  `CMD:<name>\n`，与本服务的新增映射对接。
-- 回滚：`pkill -f tonypi_server.py` 后重新启动课程的 `TCP_connect.py` 即可。
+```bash
+uv run pytest tests/test_robot_side.py -q
+uv run ruff check --isolated --line-length 100 --target-version py38 --select E,F,W,I robot_side/tonypi_server.py
+uv run python -m py_compile robot_side/tonypi_server.py
+```
 
-## 安全注意事项
+## 部署建议
 
-- **先 dry-run**：第一次部署务必用 `TONYPI_DRY_RUN=1` 验证协议与日志，再上真舵机。
-- 机器人会**真实迈步行走**：放在地面或防跌落平台上运行，清空周边障碍，远离桌沿与楼梯。
-- 紧急停止：直接断开机器人电源是最可靠的急停；断开 TCP 后看门狗会在 0.6s 内
-  自动回站立，但这不能替代物理急停。
-- 头部舵机动作幅度虽小（±9° 左右），但头板上装有摄像头，手指勿伸入头部转动范围。
-- nod/shake 期间步态不会自动停止，测试头部动作时建议机器人处于站立状态（先发 `stand`）。
-- 不要在充电或手持机器人时运行动作组；舵机堵转发热很快，异常响动立即断电。
-- 服务只接受单连接（与课程一致）；换客户端前先断开旧连接。
+```bash
+scp robot_side/tonypi_server.py pi@<ip>:/opt/hcirobot/robot_side/
+ssh pi@<ip> 'sudo install -m 0644 deploy/env/tonypi.env.example /etc/hcirobot/tonypi.env'
+```
+
+按真机路径修改 `PYTHONPATH`、`TONYPI_ACTION_GROUP_CHECK_DIR` 和监听地址，先运行 `--check`，
+再先用 dry-run 冒烟，最后才切到 hardware。启动前停掉课程 `TCP_connect.py`、厂商
+`Follow.py`/`KickBall.py` 和其他 5075 控制者。
+
+## 真机安全
+
+- 首次动作必须架空机器人，并确认动作组名称、左右方向、站立和头部舵机方向。
+- 确认 Sonar 实测距离、99999/拔线故障和 required-sonar 安全退出。
+- 测试 SIGTERM、TCP 断开、客户端崩溃和动作 SDK/I²C 异常后的最终姿态。
+- 清空桌沿、楼梯和人员活动区，安排可立即物理断电的人员。
+- `stand`、看门狗和进程退出都不是机械急停；动作组调用本身可能阻塞。
+- 5075 无认证/加密，只能在隔离可信局域网使用，不要映射公网。

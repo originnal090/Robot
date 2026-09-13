@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import queue
 import sys
 import threading
@@ -16,8 +17,10 @@ from .cli import build_source
 from .config import controller_config, detector_config, load_config, unity_status_config
 from .controller import ControllerConfig, VisualApproachController
 from .detector import DetectorConfig, RedBallDetector
+from .frame_recorder import FrameRecorder
+from .gamepad import TOGGLE_HINT, GamepadMonitor, GamepadTeleop, map_to_command
 from .gui_model import GuiModel, SessionState
-from .robot import RecordingRobot, TcpRobotClient
+from .robot import FanoutRobot, MirrorTcpRobot, RecordingRobot, TcpRobotClient, parse_endpoint
 from .unity_udp import UnityStatusPublisher, fanout_event_sinks
 
 BG = "#101417"
@@ -89,14 +92,32 @@ class RobotControlApp:
         self.manual_buttons: list[ttk.Button] = []
         self._closing = False
         self._photo: ImageTk.PhotoImage | None = None
+        # Raw-frame sample capture; logs hop to the mainloop via the queue.
+        self.frame_recorder = FrameRecorder(on_log=self._publish_capture_log)
+        self._resize_after_id: str | None = None
+        self._pending_view_size: tuple[int, int] | None = None
+        self._rendered_view_size: tuple[int, int] | None = None
+        self._log_version = -1
         self._build_styles()
         self._build_window()
+        # The monitor owns the pygame backend on its own thread; logs hop to
+        # the mainloop through the events queue (Tk is not thread-safe).  It
+        # must exist before _refresh_view, which reads its status.
+        self.gamepad_monitor = GamepadMonitor(on_log=self._publish_gamepad_log)
+        self.gamepad_teleop = GamepadTeleop(self.gamepad_monitor)
         self._load_defaults()
         self._refresh_view()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(30, self._drain_events)
+        self.gamepad_monitor.start()
+        # One delayed log so the gamepad state is discoverable without hunting
+        # for the sidebar block; connect/disconnect transitions log on their own.
+        self._gamepad_status_reported = False
+        self.root.after(1200, self._report_gamepad_status_once)
         if self.demo:
-            self.model.append_log("演示模式：将自动开始预览" + ("并自动武装（仅限本机 TCP 后端）" if demo else ""))
+            self.model.append_log(
+                "演示模式：将自动开始预览" + ("并自动武装（仅限本机 TCP 后端）" if demo else "")
+            )
             self.root.after(200, self._demo_start)
 
     def _build_styles(self) -> None:
@@ -109,14 +130,24 @@ class RobotControlApp:
         style.configure("Muted.TLabel", background=BG, foreground=MUTED)
         style.configure("Panel.TLabel", background=PANEL, foreground=TEXT)
         style.configure("PanelMuted.TLabel", background=PANEL, foreground=MUTED)
-        style.configure("PanelTitle.TLabel", background=PANEL, foreground=ACCENT, font=("Segoe UI", 9, "bold"))
-        style.configure("Value.TLabel", background=PANEL, foreground=ACCENT, font=("Segoe UI", 10, "bold"))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 16, "bold"))
+        style.configure(
+            "PanelTitle.TLabel", background=PANEL, foreground=ACCENT, font=("Segoe UI", 9, "bold")
+        )
+        style.configure(
+            "Value.TLabel", background=PANEL, foreground=ACCENT, font=("Segoe UI", 10, "bold")
+        )
+        style.configure(
+            "Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 16, "bold")
+        )
         style.configure("TButton", padding=(12, 8), background=PANEL_ALT, foreground=TEXT)
         style.map("TButton", background=[("active", "#2b353b"), ("disabled", "#151a1d")])
-        style.configure("Accent.TButton", background=ACCENT, foreground="#141414", font=("Segoe UI", 10, "bold"))
+        style.configure(
+            "Accent.TButton", background=ACCENT, foreground="#141414", font=("Segoe UI", 10, "bold")
+        )
         style.map("Accent.TButton", background=[("active", "#ffd965"), ("disabled", "#5e583e")])
-        style.configure("Danger.TButton", background=DANGER, foreground="white", font=("Segoe UI", 10, "bold"))
+        style.configure(
+            "Danger.TButton", background=DANGER, foreground="white", font=("Segoe UI", 10, "bold")
+        )
         style.map("Danger.TButton", background=[("active", "#ff5c5c")])
         style.configure("TEntry", padding=7, fieldbackground=PANEL_ALT, foreground=TEXT)
         style.configure("TCombobox", padding=6, fieldbackground=PANEL_ALT, foreground=TEXT)
@@ -127,8 +158,12 @@ class RobotControlApp:
 
     def _build_window(self) -> None:
         self.root.title("TonyPi 视觉自治控制台")
-        self.root.geometry("1280x840")
-        self.root.minsize(1024, 720)
+        # DPI-aware rendering means physical pixels; scale the window size so a
+        # high-DPI display gets the same layout proportions (point-based fonts
+        # scale themselves through tk scaling).
+        scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)
+        self.root.geometry(f"{round(1280 * scale)}x{round(840 * scale)}")
+        self.root.minsize(round(1024 * scale), round(720 * scale))
         self.root.configure(bg=BG)
 
         # The bottom control strip is packed FIRST (side="bottom") so the
@@ -137,20 +172,32 @@ class RobotControlApp:
         controls.pack(side="bottom", fill="x")
         self.start_button = ttk.Button(controls, text="开始预览", command=self._start_session)
         self.start_button.pack(side="left")
-        self.arm_button = ttk.Button(controls, text="武装自治", style="Accent.TButton", command=self._arm)
+        self.arm_button = ttk.Button(
+            controls, text="武装自治", style="Accent.TButton", command=self._arm
+        )
         self.arm_button.pack(side="left", padx=8)
         self.stop_button = ttk.Button(controls, text="停止", command=self._stop)
         self.stop_button.pack(side="left")
         self.reset_button = ttk.Button(controls, text="复位", command=self._reset)
         self.reset_button.pack(side="left", padx=8)
-        self.estop_button = ttk.Button(controls, text="紧急停止", style="Danger.TButton", command=self._estop)
+        self.capture_button = ttk.Button(
+            controls, text="采集样本", style="Accent.TButton", command=self._toggle_capture
+        )
+        self.capture_button.pack(side="left", padx=8)
+        self.estop_button = ttk.Button(
+            controls, text="紧急停止", style="Danger.TButton", command=self._estop
+        )
         self.estop_button.pack(side="right")
-        ttk.Label(controls, text="软件停止不能替代物理断电", style="Muted.TLabel").pack(side="right", padx=14)
+        ttk.Label(controls, text="软件停止不能替代物理断电", style="Muted.TLabel").pack(
+            side="right", padx=14
+        )
 
         header = ttk.Frame(self.root, padding=(18, 14))
         header.pack(side="top", fill="x")
         ttk.Label(header, text="TonyPi 视觉自治控制台", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="纯视觉 · 搜寻 / 对准 / 接近", style="Muted.TLabel").pack(side="left", padx=16)
+        ttk.Label(header, text="纯视觉 · 搜寻 / 对准 / 接近", style="Muted.TLabel").pack(
+            side="left", padx=16
+        )
         self.session_badge = tk.Label(
             header,
             text="已停止",
@@ -165,7 +212,13 @@ class RobotControlApp:
         status = ttk.Frame(self.root, style="Panel.TFrame", padding=(18, 10))
         status.pack(side="top", fill="x", padx=18)
         self.status_values: dict[str, ttk.Label] = {}
-        for key, label in (("video", "视频"), ("robot", "机器人"), ("control", "控制状态"), ("frames", "帧数")):
+        for key, label in (
+            ("video", "视频"),
+            ("robot", "机器人"),
+            ("control", "控制状态"),
+            ("gamepad", "手柄"),
+            ("frames", "帧数"),
+        ):
             block = ttk.Frame(status, style="Panel.TFrame")
             block.pack(side="left", padx=(0, 28))
             ttk.Label(block, text=label, style="Panel.TLabel").pack(anchor="w")
@@ -192,7 +245,10 @@ class RobotControlApp:
             compound="center",
         )
         self.video_label.grid(row=0, column=0, sticky="nsew")
-        self.video_label.bind("<Configure>", lambda _event: self._render_latest())
+        # Resizes are debounced: rendering on every <Configure> made dragging the
+        # window laggy and, because setting an image changes the label's requested
+        # size, caused a visible re-layout/re-render settling loop.
+        self.video_label.bind("<Configure>", self._on_video_configure)
 
         telemetry = ttk.Frame(viewer, style="Panel.TFrame", padding=(12, 9))
         telemetry.grid(row=1, column=0, sticky="ew")
@@ -211,8 +267,40 @@ class RobotControlApp:
             value.pack(anchor="w")
             self.telemetry_values[key] = value
 
-        sidebar = ttk.Frame(body, style="Panel.TFrame", padding=14)
-        sidebar.grid(row=0, column=1, sticky="nsew")
+        # Scrollable sidebar: the tuning/obstacle/manual panels overflow small
+        # windows, so they live in a canvas-driven scroll container.
+        sidebar_shell = ttk.Frame(body, style="Panel.TFrame")
+        sidebar_shell.grid(row=0, column=1, sticky="nsew")
+        sidebar_shell.rowconfigure(0, weight=1)
+        sidebar_shell.columnconfigure(0, weight=1)
+        self.sidebar_canvas = tk.Canvas(sidebar_shell, bg=PANEL, highlightthickness=0, bd=0)
+        self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
+        sidebar_scrollbar = ttk.Scrollbar(
+            sidebar_shell, orient="vertical", command=self.sidebar_canvas.yview
+        )
+        sidebar_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.sidebar_canvas.configure(yscrollcommand=sidebar_scrollbar.set)
+        self.sidebar_canvas.bind(
+            "<Configure>",
+            lambda event: self.sidebar_canvas.itemconfigure(
+                self._sidebar_window, width=event.width
+            ),
+        )
+        # Wheel scrolling only while the pointer is over the sidebar, so the
+        # video view never loses its events.
+        self.sidebar_canvas.bind("<Enter>", self._bind_sidebar_wheel)
+        self.sidebar_canvas.bind("<Leave>", self._unbind_sidebar_wheel)
+
+        sidebar = ttk.Frame(self.sidebar_canvas, style="Panel.TFrame", padding=14)
+        self._sidebar_window = self.sidebar_canvas.create_window(
+            (0, 0), window=sidebar, anchor="nw"
+        )
+        sidebar.bind(
+            "<Configure>",
+            lambda _event: self.sidebar_canvas.configure(
+                scrollregion=self.sidebar_canvas.bbox("all")
+            ),
+        )
         sidebar.columnconfigure(1, weight=1)
 
         self.source_var = tk.StringVar(value="synthetic")
@@ -222,27 +310,45 @@ class RobotControlApp:
         self.config_var = tk.StringVar(value=str(self.config_path))
 
         self._field(sidebar, 0, "视频源", self.source_var, browse=True)
-        ttk.Label(sidebar, text="可填 synthetic、摄像头编号、视频路径或 MJPEG URL", style="PanelMuted.TLabel", wraplength=300).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(0, 8)
+        ttk.Label(
+            sidebar,
+            text="可填 synthetic、摄像头编号、视频路径或 MJPEG URL",
+            style="PanelMuted.TLabel",
+            wraplength=300,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(sidebar, text="控制后端", style="Panel.TLabel").grid(
+            row=2, column=0, sticky="w", pady=4
         )
-        ttk.Label(sidebar, text="控制后端", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=4)
-        backend = ttk.Combobox(sidebar, textvariable=self.backend_var, values=("recording", "tcp"), state="readonly")
+        backend = ttk.Combobox(
+            sidebar, textvariable=self.backend_var, values=("recording", "tcp"), state="readonly"
+        )
         backend.grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
         self._field(sidebar, 3, "机器人地址", self.host_var)
         self._field(sidebar, 4, "端口", self.port_var)
-        self._field(sidebar, 5, "配置文件", self.config_var, browse=True, config_file=True)
+        # Optional command mirror, e.g. 127.0.0.1:5075 for the Unity twin.
+        self.mirror_var = tk.StringVar(value="")
+        self._field(sidebar, 5, "镜像地址", self.mirror_var)
+        ttk.Label(
+            sidebar,
+            text="镜像地址可留空；填 host:port 后每条命令同时发一份（如本机 Unity 孪生）",
+            style="PanelMuted.TLabel",
+            wraplength=300,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._field(sidebar, 7, "配置文件", self.config_var, browse=True, config_file=True)
 
-        ttk.Separator(sidebar).grid(row=6, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_tuning_panel(sidebar, row=7)
-        ttk.Separator(sidebar).grid(row=9, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_obstacle_panel(sidebar, row=10)
-        ttk.Separator(sidebar).grid(row=12, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_manual_panel(sidebar, row=13)
-        ttk.Separator(sidebar).grid(row=15, column=0, columnspan=3, sticky="ew", pady=10)
-        ttk.Label(sidebar, text="运行日志", style="PanelTitle.TLabel").grid(row=16, column=0, columnspan=3, sticky="w")
+        ttk.Separator(sidebar).grid(row=8, column=0, columnspan=3, sticky="ew", pady=10)
+        self._build_tuning_panel(sidebar, row=9)
+        ttk.Separator(sidebar).grid(row=11, column=0, columnspan=3, sticky="ew", pady=10)
+        self._build_obstacle_panel(sidebar, row=12)
+        ttk.Separator(sidebar).grid(row=14, column=0, columnspan=3, sticky="ew", pady=10)
+        self._build_manual_panel(sidebar, row=15)
+        ttk.Separator(sidebar).grid(row=17, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Label(sidebar, text="运行日志", style="PanelTitle.TLabel").grid(
+            row=18, column=0, columnspan=3, sticky="w"
+        )
         log_frame = ttk.Frame(sidebar, style="Panel.TFrame")
-        log_frame.grid(row=17, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        sidebar.rowconfigure(17, weight=1)
+        log_frame.grid(row=19, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        sidebar.rowconfigure(19, weight=1)
         self.log_text = tk.Text(
             log_frame,
             height=8,
@@ -267,7 +373,9 @@ class RobotControlApp:
         panel.grid(row=row + 1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         for column in (1, 2, 3):
             panel.columnconfigure(column, weight=1, uniform="tuning")
-        self.tuning_vars = {key: tk.StringVar(value=value) for key, value in _default_tuning().items()}
+        self.tuning_vars = {
+            key: tk.StringVar(value=value) for key, value in _default_tuning().items()
+        }
 
         def entry(grid_row: int, column: int, key: str) -> None:
             ttk.Entry(panel, textvariable=self.tuning_vars[key], width=6).grid(
@@ -322,10 +430,14 @@ class RobotControlApp:
         )
         self.apply_params_button.pack(side="left")
         self.apply_params_button.configure(state="disabled")
-        ttk.Button(buttons, text="恢复默认", width=10, command=self._restore_params).pack(side="left", padx=8)
+        ttk.Button(buttons, text="恢复默认", width=10, command=self._restore_params).pack(
+            side="left", padx=8
+        )
 
     def _build_obstacle_panel(self, sidebar: ttk.Frame, row: int) -> None:
-        self.obstacle_panel = ttk.Labelframe(sidebar, text=" 避障 ", style="TLabelframe", padding=(10, 6))
+        self.obstacle_panel = ttk.Labelframe(
+            sidebar, text=" 避障 ", style="TLabelframe", padding=(10, 6)
+        )
         self.obstacle_panel.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         # Default comes from config [obstacle] enabled (set in _load_defaults);
         # the switch is only read when a session starts, so it freezes mid-run.
@@ -365,15 +477,31 @@ class RobotControlApp:
         action_row.pack(anchor="w")
         nod = ttk.Button(action_row, text="点头", width=8, command=lambda: self._send_action("nod"))
         nod.pack(side="left")
-        shake = ttk.Button(action_row, text="摇头", width=8, command=lambda: self._send_action("shake"))
+        shake = ttk.Button(
+            action_row, text="摇头", width=8, command=lambda: self._send_action("shake")
+        )
         shake.pack(side="left", padx=8)
-        self.manual_buttons = [nod, shake]
+        # Course button namespace: works on both TCP_connect.py and tonypi_server.
+        up_front = ttk.Button(
+            action_row, text="前爬起", width=8, command=lambda: self._send_action("left_trigger")
+        )
+        up_front.pack(side="left")
+        up_back = ttk.Button(
+            action_row, text="后爬起", width=8, command=lambda: self._send_action("right_trigger")
+        )
+        up_back.pack(side="left", padx=8)
+        self.manual_buttons = [nod, shake, up_front, up_back]
         ttk.Label(
             panel,
-            text="点头/摇头需 robot_side 扩展服务，课程原版会忽略",
+            text="爬起/灭火发课程 CMD（left_trigger/right_trigger/right_grip）；点头/摇头需 robot_side 扩展服务",
             style="PanelMuted.TLabel",
             wraplength=300,
-        ).pack(anchor="w", pady=(3, 5))
+        ).pack(anchor="w", pady=(3, 2))
+        extinguish = ttk.Button(
+            panel, text="蹲下灭火", width=10, command=lambda: self._send_action("right_grip")
+        )
+        extinguish.pack(anchor="w", pady=(0, 5))
+        self.manual_buttons.append(extinguish)
 
         jog_row = ttk.Frame(panel, style="Panel.TFrame")
         jog_row.pack(anchor="w")
@@ -400,6 +528,26 @@ class RobotControlApp:
         )
         stop_jog.pack(anchor="w", pady=(6, 0))
         self.manual_buttons.append(stop_jog)
+
+        ttk.Separator(panel).pack(fill="x", pady=(8, 4))
+        gamepad_row = ttk.Frame(panel, style="Panel.TFrame")
+        gamepad_row.pack(anchor="w")
+        ttk.Label(gamepad_row, text="手柄", style="Panel.TLabel").pack(side="left")
+        self.gamepad_status_value = ttk.Label(gamepad_row, text="检测中", style="Value.TLabel")
+        self.gamepad_status_value.pack(side="left", padx=(10, 16))
+        ttk.Label(gamepad_row, text="模式", style="Panel.TLabel").pack(side="left")
+        self.gamepad_mode_value = ttk.Label(gamepad_row, text="--", style="Value.TLabel")
+        self.gamepad_mode_value.pack(side="left", padx=(10, 0))
+        self.gamepad_axes_value = ttk.Label(
+            panel, text="摇杆 v=+0.00 steer=+0.00", style="PanelMuted.TLabel"
+        )
+        self.gamepad_axes_value.pack(anchor="w", pady=(3, 0))
+        ttk.Label(
+            panel,
+            text=f"{TOGGLE_HINT}（XInput 布局；Windows 免依赖，其他系统需 pygame）",
+            style="PanelMuted.TLabel",
+            wraplength=300,
+        ).pack(anchor="w", pady=(3, 0))
         for button in self.manual_buttons:
             button.configure(state="disabled")
 
@@ -413,7 +561,9 @@ class RobotControlApp:
         browse: bool = False,
         config_file: bool = False,
     ) -> None:
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=4)
+        ttk.Label(parent, text=label, style="Panel.TLabel").grid(
+            row=row, column=0, sticky="w", pady=4
+        )
         entry = ttk.Entry(parent, textvariable=variable)
         entry.grid(row=row, column=1, sticky="ew", pady=4, padx=(8, 5))
         if browse:
@@ -433,7 +583,9 @@ class RobotControlApp:
         obstacle = config.get("obstacle")
         # Missing section/key defaults to enabled, matching the CLI and the
         # worker-side policy builder; config.toml stays the off switch.
-        self.obstacle_var.set(bool(obstacle.get("enabled", True)) if isinstance(obstacle, dict) else True)
+        self.obstacle_var.set(
+            bool(obstacle.get("enabled", True)) if isinstance(obstacle, dict) else True
+        )
         try:
             self._set_tuning_from_config(config)
         except Exception as exc:  # noqa: BLE001 - fall back to the dataclass defaults.
@@ -470,7 +622,9 @@ class RobotControlApp:
             self.source_var.set(selected)
 
     def _browse_config(self) -> None:
-        selected = filedialog.askopenfilename(title="选择配置文件", filetypes=(("TOML", "*.toml"), ("全部", "*.*")))
+        selected = filedialog.askopenfilename(
+            title="选择配置文件", filetypes=(("TOML", "*.toml"), ("全部", "*.*"))
+        )
         if selected:
             self.config_var.set(selected)
 
@@ -500,12 +654,23 @@ class RobotControlApp:
     def _start_session(self) -> None:
         if not self.model.can_start:
             return
+        mirror_text = self.mirror_var.get().strip()
+        if mirror_text:
+            try:
+                mirror_endpoint = parse_endpoint(mirror_text)
+            except ValueError as exc:
+                self.model.append_log(f"镜像地址无效：{exc}")
+                self._refresh_view()
+                return
+        else:
+            mirror_endpoint = None
         values = {
             "config": self.config_var.get().strip(),
             "source": self.source_var.get().strip(),
             "backend": self.backend_var.get(),
             "host": self.host_var.get().strip(),
             "port": self.port_var.get().strip(),
+            "mirror": mirror_endpoint,
             "obstacle": bool(self.obstacle_var.get()),
         }
         self.model.begin_start(obstacle_enabled=values["obstacle"])
@@ -537,7 +702,9 @@ class RobotControlApp:
                 values["backend"],
                 bool(values["obstacle"]),
             )
-            source = build_source(values["source"], config["video"], realtime=values["source"] == "synthetic")
+            source = build_source(
+                values["source"], config["video"], realtime=values["source"] == "synthetic"
+            )
             if values["backend"] == "tcp":
                 robot = TcpRobotClient(
                     values["host"],
@@ -545,11 +712,21 @@ class RobotControlApp:
                     float(config["robot"]["connect_timeout_seconds"]),
                     float(config["robot"]["send_interval_seconds"]),
                 )
-                robot.connect()
+                if values["mirror"] is not None:
+                    mirror_host, mirror_port = values["mirror"]
+                    mirror = MirrorTcpRobot(
+                        mirror_host,
+                        mirror_port,
+                        connect_timeout=1.0,
+                        on_status=self._publish_mirror_log,
+                    )
+                    robot = FanoutRobot(robot, (mirror,))
             else:
                 robot = RecordingRobot()
-            # Lets request_stop/request_estop cancel a blocked TCP send.
+            # Attach before connect so Stop/E-stop can cancel a pending TCP start.
             control.attach_robot(robot)
+            if values["backend"] == "tcp":
+                robot.connect()
             detector = RedBallDetector(detector_config(config["detection"]))
             controller = VisualApproachController(controller_config(config["controller"]))
             self.active_detector = detector
@@ -567,9 +744,11 @@ class RobotControlApp:
                 frame_timeout_seconds=float(config["video"]["frame_timeout_seconds"]),
                 session=control,
                 event_sink=fanout_event_sinks(self._publish_event, unity_publisher),
+                frame_recorder=self.frame_recorder,
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.
+            cancelled_start = control.stopped and not run_loop_entered
             message = f"{type(exc).__name__}: {exc}"
             if not run_loop_entered:
                 # Once run_loop is entered, its finally owns the cleanup (and may
@@ -586,10 +765,14 @@ class RobotControlApp:
                         source.close()
                     except Exception as cleanup_exc:  # noqa: BLE001 - keep cleaning up.
                         message += f"; source cleanup failed: {cleanup_exc}"
-            error_event = RuntimeEvent("error", message)
-            self._publish_event(error_event)
+            event = (
+                RuntimeEvent("finished", "stop_requested")
+                if cancelled_start
+                else RuntimeEvent("error", message)
+            )
+            self._publish_event(event)
             if unity_publisher is not None:
-                unity_publisher.publish(error_event)
+                unity_publisher.publish(event)
         finally:
             if unity_publisher is not None:
                 unity_publisher.close()
@@ -621,6 +804,54 @@ class RobotControlApp:
             self.latest_frame = event
             return
         self.events.put(event)
+
+    def _publish_gamepad_log(self, message: str) -> None:
+        """Monitor-thread entry point; the events queue is the thread-safe hop."""
+        if not self._closing:
+            self.events.put(RuntimeEvent("gamepad", message))
+
+    def _publish_capture_log(self, message: str) -> None:
+        """Recorder-writer-thread entry point into the mainloop."""
+        if not self._closing:
+            self.events.put(RuntimeEvent("capture", message))
+
+    def _publish_mirror_log(self, message: str) -> None:
+        """Session-thread mirror status hop into the mainloop."""
+        if not self._closing:
+            self.events.put(RuntimeEvent("mirror", message))
+
+    def _toggle_capture(self) -> None:
+        active, _saved, _dropped, _directory = self.frame_recorder.snapshot()
+        if active:
+            saved, dropped, directory = self.frame_recorder.stop_session()
+            self.model.append_log(f"样本采集已停止：{saved} 帧保存至 {directory}（丢弃 {dropped}）")
+        elif self.model.session_state is SessionState.RUNNING:
+            directory = self.frame_recorder.start_session()
+            self.model.append_log(f"样本采集已开始（原始帧 PNG）：{directory}")
+        self._sync_logs()
+        self._refresh_view()
+
+    def _report_gamepad_status_once(self) -> None:
+        if self._closing or self._gamepad_status_reported:
+            return
+        self._gamepad_status_reported = True
+        connected, text = self.gamepad_monitor.status()
+        if not connected:
+            self.model.append_log(f"手柄：{text}；可用后自动连接（{TOGGLE_HINT}）")
+            self._sync_logs()
+
+    def _poll_gamepad(self) -> None:
+        try:
+            self.gamepad_teleop.poll(
+                self.session_control,
+                armed=self.model.armed,
+                live=self.model.session_state is SessionState.RUNNING,
+                can_arm=self.model.can_arm,
+                can_manual=self.model.can_manual,
+                log=self.model.append_log,
+            )
+        except Exception as exc:  # noqa: BLE001 - teleop must never kill the GUI tick.
+            self.model.append_log(f"手柄轮询异常：{type(exc).__name__}: {exc}")
 
     def _drain_events(self) -> None:
         try:
@@ -663,6 +894,7 @@ class RobotControlApp:
                 self.model.append_log(f"帧处理异常：{type(exc).__name__}: {exc}")
         if self.demo:
             self._demo_try_arm()
+        self._poll_gamepad()
         self._refresh_view()
 
     def _handle_event(self, event: RuntimeEvent) -> None:
@@ -682,7 +914,9 @@ class RobotControlApp:
         return event.session_id in (0, self.model.session_id)
 
     def _should_show_frame(self, event: RuntimeEvent) -> bool:
-        return self._event_matches_session(event) and self.model.session_state is SessionState.RUNNING
+        return (
+            self._event_matches_session(event) and self.model.session_state is SessionState.RUNNING
+        )
 
     def _clear_frame_view(self, message: str = "等待开始预览") -> None:
         self.latest_frame = None
@@ -700,6 +934,7 @@ class RobotControlApp:
             image = Image.fromarray(rgb)
             width = max(320, self.video_label.winfo_width())
             height = max(240, self.video_label.winfo_height())
+            self._rendered_view_size = (width, height)
             image.thumbnail((width, height), Image.Resampling.LANCZOS)
             self._photo = ImageTk.PhotoImage(image)
             self.video_label.configure(image=self._photo, text="")
@@ -716,6 +951,33 @@ class RobotControlApp:
         if event is None or not self._should_show_frame(event):
             return
         self._render_frame(event)
+
+    def _on_video_configure(self, event: tk.Event) -> None:
+        """Debounce resize events into a single re-render per size change."""
+        size = (event.width, event.height)
+        if size <= (1, 1) or size == self._pending_view_size:
+            return
+        self._pending_view_size = size
+        if self._resize_after_id is None:
+            self._resize_after_id = self.root.after(80, self._render_after_resize)
+
+    def _render_after_resize(self) -> None:
+        self._resize_after_id = None
+        if self._pending_view_size == self._rendered_view_size:
+            return  # the periodic frame tick already rendered at this size
+        self._render_latest()
+
+    def _bind_sidebar_wheel(self, _event: tk.Event) -> None:
+        self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_wheel)
+
+    def _unbind_sidebar_wheel(self, _event: tk.Event) -> None:
+        self.sidebar_canvas.unbind_all("<MouseWheel>")
+
+    def _on_sidebar_wheel(self, event: tk.Event) -> None:
+        first, last = self.sidebar_canvas.yview()
+        if first <= 0.0 and last >= 1.0:
+            return  # nothing to scroll
+        self.sidebar_canvas.yview_scroll(-round(event.delta / 120), "units")
 
     def _apply_params(self) -> None:
         if not (
@@ -789,7 +1051,9 @@ class RobotControlApp:
             return
         try:
             control.request_manual(velocity, steer, seconds)
-            self.model.append_log(f"手动点动：v={velocity:+.2f} steer={steer:+.2f} 持续 {seconds:.2f}s")
+            self.model.append_log(
+                f"手动点动：v={velocity:+.2f} steer={steer:+.2f} 持续 {seconds:.2f}s"
+            )
         except ValueError as exc:
             self.model.append_log(f"手动点动被拒绝：{exc}")
         self._refresh_view()
@@ -821,7 +1085,13 @@ class RobotControlApp:
         if self._closing:
             return
         self._closing = True
+        if self._resize_after_id is not None:
+            with contextlib.suppress(tk.TclError):
+                self.root.after_cancel(self._resize_after_id)
         self._stop()
+        self.gamepad_monitor.stop()
+        with contextlib.suppress(Exception):
+            self.frame_recorder.stop_session()
         self.start_button.configure(state="disabled")
         self.arm_button.configure(state="disabled")
         self.stop_button.configure(state="disabled")
@@ -839,6 +1109,11 @@ class RobotControlApp:
         self.status_values["video"].configure(text=model.video_status)
         self.status_values["robot"].configure(text=model.robot_status)
         self.status_values["control"].configure(text=model.control_state)
+        gamepad_connected, gamepad_text = self.gamepad_monitor.status()
+        self.status_values["gamepad"].configure(
+            text=self._gamepad_status_summary(gamepad_connected, gamepad_text),
+            foreground=GOOD if gamepad_connected else MUTED,
+        )
         self.status_values["frames"].configure(text=str(model.frame_count))
         self.telemetry_values["target"].configure(text=model.target)
         self.telemetry_values["error"].configure(text=model.horizontal_error)
@@ -852,14 +1127,44 @@ class RobotControlApp:
         self.obstacle_values["state"].configure(
             foreground=DANGER if model.latched_blocked else ACCENT
         )
-        self.obstacle_checkbutton.configure(state="normal" if model.can_toggle_obstacle else "disabled")
+        self.obstacle_checkbutton.configure(
+            state="normal" if model.can_toggle_obstacle else "disabled"
+        )
         self.start_button.configure(state="normal" if model.can_start else "disabled")
         self.arm_button.configure(state="normal" if model.can_arm else "disabled")
         self.stop_button.configure(state="normal" if model.can_stop else "disabled")
         self.reset_button.configure(state="normal" if model.can_reset else "disabled")
+        capture_active, capture_saved, _dropped, _dir = self.frame_recorder.snapshot()
+        self.capture_button.configure(
+            text=f"停止采集（{capture_saved}）" if capture_active else "采集样本",
+            state="normal"
+            if capture_active or model.session_state is SessionState.RUNNING
+            else "disabled",
+        )
         manual_state = "normal" if model.can_manual else "disabled"
         for button in self.manual_buttons:
             button.configure(state=manual_state)
+        gamepad_connected, gamepad_text = self.gamepad_monitor.status()
+        self.gamepad_status_value.configure(
+            text=gamepad_text,
+            foreground=GOOD if gamepad_connected else MUTED,
+        )
+        if model.session_state is not SessionState.RUNNING:
+            gamepad_mode, mode_color = "未运行", MUTED
+        elif model.armed:
+            gamepad_mode, mode_color = "自主寻路", ACCENT
+        else:
+            gamepad_mode, mode_color = "手动控制", GOOD
+        self.gamepad_mode_value.configure(text=gamepad_mode, foreground=mode_color)
+        reading = self.gamepad_monitor.latest()
+        axes_velocity, axes_steer = map_to_command(
+            reading.drive_axis, reading.steer_axis, self.gamepad_teleop.deadzone
+        )
+        self.gamepad_axes_value.configure(
+            text=f"摇杆 v={axes_velocity:+.2f} steer={axes_steer:+.2f}"
+            if reading.connected
+            else "摇杆 --（未连接）"
+        )
         params_ready = (
             model.session_state is SessionState.RUNNING
             and self.active_detector is not None
@@ -868,20 +1173,56 @@ class RobotControlApp:
         self.apply_params_button.configure(state="normal" if params_ready else "disabled")
         self._sync_logs()
 
+    @staticmethod
+    def _gamepad_status_summary(connected: bool, text: str) -> str:
+        """Short top-bar form of the monitor status; full text lives in the sidebar."""
+        if connected:
+            return text if len(text) <= 24 else text[:23] + "…"
+        if "pygame" in text:
+            return "未装 pygame"
+        if "未检测到" in text:
+            return "未检测到"
+        return "未连接"
+
     def _sync_logs(self) -> None:
+        # Version gate: comparing the whole text widget against the model every
+        # 30 ms tick measurably slows the UI; only touch it when logs changed.
+        if self._log_version == self.model.log_version:
+            return
+        self._log_version = self.model.log_version
         content = "\n".join(self.model.logs)
         self.log_text.configure(state="normal")
-        current = self.log_text.get("1.0", "end-1c")
-        if current != content:
-            self.log_text.delete("1.0", "end")
-            self.log_text.insert("1.0", content)
-            self.log_text.see("end")
+        self.log_text.delete("1.0", "end")
+        self.log_text.insert("1.0", content)
+        self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+
+def _enable_windows_dpi_awareness() -> None:
+    """Render at native pixels on high-DPI displays instead of Windows bitmap scaling.
+
+    Without this the whole window is DPI-stretched by the system (blurry text,
+    laggy redraws).  Point-based fonts still scale via tk scaling; the window
+    geometry is scaled in _build_window to keep the layout proportions.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
+        except (AttributeError, OSError):
+            with contextlib.suppress(Exception):
+                ctypes.windll.user32.SetProcessDPIAware()  # Windows 7 fallback
+    except Exception:  # noqa: BLE001, S110 - cosmetic; must never block startup.
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
+    _enable_windows_dpi_awareness()
     parser = argparse.ArgumentParser(
         prog="hcirobot-gui",
         description="TonyPi 视觉自治控制台（支持 --config 指定配置、--demo 一键演示）",
@@ -891,8 +1232,7 @@ def main(argv: list[str] | None = None) -> int:
         "--demo",
         action="store_true",
         help=(
-            "演示模式：自动开始预览，并在条件满足时自动武装"
-            "（仅当控制后端为本机 TCP 时才自动武装）"
+            "演示模式：自动开始预览，并在条件满足时自动武装（仅当控制后端为本机 TCP 时才自动武装）"
         ),
     )
     args = parser.parse_args(argv)

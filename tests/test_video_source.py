@@ -43,10 +43,13 @@ class _StreamHandler(BaseHTTPRequestHandler):
     suffix: bytes = b""
     hold_open: threading.Event | None = None
     abrupt: bool = False
+    chunked: bool = False
 
     def do_GET(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        if self.chunked:
+            self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         self.wfile.write(self.prefix)
         for index, frame in enumerate(self.frames):
@@ -101,6 +104,40 @@ def test_parses_frames_and_content_from_multipart_stream() -> None:
     assert len(decoded) == len(colors)
     for frame, color in zip(decoded, colors, strict=True):
         assert_frame_matches(frame, color)
+
+
+def test_preserves_body_prefetched_with_response_headers() -> None:
+    frame = make_jpeg((64, 128, 255))
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def serve() -> None:
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(4096)
+            body = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}/stream"
+    source = MjpegHttpSource(url, timeout_seconds=2.0)
+    try:
+        decoded = list(source)
+    finally:
+        source.close()
+        listener.close()
+        thread.join(timeout=2.0)
+
+    assert len(decoded) == 1
+    assert_frame_matches(decoded[0], (64, 128, 255))
 
 
 def test_close_unblocks_pending_read_from_another_thread() -> None:
@@ -207,6 +244,32 @@ def test_malformed_segments_are_skipped_without_raising() -> None:
     assert len(decoded) == 2
     for frame, color in zip(decoded, colors, strict=True):
         assert_frame_matches(frame, color)
+
+
+def test_rejects_chunked_transfer_encoding_explicitly() -> None:
+    class Handler(_StreamHandler):
+        chunked = True
+
+    with mjpeg_server(Handler) as url, pytest.raises(ConnectionError, match="chunked MJPEG"):
+        MjpegHttpSource(url, timeout_seconds=1.0)
+
+
+def test_oversized_truncated_candidate_recovers_at_later_jpeg() -> None:
+    color = (255, 128, 0)
+
+    class Handler(_StreamHandler):
+        frames: ClassVar[list[bytes]] = [make_jpeg(color)]
+        prefix = b"\xff\xd8" + bytes(MjpegHttpSource._MAX_JPEG_BYTES + 1024)
+
+    with mjpeg_server(Handler) as url:
+        source = MjpegHttpSource(url, timeout_seconds=2.0)
+        try:
+            decoded = list(source)
+        finally:
+            source.close()
+
+    assert len(decoded) == 1
+    assert_frame_matches(decoded[0], color)
 
 
 def test_open_times_out_against_silent_server() -> None:

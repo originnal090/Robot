@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 from .model import ControlState, Detection, RobotCommand
+
+_ACTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_]{1,32}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +29,10 @@ class ControllerConfig:
     misalign_frames: int = 2
     arrival_frames: int = 3
     lost_frames: int = 3
+    # CMD name sent once when autonomy reaches ARRIVED ("" disables).  Uses the
+    # course button-name namespace so both TCP_connect.py and tonypi_server.py
+    # accept it: "right_grip" maps to the crouch-and-extinguish (outfire) group.
+    arrival_action: str = "right_grip"
 
     def __post_init__(self) -> None:
         float_values = (
@@ -64,6 +71,10 @@ class ControllerConfig:
             raise ValueError("approach steer maximum must be between 0 and 1")
         if min(self.align_frames, self.misalign_frames, self.arrival_frames, self.lost_frames) < 1:
             raise ValueError("frame thresholds must be positive")
+        if self.arrival_action and not _ACTION_NAME_PATTERN.fullmatch(self.arrival_action):
+            raise ValueError(
+                "arrival action must be 1-32 alphanumeric/underscore characters or empty"
+            )
 
 
 @dataclass(frozen=True, slots=True)

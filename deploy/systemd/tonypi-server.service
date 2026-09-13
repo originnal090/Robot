@@ -1,0 +1,21 @@
+[Unit]
+Description=HCIRobot TonyPi hardware service
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/hcirobot/robot_side
+EnvironmentFile=/etc/hcirobot/tonypi.env
+ExecStartPre=/usr/bin/python3 /opt/hcirobot/robot_side/tonypi_server.py --check
+ExecStart=/usr/bin/python3 /opt/hcirobot/robot_side/tonypi_server.py
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

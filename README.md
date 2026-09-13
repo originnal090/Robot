@@ -20,8 +20,21 @@ TonyPi 人形机器人闭环基线：机器人或 Unity 虚拟摄像头画面 �
   （停止、急停、断流、崩溃、关窗）都会尽力补发零向量。
 - **桌面操作台**：实时画面与遥测、运行中热调检测/控制参数、手动行为按钮
   （点头/摇头/点动）、有界日志；视频用纯 Python MJPEG 解析，FFmpeg 崩溃免疫。
+- **手柄遥操作**：PC 端直接读游戏手柄——Windows 下优先走原生 XInput（ctypes，
+  零依赖，与 joy.cpl 同通路），pygame 为备选/跨平台后端；左摇杆经 TCP JSONL
+  驾驶机器人；**B 键抢断**——自主寻路运行中按 B 立即切入手动控制，再按 B 恢复
+  自主寻路；LT/RT 触发前后爬起、RB 触发蹲下灭火（课程 CMD 按钮名）；自治
+  ARRIVED 后自动下发灭火动作（`[controller] arrival_action`，默认开，可置空关闭）。
+  课程基线把读手柄放在 Unity 里，本仓库把这一角色移到了 Python 侧。
 - **真机帧调优**：`tools/eval_detector.py` 用录制帧离线评估检测（检出率/
   连续段/中心抖动），默认阈值已按 200 张真机帧重新标定（检出 0% → 100%）。
+- **样本采集**：GUI 底栏"采集样本"开关，点击后从采集线程直接保存**原始帧**
+  PNG（不经控制循环、不丢帧、后台写盘不卡画面），再点停止或会话结束自动收尾；
+  默认存到 `artifacts/captures/capture-<时间戳>/`，适合训模型/标阈值采数据。
+- **命令镜像（Unity 孪生）**：控制真机的同时把每条命令镜像一份发给本机
+  Unity 仿真（GUI 侧栏"镜像地址"填 `127.0.0.1:5075`，CLI `--robot-mirror`，
+  可重复）。镜像是尽力而为的：断线只记日志并按 5 s 退避重连，绝不影响真机
+  会话；超声波遥测始终以主后端为准。
 - **协议兼容**：输出与课程 `TCP_connect.py` 的 JSONL `{"v","steer","grab","t"}`
   和 `CMD:<name>` 完全兼容，且按其离散动作语义输出（转向优先、死区之上）。
 
@@ -49,11 +62,14 @@ Python --autonomy_status UDP :6102--> Unity recorder/状态面板
 
 ## 快速开始
 
-要求 `uv`（Python 环境全部由 uv 管理）：
+核心视觉程序要求 **64 位系统和 Python 3.11+**；开发环境推荐由 `uv` 管理：
 
 ```bash
 uv sync --dev
+uv run hcirobot --check-config
 ```
+
+`--check-config` 只校验配置，不打开视频、TCP 或 Unity UDP。TonyPi 端的单文件扩展服务面向旧厂商镜像，兼容 Python 3.8+；两端的版本边界不同。
 
 桌面操作台（推荐从合成演示开始）：
 
@@ -103,10 +119,13 @@ uv run python tools/eval_unity_trials.py artifacts/unity-trials \
 uv run python tools/run_unity_demo.py
 ```
 
-该脚本会依次：启动 Unity 编辑器（窗口模式）打开 Quick Start 演示场景并进入
-Play Mode → 等待 `5075/8080` 端点就绪 → 启动 `hcirobot-gui --config
-config.unity.toml --demo`。Unity 已在运行时自动跳过编辑器启动；
-`--unity-only` / `--gui-only` / `--no-autoarm` 可拆步执行。
+该脚本会依次：启动 Unity 编辑器（窗口模式）打开仓库自带的 `unity/demo-project`
+（完整 Quick Start 场景：地面、虚拟 TonyPi、红球、障碍、观察相机、状态 HUD、
+试验记录器）并进入 Play Mode → 等待 `5075/8080` 端点就绪 → 启动
+`hcirobot-gui --config config.unity.toml --demo`。Unity 已在运行时自动跳过
+编辑器启动；`--unity-only` / `--gui-only` / `--no-autoarm` 可拆步执行；
+`--rebuild-scene` 丢弃已存场景并按当前包代码重建（会清掉手动摆放的障碍）；
+`--project` 可指向任何导入了本包的 Unity 工程。
 
 看什么：
 
@@ -118,6 +137,38 @@ config.unity.toml --demo`。Unity 已在运行时自动跳过编辑器启动；
 
 `--demo` 的自动武装只在控制后端为本机（loopback）TCP 时生效，指向真机或
 非回环地址时只自动预览、仍需手动点击“武装自治”。
+
+### 手柄遥操作（自主 ↔ 手动抢断）
+
+安装可选依赖后，GUI 启动即自动检测手柄（XInput 布局，Xbox 手柄/兼容接收器
+均可；面板显示连接状态与当前模式）：
+
+```bash
+uv sync --extra gamepad        # 或: uv pip install "pygame>=2.5"
+uv run hcirobot-gui
+```
+
+无头 CLI 同样支持：`uv run hcirobot --gamepad ...`（`[gamepad]` 日志走 stderr）。
+
+- **左摇杆**驾驶：上下 = 前进/后退，左右 = 转向，0.20 死区，与机器人端
+  `TCP_connect.py` 的死区语义一致；只在**手动模式**生效，误碰不会打断自主。
+- **B 键抢断**：自主寻路（已武装）时按 B → 自治解除、立即切入手动控制；
+  再按 B → 恢复自主寻路。0.25 s 防抖避免双击误切换。
+- **动作键**（手动模式生效，发课程 CMD 按钮名，真机两端服务都认）：
+
+  | 按键 | CMD | 真机动作 |
+  |---|---|---|
+  | LT | `left_trigger` | 前倒爬起（stand_up_front） |
+  | RT | `right_trigger` | 后倒爬起（stand_up_back） |
+  | RB | `right_grip` | 蹲下灭火（outfire） |
+
+- **到达自动灭火**：自治 ARRIVED 后自动下发 `arrival_action`（默认
+  `right_grip`），在 `[controller]` 配置；Unity 仿真对 CMD 无动作副作用，
+  真机/robot_side 生效。
+- 手动模式下松杆即停（0.3 s 脉冲续期，GUI 卡顿时自动超时停车）；拔掉手柄
+  自动零输出并重新检测，插回自动恢复；避障 `BLOCKED` 锁存、急停等安全语义
+  对手柄模式同样生效。
+- 未安装 pygame 时程序照常运行，手柄面板显示安装提示。
 
 
 首批场景矩阵：无障碍左/中/右目标；近且居中、近但偏心、远处大球和遮挡球；
@@ -138,12 +189,30 @@ TCP 断开、DIST 过期；窄通道、U 型障碍和死胡同作为当前能力
 | GUI 点动/停止/闭环控制 | ✓ | ✓ |
 | `CMD:nod` / `CMD:shake`（头部动作） | ✗ 忽略 | ✓ |
 | 超声波距离遥测（`DIST` 行，避障必需） | ✗ | ✓ |
-| 行走中收到 CMD | 拒绝（更安全） | 允许 |
+| 行走中收到 CMD | 拒绝（更安全） | 默认拒绝，可显式调整 |
+| 硬件 SDK 缺失 | 可 dry-run | hardware 模式拒绝启动；dry-run 必须显式选择 |
 
 **团队 main 分支的 `TCP_connect.py` 可直接用上**：本项目的输出值全部在其死区
 `0.20` 之上，协议逐项兼容。点头/摇头和避障需要部署 `robot_side` 扩展版
 （部署步骤见 [robot_side/README.md](robot_side/README.md)，两服务都用 5075，
 注意先停旧服务）。
+
+## Orange Pi / TonyPi 部署准备
+
+仓库提供了可替换路径和用户名的模板：
+
+- `deploy/config/config.orangepi.toml`：Orange Pi 真机配置起点；
+- `deploy/systemd/*.service`：TonyPi 与 Orange Pi systemd 模板；Orange Pi unit 故意不带 `--arm`；
+- `deploy/env/*.example`：生产环境变量示例；
+- `tools/preflight_orangepi.py`：默认无动作的依赖/配置预检；
+- `deploy/offline/README.md`：AArch64 离线 wheelhouse 与 SHA-256 清单流程。
+
+```bash
+uv run python tools/preflight_orangepi.py --config deploy/config/config.orangepi.toml
+# 配好相机后才加 --probe-video；机器人架空后才加 --probe-robot
+```
+
+视频或 TCP 断线会安全终止当前会话，**不会自动重连并恢复运动**。重新运行后仍需显式武装。
 
 ## 参数调优
 
@@ -164,8 +233,9 @@ src/hcirobot/
   robot.py         TCP/记录后端（可取消、CMD 动作、距离遥测读取）
   video.py         MJPEG/摄像头/文件/合成视频源
   gui.py           Tk 桌面操作台
-robot_side/        机器人端扩展服务（点头/摇头/stand）
-tools/             检测评估、Unity 端点检查和 trial 真值汇总工具
+robot_side/        机器人端扩展服务（点头/摇头/stand/DIST/硬件预检）
+deploy/            Orange Pi/TonyPi systemd、环境、配置和离线安装模板
+tools/             预检、检测评估、Unity 端点检查和 trial 真值汇总工具
 tests/             自动化测试（含真机帧 fixture 与 Unity 工具测试）
 config.unity.toml  本机 Unity 虚拟机器人完整配置模板
 unity/             Unity 本地包、协议和安装后步骤（由 Unity 侧实现维护）

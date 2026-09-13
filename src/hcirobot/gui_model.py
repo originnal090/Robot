@@ -42,6 +42,8 @@ class GuiModel:
     obstacle_enabled: bool = False
     latched_blocked: bool = False
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=500))
+    # Bumped on every append so the view can skip unchanged log re-syncs.
+    log_version: int = 0
 
     @property
     def can_start(self) -> bool:
@@ -170,10 +172,13 @@ class GuiModel:
                 return  # a late armed event must not arm a stopped session
             self.armed = True
             self.append_log("自治已武装")
+        elif event.kind == "disarmed":
+            self.armed = False
+            self.append_log("自治已解除（手柄抢断），手动控制生效")
         elif event.kind == "estop":
             self.latch_estop()
         elif event.kind == "action":
-            self.append_log(f"手动动作已下发：{event.message}")
+            self.append_log(f"动作已下发：{event.message}")
         elif event.kind == "obstacle":
             # Reached only after the session-id filter above, so stale policy
             # telemetry from a replaced session is dropped like any other event.
@@ -193,24 +198,42 @@ class GuiModel:
             self.output_source = str(event.output_source or "--")
         elif event.kind == "state":
             self.append_log(event.message)
+        elif event.kind in ("gamepad", "warning", "capture", "mirror"):
+            # Background-thread notes (connection changes, degraded side outputs,
+            # frame-recorder completion).
+            self.append_log(event.message)
         elif event.kind == "stopping":
             self.session_state = SessionState.STOPPING
             self.armed = False
             self.control_state = "IDLE"
             self.command = ZERO_COMMAND
         elif event.kind == "finished":
-            self.session_state = SessionState.STOPPED
+            termination = event.message or "completed"
+            fault_terminations = {
+                "video_timeout": "视频超时",
+                "video_ended": "视频流意外结束",
+                "robot_connection_lost": "机器人连接丢失",
+                "runtime_error": "运行时错误",
+            }
             self.video_status = "已关闭"
             self.robot_status = "已断开"
             self.armed = False
-            self.control_state = "LOST_SAFE" if self.estop_latched else "IDLE"
             self.command = ZERO_COMMAND
             self.output_source = "--"
             self.target = "未确认"
             self.horizontal_error = "--"
             self.radius_ratio = "--"
             self._reset_obstacle_telemetry()
-            self.append_log(f"会话结束：{event.message}")
+            if termination in fault_terminations:
+                self.session_state = SessionState.FAILED
+                self.control_state = "LOST_SAFE"
+                if not self.fault:
+                    self.fault = fault_terminations[termination]
+                    self.append_log(f"故障：{self.fault}")
+            else:
+                self.session_state = SessionState.STOPPED
+                self.control_state = "LOST_SAFE" if self.estop_latched else "IDLE"
+            self.append_log(f"会话结束：{termination}")
 
     def _reset_obstacle_telemetry(self) -> None:
         """Clear live obstacle telemetry; latched_blocked deliberately survives."""
@@ -267,3 +290,4 @@ class GuiModel:
 
     def append_log(self, message: str) -> None:
         self.logs.append(message)
+        self.log_version += 1

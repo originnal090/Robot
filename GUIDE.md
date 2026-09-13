@@ -181,10 +181,10 @@ error_x = 2 * center_x / frame_width - 1
 
 要求：
 
-- `uv`；
-- Python 3.11 或更高；
-- Windows、Linux 或 Orange Pi Linux 均可运行核心项目；
-- TonyPi 真机端仍需课程镜像自带的 `hiwonder` 和动作组；
+- `uv`（开发机/联网安装）；
+- Orange Pi/PC 核心视觉程序使用 Python 3.11 或更高，Orange Pi 建议 64 位 Linux；
+- Windows、Linux 或 Orange Pi Linux 均可运行核心项目，但目标 AArch64 wheel 必须与实际 OS/glibc 匹配；
+- TonyPi 单文件扩展服务兼容 Python 3.8+，真机端仍需课程镜像自带的 `hiwonder` 和动作组；
 - Unity 仿真需另行安装 Unity 2022.3 LTS 或兼容的新版本；Unity 不是 Python/uv 依赖。
 
 同步环境：
@@ -242,10 +242,52 @@ MJPEG 流使用项目自带的纯 Python 解析器（不再经过 OpenCV/FFmpeg 
 | 按钮 | 行为 |
 |---|---|
 | 点头 / 摇头 | 发送 `CMD:nod` / `CMD:shake`，需要机器人端运行 `robot_side/tonypi_server.py`；课程原版 `TCP_connect.py` 会忽略 |
+| 前爬起 / 后爬起 | 发送 `CMD:left_trigger` / `CMD:right_trigger`（课程按钮名，映射 stand_up_front/back 动作组，真机两端服务都支持） |
+| 蹲下灭火 | 发送 `CMD:right_grip`（映射 outfire 动作组） |
 | 前进 / 后退 / 左转 / 右转 | 发送 0.35 秒点动脉冲（复用课程 JSON 协议，`v` 可为负实现后退） |
 | 停止点动 | 立即发送零向量脉冲 |
 
 手动按钮仅在会话运行中、未武装、无故障时可用；武装自治时禁用，避免手动与自主打架。软件停止不能替代物理断电。
+
+#### 样本采集（原始帧）
+
+底栏"采集样本"按钮：会话运行中点击即开始把**原始相机帧**（未叠加标注）逐帧存为
+PNG，按钮实时显示已存张数；再点一次停止。数据落在
+`artifacts/captures/capture-<时间戳>/`（相对 GUI 启动目录）。采集直接挂在视频
+采集线程上，检测/控制慢于相机时不丢帧；写盘在后台线程，磁盘慢只会计入"丢弃"
+计数不会卡画面。会话结束或关窗会自动停止采集并记录最终数量。武装自治时也可以
+采集——追球过程中的距离/视角变化正是有价值的样本。采完可直接用
+`tools/eval_detector.py --frames <目录>` 评估当前检测参数。
+
+#### 手柄遥操作（B 键抢断）
+
+“手动测试”区下方的手柄块显示连接状态、当前模式（自主寻路/手动控制）和实时
+摇杆读数。Windows 下优先使用原生 XInput 读取（零依赖），pygame（`uv sync
+--extra gamepad`）为备选与其他系统的后端；接上 XInput 布局手柄（Xbox 手柄或
+兼容接收器）后：
+
+- **B 键**：自主寻路运行中按下 → 抢断，自治解除并切入手动控制；再按一次 →
+  恢复自主寻路。0.25 s 防抖，急停/故障锁存未复位时拒绝恢复并提示。
+- **左摇杆**驾驶（仅手动模式）：上下前进/后退、左右转向，0.20 死区，输出走
+  与点动按钮相同的 `request_manual` 通道（来源标记 `gamepad`），松杆 0.3 s
+  内自动停车。
+- **动作键**（仅手动模式，发课程 CMD 按钮名）：LT = 前倒爬起
+  （`left_trigger`→stand_up_front）、RT = 后倒爬起（`right_trigger`→
+  stand_up_back）、RB = 蹲下灭火（`right_grip`→outfire）；自主模式下按下会被
+  忽略并提示先抢断。扳机是模拟量，超过阈值才算按下。
+- **到达自动动作**：自治 ARRIVED 后自动下发 `[controller] arrival_action`
+  （默认 `right_grip` 蹲下灭火，置空关闭）；动作下发失败只记警告，不影响
+  到达结果。
+- 摇杆输入在自主模式下被忽略（每 4 s 提示一次“按 B 抢断”），误碰不会打断
+  自主；拔线自动零输出并重新探测，插回自动重连；监视线程任何异常都不会
+  影响控制回路。
+- 无 pygame 或无手柄时面板显示原因，其余功能不受影响。CLI 侧等价开关为
+  `--gamepad`。手柄输入可用 `uv run python tools/gamepad_probe.py` 独立诊断
+  （`--backend xinput|pygame` 可指定通路；`raw` 全 0 而 joy.cpl 有输入说明
+  该通路读不到设备）。
+
+课程基线（zip 内 `Example`）由 Unity 读手柄/PICO 输入再经 TCP 下发；本仓库将
+读手柄移到 Python 客户端，协议不变，Unity 仿真与真机后端都适用。
 
 Linux/Orange Pi 若提示缺少 Tkinter，需要使用系统包管理器安装 Tk，例如 Debian 系统执行 `sudo apt install python3-tk`。Tkinter 属于系统 Python 组件，不由 PyPI/`uv` 安装。
 
@@ -367,11 +409,16 @@ uv run hcirobot --config config.unity.toml --arm
 uv run python tools/run_unity_demo.py
 ```
 
-脚本按顺序做三件事：启动 Unity 编辑器（窗口模式）并通过 `ValidationBootstrap.LaunchDemo`
-打开 Quick Start 场景进入 Play Mode；轮询 `5075/8080` 直到仿真端点就绪（默认
-超时 180 s）；最后启动 `hcirobot-gui --config config.unity.toml --demo`。Unity
-端点已在线时跳过编辑器启动；`--unity-only`、`--gui-only`、`--no-autoarm`
-支持拆步。`--unity` 可覆盖 Unity.exe 路径，`--project` 可覆盖工程目录。
+脚本按顺序做三件事：启动 Unity 编辑器（窗口模式）打开仓库自带的
+`unity/demo-project`（完整 Quick Start 场景），经包内
+`HciRobot.Simulator.Editor.DemoLauncher.LaunchDemo` 进入 Play Mode；轮询
+`5075/8080` 直到仿真端点就绪（默认超时 180 s）；最后启动 `hcirobot-gui
+--config config.unity.toml --demo`。Unity 端点已在线时跳过编辑器启动；
+`--unity-only`、`--gui-only`、`--no-autoarm` 支持拆步。`--unity` 可覆盖
+Unity.exe 路径，`--project` 可指向任何导入了本包的工程（含
+`artifacts/unity-validation-project`）；
+`--rebuild-scene` 丢弃已存场景按当前包代码重建，升级包后场景缺新组件时用它
+（注意会清掉手动摆放的障碍位置）。
 
 Unity Game 视图包含三层可视化：全局第三人称 `Observer Camera`（跟随虚拟机器人，
 直接看到追球和避障全过程）；右上角画中画为机器人第一视角相机（与 MJPEG 同源）；
@@ -458,16 +505,20 @@ uv run hcirobot --source "http://192.168.149.1:8080/?action=stream" --backend re
 
 ### 7.2 检测参数
 
-默认值直接参考课程 Orange Pi 配置：
+当前默认值已经根据 200 张真机帧重新标定，不再使用课程旧阈值：
 
 ```toml
 [detection]
-lab_min = [55, 145, 118]
-lab_max = [190, 195, 150]
+lab_min = [30, 132, 100]
+lab_max = [220, 215, 150]
 processing_width = 640
 processing_height = 480
+gaussian_blur_kernel = 3
+morphology_kernel = 3
 minimum_contour_area = 50.0
-minimum_circularity = 0.65
+minimum_circularity = 0.60
+core_a_min = 160
+minimum_core_fraction = 0.15
 minimum_aspect_ratio = 0.60
 maximum_aspect_ratio = 1.67
 confirmation_frames = 3
@@ -556,20 +607,26 @@ Orange Pi 本项目
 |---|---|---|---|
 | JSON 连续控制 + 0.60s 看门狗 | ✓（含滞回） | ✓ | ✓ |
 | `CMD:nod` / `CMD:shake` / `CMD:stand` | ✗ 忽略 | ✗ 忽略 | ✓ 头部舵机序列 |
-| 行走中收到 CMD | 拒绝 | 允许 | 允许 |
-| 无 SDK 时 dry-run | ✓ 自动 | ✗ | ✓ 可强制 |
+| 行走中收到 CMD | 拒绝 | 允许 | 默认拒绝，可配置 |
+| 无 SDK 时 dry-run | ✓ 自动 | ✗ | 必须显式 `TONYPI_MODE=dry-run` |
 | 端口可配置 | ✗ | ✗ | ✓ 环境变量 |
+| 超声波 `DIST` | ✗ | ✗ | ✓ |
 
-**结论：main 分支版可以直接用上**——闭环控制、点动脉冲、停止/看门狗全部兼容本项目
-（本项目输出值 `0.35/0.25/0.21` 都在其死区 `0.20` 之上），团队机器人在跑的就是它。
-只有 GUI 的“点头/摇头”按钮需要 ③ 扩展版；① 和 ③ 都监听 `5075`，二选一，先停旧服务。
+**结论：main 分支版可以直接用于基础闭环、点动和停止**——本项目输出值
+`0.35/0.25/0.21` 都在其死区 `0.20` 之上。需要 GUI 点头/摇头或超声波避障时，
+必须使用 ③ 扩展版。① 和 ③ 都监听 `5075`，二选一，先停旧服务。
 
-部署 ③：
+部署 ③ 前先做无动作预检；hardware 模式中 SDK/API、必需动作组或 required Sonar 缺失都会拒绝启动，不会静默变成 dry-run：
 
 ```bash
 scp robot_side/tonypi_server.py pi@<TONYPI_IP>:~/
-ssh pi@<TONYPI_IP> 'pkill -f TCP_connect.py; python3 ~/tonypi_server.py'
+ssh pi@<TONYPI_IP> 'PYTHONPATH=/home/pi/TonyPi/HiwonderSDK \
+  TONYPI_MODE=hardware TONYPI_REQUIRE_SONAR=1 python3 ~/tonypi_server.py --check'
+ssh pi@<TONYPI_IP> 'pkill -f TCP_connect.py; PYTHONPATH=/home/pi/TonyPi/HiwonderSDK \
+  TONYPI_MODE=hardware TONYPI_REQUIRE_SONAR=1 python3 ~/tonypi_server.py'
 ```
+
+长期运行建议使用 `deploy/systemd/tonypi-server.service` 和 `deploy/env/tonypi.env.example`，并按实际镜像替换用户、目录和 SDK 路径。
 
 无论哪种服务：
 
@@ -581,16 +638,18 @@ ssh pi@<TONYPI_IP> 'pkill -f TCP_connect.py; python3 ~/tonypi_server.py'
 
 ### 9.3 Orange Pi 端
 
-将项目复制到 Orange Pi，安装 `uv` 后：
+将项目复制到 64 位 Orange Pi 后，以 `deploy/config/config.orangepi.toml` 为起点替换 `TONYPI_IP`。先校验配置和依赖；默认预检不打开相机，也不连接机器人：
 
 ```bash
 uv sync --no-dev
-uv run hcirobot \
-  --source "http://<TONYPI_IP>:8080/?action=stream" \
-  --backend tcp \
-  --robot-host <TONYPI_IP> \
-  --robot-port 5075
+uv run hcirobot --config deploy/config/config.orangepi.toml --check-config
+uv run python tools/preflight_orangepi.py --config deploy/config/config.orangepi.toml
+# 配好相机后：追加 --probe-video
+# 机器人架空后：才允许追加 --probe-robot（连接可能触发 stand）
+uv run hcirobot --config deploy/config/config.orangepi.toml
 ```
+
+离线安装和 AArch64 wheelhouse 流程见 `deploy/offline/README.md`。目标 Orange Pi 型号/OS 未固定前，不能用 Windows/x86-64 上下载的 wheel 代替目标验证。
 
 第一次保持**不加 `--arm`**，确认：
 
@@ -632,7 +691,8 @@ Orange Pi / PC
 ### 10.3 部署要求
 
 - 避障**必须使用 `robot_side/tonypi_server.py`**：团队 main 分支版 `TCP_connect.py` 不回传距离（`DIST` 行是本扩展新增的）。
-- PC 上无硬件联调：`TONYPI_DRY_RUN=1 TONYPI_SONAR_SIM=sweep:100:800:2.0 python3 tonypi_server.py`，模拟源支持 `flat:` / `sweep:` / `steps:` 三种确定性模式。
+- PC 上无硬件联调：`TONYPI_MODE=dry-run TONYPI_SONAR_SIM=sweep:100:800:2.0 python3 tonypi_server.py`，模拟源支持 `flat:` / `sweep:` / `steps:` 三种确定性模式。
+- 正式硬件建议 `TONYPI_MODE=hardware TONYPI_REQUIRE_SONAR=1`；hardware 模式默认拒绝与 `TONYPI_SONAR_SIM` 混用，避免实体机器人拿模拟“畅通”距离运动。
 - 99999 是“传感器未连接”哨兵值，策略会按无效数据处理；如果 GUI 一直显示 `UNKNOWN`，先检查超声波模块的 I²C 接线。
 
 ### 10.4 参数标定
@@ -698,7 +758,7 @@ clear_mm = 350.0   # 滞回：必须重新看到这么远才恢复
 3. **无武装图传**：使用 `recording` 后端和无 `--arm` 模式验证检测。
 4. **架空测试**：机器人置于稳定支架，只验证站立和左右单步。
 5. **低速地面测试**：一人观察软件，一人手持物理断电；目标从画面中心开始。
-6. **故障测试**：拔掉视频网络、停止 Orange Pi 进程、关闭 TCP，确认 TonyPi 的 `0.60 s` 看门狗回到 `stand`。
+6. **故障测试**：拔掉视频网络、停止 Orange Pi 进程、关闭 TCP，确认 TonyPi 的 `0.60 s` 看门狗回到 `stand`；链路恢复后程序不会自动重连或恢复运动，必须重新启动并显式武装。
 7. **扩大范围**：确认停止距离和转向方向后，再测试完整搜索。
 
 不要把 `stand` 当作机械急停。动作组调用可能阻塞，软件停止响应受当前动作帧时长影响。1.8 kg 左右的人形机器人跌倒仍可能伤人或损坏物品。

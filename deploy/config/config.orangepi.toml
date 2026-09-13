@@ -1,0 +1,75 @@
+[video]
+source = "http://TONYPI_IP:8080/?action=stream"
+width = 640
+height = 480
+fps = 10.0
+frame_timeout_seconds = 0.75
+
+[detection]
+lab_min = [30, 132, 100]
+lab_max = [220, 215, 150]
+processing_width = 640
+processing_height = 480
+gaussian_blur_kernel = 3
+morphology_kernel = 3
+minimum_contour_area = 50.0
+minimum_circularity = 0.60
+core_a_min = 160
+minimum_core_fraction = 0.15
+minimum_aspect_ratio = 0.60
+maximum_aspect_ratio = 1.67
+confirmation_frames = 3
+release_frames = 3
+
+[controller]
+align_enter_error = 0.08
+align_exit_error = 0.14
+arrival_radius_ratio = 0.18
+slow_radius_ratio = 0.10
+search_steer = 0.35
+search_reverse_seconds = 2.0
+max_search_seconds = 12.0
+align_steer_gain = 1.2
+approach_steer_gain = 0.9
+align_steer_max = 0.60
+approach_steer_max = 0.35
+far_speed = 0.25
+near_speed = 0.21
+minimum_active_steer = 0.25
+align_frames = 3
+misalign_frames = 2
+arrival_frames = 3
+lost_frames = 3
+
+[robot]
+backend = "tcp"
+host = "TONYPI_IP"
+port = 5075
+connect_timeout_seconds = 3.0
+send_interval_seconds = 0.10
+
+[unity]
+enabled = false
+host = "127.0.0.1"
+port = 6102
+frame_rate_hz = 10.0
+target_freshness_ms = 500
+source = "hcirobot"
+maximum_datagram_bytes = 4096
+
+[obstacle]
+enabled = true
+stop_mm = 250.0
+avoid_mm = 150.0
+clear_mm = 350.0
+stale_after_s = 1.0
+trigger_frames = 2
+max_avoids = 3
+backup_velocity = -0.35
+backup_seconds = 0.5
+turn_steer = 0.35
+turn_seconds = 0.6
+cooldown_seconds = 1.0
+vision_enabled = true
+vision_trigger_frames = 4
+vision_occupancy_ratio = 0.35

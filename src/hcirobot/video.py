@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import http.client
+import select
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -52,6 +54,7 @@ class MjpegHttpSource:
     _EOI = b"\xff\xd9"
     _CHUNK_BYTES = 4096
     _POLL_SECONDS = 0.05
+    _MAX_JPEG_BYTES = 8 * 1024 * 1024
     _USER_AGENT = "hcirobot-mjpeg/1.0 (python-urllib)"
 
     def __init__(self, url: str, timeout_seconds: float = 0.75) -> None:
@@ -70,31 +73,60 @@ class MjpegHttpSource:
             self._response = urllib.request.urlopen(request, timeout=timeout_seconds)
         except OSError as exc:  # URLError and socket timeouts both subclass OSError.
             raise ConnectionError(f"cannot open MJPEG stream: {url}: {exc}") from exc
-        # Read the body from the raw socket, not response.read1(): after one
-        # socket timeout the buffered response object is permanently bricked
-        # ("cannot read from timed out object"), while raw recv() stays usable.
-        # Short poll slices keep close() from another thread responsive.
+        transfer_encodings = {
+            value.strip().lower()
+            for value in self._response.headers.get("Transfer-Encoding", "").split(",")
+        }
+        if "chunked" in transfer_encodings:
+            self._response.close()
+            self._response = None
+            raise ConnectionError("chunked MJPEG transfer encoding is not supported")
+        # urllib may read past the HTTP headers into BufferedReader.peek()/buffer.
+        # Mixing that prefetched body with recv() on the underlying socket loses or
+        # reorders bytes. Drain the buffered layer first, then use non-blocking raw
+        # socket reads so close() remains responsive and timeout polls are reusable.
         self._socket = self._detach_socket(self._response)
         if self._socket is not None:
-            self._socket.settimeout(min(timeout_seconds, self._POLL_SECONDS))
+            self._socket.setblocking(False)
+        self._prefetched = self._take_prefetched_body(self._response)
 
     def __iter__(self) -> Iterator[Frame]:
         buffer = bytearray()
         while True:
             chunk = self._read_chunk()
             if not chunk:
-                return  # EOF, timeout, or close() from another thread ends the stream.
+                return  # EOF or close() from another thread ends the stream.
             buffer.extend(chunk)
             while True:
                 start = buffer.find(self._SOI)
                 if start < 0:
                     del buffer[:-1]  # keep one byte: SOI may straddle the chunk edge
                     break
-                end = buffer.find(self._EOI, start + len(self._SOI))
+                if start:
+                    del buffer[:start]
+                end = buffer.find(self._EOI, len(self._SOI))
                 if end < 0:
-                    del buffer[:start]  # keep everything from the SOI onward
+                    if len(buffer) > self._MAX_JPEG_BYTES:
+                        # A bogus/missing EOI must not grow forever. Prefer the
+                        # newest SOI as a recovery point; otherwise discard the
+                        # oversized candidate while preserving a split marker.
+                        next_start = buffer.rfind(self._SOI, len(self._SOI))
+                        if next_start > 0:
+                            del buffer[:next_start]
+                        else:
+                            del buffer[:-1]
                     break
-                jpeg = bytes(buffer[start : end + len(self._EOI)])
+                if end + len(self._EOI) > self._MAX_JPEG_BYTES:
+                    # The first EOI may belong to a valid JPEG embedded after an
+                    # unterminated oversized candidate. Restart from its newest
+                    # nested SOI instead of discarding that recoverable frame.
+                    next_start = buffer.rfind(self._SOI, len(self._SOI), end)
+                    if next_start > 0:
+                        del buffer[:next_start]
+                        continue
+                    del buffer[: end + len(self._EOI)]
+                    continue
+                jpeg = bytes(buffer[: end + len(self._EOI)])
                 del buffer[: end + len(self._EOI)]
                 frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if frame is None:
@@ -130,12 +162,23 @@ class MjpegHttpSource:
         while True:
             with self._lock:
                 response = self._response
+                if self._prefetched:
+                    chunk = bytes(self._prefetched[: self._CHUNK_BYTES])
+                    del self._prefetched[: self._CHUNK_BYTES]
+                    return chunk
             if response is None:
                 return b""  # close() from another thread ends the stream.
-            if self._socket is not None:
+            sock = self._socket
+            if sock is not None:
                 try:
-                    return self._socket.recv(self._CHUNK_BYTES)
-                except TimeoutError:
+                    readable, _, _ = select.select([sock], [], [], self._POLL_SECONDS)
+                except (OSError, ValueError):
+                    return b""
+                if not readable:
+                    continue
+                try:
+                    return sock.recv(self._CHUNK_BYTES)
+                except (BlockingIOError, ssl.SSLWantReadError):
                     continue
                 except OSError:
                     return b""  # reset, truncated body, or closed underneath us
@@ -144,6 +187,23 @@ class MjpegHttpSource:
             except (OSError, ValueError, EOFError, AttributeError, http.client.HTTPException):
                 return b""  # reset, truncated body, or closed underneath us
             return chunk if chunk else b""  # b"" means clean EOF
+
+    @classmethod
+    def _take_prefetched_body(cls, response: http.client.HTTPResponse) -> bytearray:
+        file_object = getattr(response, "fp", None)
+        peek = getattr(file_object, "peek", None)
+        if peek is None:
+            return bytearray()
+        try:
+            # With the socket non-blocking, peek() only exposes bytes already
+            # held by the HTTP BufferedReader; read1() drains those bytes without
+            # waiting to fill the request from the raw socket.
+            available = peek(cls._CHUNK_BYTES)
+            if not available:
+                return bytearray()
+            return bytearray(file_object.read1(len(available)))
+        except (OSError, ValueError, AttributeError, http.client.HTTPException):
+            return bytearray()
 
     @staticmethod
     def _detach_socket(response: http.client.HTTPResponse) -> socket.socket | None:

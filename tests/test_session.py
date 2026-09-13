@@ -23,6 +23,23 @@ def build_runtime(robot: RecordingRobot, session: SessionControl, sink):
     )
 
 
+class CancellableRobot(RecordingRobot):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def test_attach_after_stop_cancels_robot_immediately() -> None:
+    session = SessionControl()
+    session.request_stop()
+    robot = CancellableRobot()
+    session.attach_robot(robot)
+    assert robot.cancelled
+
+
 def test_session_can_arm_then_stop_from_events() -> None:
     session = SessionControl()
     robot = RecordingRobot()

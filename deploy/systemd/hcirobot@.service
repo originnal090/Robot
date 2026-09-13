@@ -1,0 +1,23 @@
+[Unit]
+Description=HCIRobot Orange Pi controller (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hcirobot
+Group=hcirobot
+WorkingDirectory=/opt/hcirobot
+EnvironmentFile=-/etc/hcirobot/orangepi.env
+ExecStartPre=/opt/hcirobot/.venv/bin/python -m hcirobot --config /etc/hcirobot/%i.toml --check-config
+ExecStart=/opt/hcirobot/.venv/bin/python -m hcirobot --config /etc/hcirobot/%i.toml
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+# This template deliberately omits --arm. Use an operator-controlled launch for
+# autonomous movement; a service restart must not resume motion automatically.
+
+[Install]
+WantedBy=multi-user.target
