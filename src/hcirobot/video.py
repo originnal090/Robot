@@ -297,3 +297,84 @@ def annotate(
             2,
         )
     return output
+
+
+class RetryingSource:
+    """Reopen the underlying video source on EOF/error instead of ending the session.
+
+    Built for live MJPEG over flaky WiFi: the control session stays up while
+    the source quietly reconnects (bounded backoff).  Safety is preserved
+    upstream: an armed session still stops safely through run_loop's frame
+    timeout, and the GUI opts preview sessions out of preview-timeout via
+    ``video_retry`` so only user stop ends them.
+    """
+
+    _INITIAL_BACKOFF_S = 0.2
+    _MAX_BACKOFF_S = 3.0
+
+    def __init__(self, factory, *, on_event=None):
+        self._factory = factory
+        self._on_event = on_event
+        self._source = None
+        self._closed = False
+        self._failures = 0
+
+    def __iter__(self) -> Iterator[Frame]:
+        backoff = self._INITIAL_BACKOFF_S
+        while not self._closed:
+            if self._source is None:
+                try:
+                    self._source = self._factory()
+                except Exception as exc:  # noqa: BLE001 - open failures retry too.
+                    self._note(f"打开视频源失败（{type(exc).__name__}: {exc}）")
+                    if not self._sleep(backoff):
+                        return
+                    backoff = min(backoff * 2, self._MAX_BACKOFF_S)
+                    continue
+            try:
+                for frame in self._source:
+                    if self._closed:
+                        return
+                    if self._failures:
+                        count = self._failures
+                        self._failures = 0
+                        self._emit(f"视频已恢复（此前中断 {count} 次）")
+                    backoff = self._INITIAL_BACKOFF_S
+                    yield frame
+                self._source = None  # clean EOF: the server rotated the stream
+                self._note("视频流结束")
+                if not self._sleep(backoff):
+                    return
+                backoff = min(backoff * 2, self._MAX_BACKOFF_S)
+            except Exception as exc:  # noqa: BLE001 - stream break: reconnect.
+                with contextlib.suppress(Exception):
+                    self._source.close()
+                self._source = None
+                self._note(f"视频中断（{type(exc).__name__}: {exc}）")
+                if not self._sleep(backoff):
+                    return
+                backoff = min(backoff * 2, self._MAX_BACKOFF_S)
+
+    def close(self) -> None:
+        self._closed = True
+        source, self._source = self._source, None
+        if source is not None:
+            with contextlib.suppress(Exception):
+                source.close()
+
+    def _sleep(self, seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while not self._closed and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return not self._closed
+
+    def _note(self, message: str) -> None:
+        self._failures += 1
+        if self._failures == 1 or self._failures % 5 == 0:
+            self._emit(f"{message}，自动重连中（第 {self._failures} 次）")
+
+    def _emit(self, message: str) -> None:
+        callback = self._on_event
+        if callback is not None:
+            with contextlib.suppress(Exception):
+                callback(message)

@@ -20,7 +20,14 @@ from .controller import VisualApproachController
 from .detector import RedBallDetector
 from .gamepad import GamepadMonitor, GamepadTeleop
 from .navigation import ObstaclePolicy, obstacle_config
-from .robot import FanoutRobot, MirrorTcpRobot, RecordingRobot, TcpRobotClient, parse_endpoint
+from .robot import (
+    FanoutRobot,
+    MirrorTcpRobot,
+    RecordingRobot,
+    TcpRobotClient,
+    parse_endpoint,
+    same_endpoint,
+)
 from .unity_udp import UnityStatusConfig, UnityStatusPublisher, fanout_event_sinks
 from .video import MjpegHttpSource, OpenCvVideoSource, SyntheticBallSource, SyntheticConfig
 
@@ -232,13 +239,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 robot.connect()
                 if args.robot_mirror:
-                    mirrors = tuple(
-                        MirrorTcpRobot(
-                            *parse_endpoint(endpoint), connect_timeout=1.0, on_status=_mirror_log
+                    mirrors = []
+                    for endpoint in args.robot_mirror:
+                        mirror_host, mirror_port = parse_endpoint(endpoint)
+                        if same_endpoint(robot_host, robot_port, (mirror_host, mirror_port)):
+                            print("[mirror] 镜像地址与机器人相同，已忽略", file=sys.stderr)
+                            continue
+                        mirrors.append(
+                            MirrorTcpRobot(
+                                mirror_host, mirror_port, connect_timeout=1.0, on_status=_mirror_log
+                            )
                         )
-                        for endpoint in args.robot_mirror
-                    )
-                    robot = FanoutRobot(robot, mirrors)
+                    if mirrors:
+                        robot = FanoutRobot(robot, tuple(mirrors))
             else:
                 robot = RecordingRobot()
         except BaseException:

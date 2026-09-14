@@ -64,6 +64,19 @@ def parse_endpoint(text: str, *, default_port: int = 5075) -> tuple[str, int]:
     return host, port
 
 
+def same_endpoint(host: str, port: int, other: tuple[str, int]) -> bool:
+    """True when ``other`` resolves to host:port (loopback aliases count)."""
+    aliases: dict[str, set[str]] = {
+        "127.0.0.1": {"127.0.0.1", "localhost", "::1"},
+        "localhost": {"127.0.0.1", "localhost", "::1"},
+        "::1": {"127.0.0.1", "localhost", "::1"},
+    }
+    other_host, other_port = other
+    if port != other_port:
+        return False
+    return other_host == host or other_host in aliases.get(host, set())
+
+
 class MirrorTcpRobot:
     """Best-effort command mirror to a secondary TCP service (e.g. the Unity twin).
 

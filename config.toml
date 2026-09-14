@@ -3,7 +3,7 @@ source = "synthetic"
 width = 640
 height = 480
 fps = 10.0
-frame_timeout_seconds = 0.75
+frame_timeout_seconds = 1.5
 
 [detection]
 # Tuned on 200 captured robot frames (see artifacts/eval-output): the ball reads

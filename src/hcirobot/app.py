@@ -258,6 +258,7 @@ def run_loop(
     event_sink: EventSink | None = None,
     obstacle_policy: ObstaclePolicy | None = None,
     frame_recorder=None,
+    video_retry: bool = False,
 ) -> RunResult:
     if frame_timeout_seconds <= 0:
         raise ValueError("frame timeout must be positive")
@@ -378,6 +379,8 @@ def run_loop(
                 if time.monotonic() - last_frame_received < frame_timeout_seconds:
                     continue
                 if controller.state is ControlState.IDLE:
+                    if video_retry:
+                        continue  # a retrying source owns recovery; preview stays up
                     termination = "preview_timeout"
                     break
                 finish_safe("video_timeout")

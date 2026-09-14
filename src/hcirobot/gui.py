@@ -20,8 +20,16 @@ from .detector import DetectorConfig, RedBallDetector
 from .frame_recorder import FrameRecorder
 from .gamepad import TOGGLE_HINT, GamepadMonitor, GamepadTeleop, map_to_command
 from .gui_model import GuiModel, SessionState
-from .robot import FanoutRobot, MirrorTcpRobot, RecordingRobot, TcpRobotClient, parse_endpoint
+from .robot import (
+    FanoutRobot,
+    MirrorTcpRobot,
+    RecordingRobot,
+    TcpRobotClient,
+    parse_endpoint,
+    same_endpoint,
+)
 from .unity_udp import UnityStatusPublisher, fanout_event_sinks
+from .video import RetryingSource
 
 BG = "#101417"
 PANEL = "#181e22"
@@ -63,6 +71,8 @@ def _default_tuning() -> dict[str, str]:
         "maximum_aspect_ratio": str(detector.maximum_aspect_ratio),
         "confirmation_frames": str(detector.confirmation_frames),
         "release_frames": str(detector.release_frames),
+        "core_a_min": str(detector.core_a_min),
+        "minimum_core_fraction": str(detector.minimum_core_fraction),
         "align_enter_error": str(controller.align_enter_error),
         "align_exit_error": str(controller.align_exit_error),
         "arrival_radius_ratio": str(controller.arrival_radius_ratio),
@@ -413,14 +423,18 @@ class RobotControlApp:
         entry(5, 3, "align_exit_error")
         label(6, 0, "到达半径比")
         entry(6, 1, "arrival_radius_ratio")
+        label(7, 0, "红核A下限")
+        entry(7, 1, "core_a_min")
+        label(7, 2, "红核占比")
+        entry(7, 3, "minimum_core_fraction")
         ttk.Label(
             panel,
-            text="LAB 顺序为 L/A/B；输入不实时生效，点“应用参数”后热更新",
+            text="LAB 顺序为 L/A/B；红核占比设 0 关闭该门控；点“应用参数”后热更新",
             style="PanelMuted.TLabel",
             wraplength=300,
-        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(4, 2))
+        ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(4, 2))
         buttons = ttk.Frame(panel, style="Panel.TFrame")
-        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(0, 2))
+        buttons.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(0, 2))
         self.apply_params_button = ttk.Button(
             buttons,
             text="应用参数",
@@ -609,6 +623,8 @@ class RobotControlApp:
             "maximum_aspect_ratio": detection["maximum_aspect_ratio"],
             "confirmation_frames": detection["confirmation_frames"],
             "release_frames": detection["release_frames"],
+            "core_a_min": detection["core_a_min"],
+            "minimum_core_fraction": detection["minimum_core_fraction"],
             "align_enter_error": controller["align_enter_error"],
             "align_exit_error": controller["align_exit_error"],
             "arrival_radius_ratio": controller["arrival_radius_ratio"],
@@ -702,9 +718,23 @@ class RobotControlApp:
                 values["backend"],
                 bool(values["obstacle"]),
             )
-            source = build_source(
-                values["source"], config["video"], realtime=values["source"] == "synthetic"
-            )
+
+            def open_source():
+                return build_source(
+                    values["source"], config["video"], realtime=values["source"] == "synthetic"
+                )
+
+            if values["source"].startswith(("http://", "https://")) or values["source"].isdigit():
+                # Live MJPEG/webcam over flaky WiFi: reconnect instead of dying.
+                # Video files keep their video_ended semantics.
+                source = RetryingSource(
+                    open_source,
+                    on_event=lambda message: self._publish_event(RuntimeEvent("warning", message)),
+                )
+                retry_video = True
+            else:
+                source = open_source()
+                retry_video = False
             if values["backend"] == "tcp":
                 robot = TcpRobotClient(
                     values["host"],
@@ -714,13 +744,25 @@ class RobotControlApp:
                 )
                 if values["mirror"] is not None:
                     mirror_host, mirror_port = values["mirror"]
-                    mirror = MirrorTcpRobot(
-                        mirror_host,
-                        mirror_port,
-                        connect_timeout=1.0,
-                        on_status=self._publish_mirror_log,
-                    )
-                    robot = FanoutRobot(robot, (mirror,))
+                    if same_endpoint(
+                        values["host"], int(values["port"]), (mirror_host, mirror_port)
+                    ):
+                        # The 5075 server keeps ONE client: mirroring to the
+                        # primary itself would kick our own session in a loop.
+                        self._publish_event(
+                            RuntimeEvent(
+                                "warning",
+                                "镜像地址与机器人相同，已忽略；镜像应指向 Unity 等另一个端点",
+                            )
+                        )
+                    else:
+                        mirror = MirrorTcpRobot(
+                            mirror_host,
+                            mirror_port,
+                            connect_timeout=1.0,
+                            on_status=self._publish_mirror_log,
+                        )
+                        robot = FanoutRobot(robot, (mirror,))
             else:
                 robot = RecordingRobot()
             # Attach before connect so Stop/E-stop can cancel a pending TCP start.
@@ -745,6 +787,7 @@ class RobotControlApp:
                 session=control,
                 event_sink=fanout_event_sinks(self._publish_event, unity_publisher),
                 frame_recorder=self.frame_recorder,
+                video_retry=retry_video,
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.
@@ -1006,6 +1049,8 @@ class RobotControlApp:
                 maximum_aspect_ratio=self._tuning_float("maximum_aspect_ratio"),
                 confirmation_frames=self._tuning_int("confirmation_frames"),
                 release_frames=self._tuning_int("release_frames"),
+                core_a_min=self._tuning_int("core_a_min"),
+                minimum_core_fraction=self._tuning_float("minimum_core_fraction"),
             )
             controller_cfg = ControllerConfig(
                 align_enter_error=self._tuning_float("align_enter_error"),

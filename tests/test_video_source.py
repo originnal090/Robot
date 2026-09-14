@@ -300,3 +300,134 @@ def test_open_failure_raises_connection_error() -> None:
 
     with pytest.raises(ConnectionError):
         MjpegHttpSource(f"http://127.0.0.1:{port}/?action=stream", timeout_seconds=1.0)
+
+
+# ---------- RetryingSource ----------
+
+import threading as _threading
+
+
+class FlakyStream:
+    """Yields two frames then breaks: by exception (first life) and EOF (later)."""
+
+    lives = 0
+
+    def __iter__(self):
+        type(self).lives += 1
+        yield np.zeros((8, 8, 3), dtype=np.uint8)
+        yield np.zeros((8, 8, 3), dtype=np.uint8)
+        if type(self).lives == 1:
+            raise ConnectionError("wifi hiccup")
+        # later lives end with a clean EOF (which a live stream retries)
+
+
+def test_retrying_source_recovers_from_errors_and_eof() -> None:
+    from hcirobot.video import RetryingSource
+
+    notes: list[str] = []
+    source = RetryingSource(lambda: FlakyStream(), on_event=notes.append)
+    frames = []
+    for frame in source:
+        frames.append(frame)
+        if len(frames) == 4:
+            break  # EOF retries forever on live streams; stop consuming here
+    source.close()
+    assert len(frames) == 4  # two frames per connection, two connections
+    assert FlakyStream.lives == 2
+    assert any("中断" in note for note in notes)
+    assert any("已恢复" in note for note in notes)
+
+
+def test_retrying_source_open_failure_retries_and_close_stops() -> None:
+    from hcirobot.video import RetryingSource
+
+    attempts = {"count": 0}
+
+    def failing_factory():
+        attempts["count"] += 1
+        raise ConnectionError("camera down")
+
+    source = RetryingSource(failing_factory)
+    iterator = iter(source)
+    thread = _threading.Thread(target=lambda: [None for _ in iterator], daemon=True)
+    thread.start()
+    time.sleep(0.6)
+    source.close()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert attempts["count"] >= 2
+
+
+class StallingSource:
+    """Three frames, a stall longer than the frame timeout, then more frames.
+
+    close() is interruptible (sliced sleep) like the real MJPEG source.
+    """
+
+    def __init__(self, stall_seconds: float = 1.2) -> None:
+        self._closed = _threading.Event()
+        self._stall_seconds = stall_seconds
+
+    def __iter__(self):
+        for _ in range(3):
+            yield np.zeros((48, 64, 3), dtype=np.uint8)
+        slices = int(self._stall_seconds / 0.05)
+        for _ in range(slices):
+            if self._closed.is_set():
+                return
+            time.sleep(0.05)
+        for _ in range(3):
+            yield np.zeros((48, 64, 3), dtype=np.uint8)
+        while not self._closed.is_set():
+            time.sleep(0.05)
+
+    def close(self) -> None:
+        self._closed.set()
+
+
+def test_run_loop_video_retry_keeps_preview_alive_through_stall() -> None:
+    from hcirobot.app import SessionControl, run_loop
+    from hcirobot.controller import ControllerConfig, VisualApproachController
+    from hcirobot.detector import DetectorConfig, RedBallDetector
+    from hcirobot.robot import RecordingRobot
+    from hcirobot.video import RetryingSource
+
+    session = SessionControl()
+    lives = {"count": 0}
+
+    def factory():
+        lives["count"] += 1
+        return StallingSource()
+
+    def sink(event):
+        if event.kind == "frame" and event.frame_count >= 6:
+            session.request_stop()
+
+    result = run_loop(
+        RetryingSource(factory),
+        RedBallDetector(DetectorConfig()),
+        VisualApproachController(ControllerConfig()),
+        RecordingRobot(),
+        armed=False,
+        frame_timeout_seconds=0.5,
+        session=session,
+        event_sink=sink,
+        video_retry=True,
+    )
+    assert result.termination == "stop_requested"  # survived the 1.2 s stall
+    assert result.frames >= 6
+
+    # Without the flag the same stall ends an unarmed preview session.
+    session = SessionControl()
+    result = run_loop(
+        StallingSource(),
+        RedBallDetector(DetectorConfig()),
+        VisualApproachController(ControllerConfig()),
+        RecordingRobot(),
+        armed=False,
+        frame_timeout_seconds=0.5,
+        session=session,
+        event_sink=lambda _event: None,
+        video_retry=False,
+    )
+    assert result.termination == "preview_timeout"
