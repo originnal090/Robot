@@ -31,10 +31,21 @@ release_frames = 3
 # 到达（ARRIVED）后自动下发的一次性动作，使用课程 CMD 按钮名：
 # right_grip = 蹲下灭火（outfire 动作组）；留空 "" 关闭。
 arrival_action = "right_grip"
+# 真机标定（2026-09-14 场地采集帧 capture-20260914-091540）：贴脸时球被画面
+# 底边裁剪，半径比封顶 ~0.13，frame-01447（approached）实测 ~0.10。
+arrival_radius_ratio = 0.10
+slow_radius_ratio = 0.06
+# 接近模式：fast_then_slow（远快近慢）| normal | normal_then_slow（默认）
+# | slow_realtime（慢速连续，无走走停停）。前三种按 走->停->识别 循环，
+# 走的时长随球变大而缩短（越近识别越频繁）。速度值对应机器人端三档动作组：
+# <=0.45 one_step / <=0.75 常速 / >0.75 fast。
+approach_mode = "normal_then_slow"
+walk_seconds_far = 1.5
+walk_seconds_near = 0.5
+settle_seconds = 0.4
+sense_seconds = 0.7
 align_enter_error = 0.08
 align_exit_error = 0.14
-arrival_radius_ratio = 0.18
-slow_radius_ratio = 0.10
 search_steer = 0.35
 search_reverse_seconds = 2.0
 max_search_seconds = 12.0

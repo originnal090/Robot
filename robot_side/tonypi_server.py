@@ -41,6 +41,20 @@ ACTION_TURN_R = "turn_right"
 ACTION_TURN_L = "turn_left"
 ACTION_STAND = "stand"
 
+# Speed tiers (|v| / |steer|): deadzone < |x| <= TIER_SLOW_MAX -> *_slow groups,
+# <= TIER_FAST_MIN -> normal groups, above -> *_fast groups.  The tiered group
+# names ship in the vendor ActionGroups library (TonyPi/ActionGroups/*.d6a).
+TIER_SLOW_MAX = 0.45
+TIER_FAST_MIN = 0.75
+ACTION_FORWARD_SLOW = "go_forward_one_step"
+ACTION_FORWARD_FAST = "go_forward_fast"
+ACTION_BACK_SLOW = "back_one_step"
+ACTION_BACK_FAST = "back_fast"
+ACTION_TURN_R_SLOW = "turn_right_small_step"
+ACTION_TURN_R_FAST = "turn_right_fast"
+ACTION_TURN_L_SLOW = "turn_left_small_step"
+ACTION_TURN_L_FAST = "turn_left_fast"
+
 CMD_MAP = {
     "right_grip": "outfire",
     "right_trigger": "stand_up_back",
@@ -112,6 +126,16 @@ class ServiceConfig:
     action_back: str = ACTION_BACK
     action_turn_r: str = ACTION_TURN_R
     action_turn_l: str = ACTION_TURN_L
+    tier_slow_max: float = TIER_SLOW_MAX
+    tier_fast_min: float = TIER_FAST_MIN
+    action_forward_slow: str = ACTION_FORWARD_SLOW
+    action_forward_fast: str = ACTION_FORWARD_FAST
+    action_back_slow: str = ACTION_BACK_SLOW
+    action_back_fast: str = ACTION_BACK_FAST
+    action_turn_r_slow: str = ACTION_TURN_R_SLOW
+    action_turn_r_fast: str = ACTION_TURN_R_FAST
+    action_turn_l_slow: str = ACTION_TURN_L_SLOW
+    action_turn_l_fast: str = ACTION_TURN_L_FAST
     action_stand: str = ACTION_STAND
     head_pitch_id: int = HEAD_PITCH_ID
     head_yaw_id: int = HEAD_YAW_ID
@@ -280,6 +304,32 @@ def load_config(
                 str,
             ),
         ),
+        tier_slow_max=value("tier_slow_max", "TONYPI_TIER_SLOW_MAX", TIER_SLOW_MAX, float),
+        tier_fast_min=value("tier_fast_min", "TONYPI_TIER_FAST_MIN", TIER_FAST_MIN, float),
+        action_forward_slow=value(
+            "action_forward_slow", "TONYPI_ACTION_FORWARD_SLOW", ACTION_FORWARD_SLOW, str
+        ),
+        action_forward_fast=value(
+            "action_forward_fast", "TONYPI_ACTION_FORWARD_FAST", ACTION_FORWARD_FAST, str
+        ),
+        action_back_slow=value(
+            "action_back_slow", "TONYPI_ACTION_BACK_SLOW", ACTION_BACK_SLOW, str
+        ),
+        action_back_fast=value(
+            "action_back_fast", "TONYPI_ACTION_BACK_FAST", ACTION_BACK_FAST, str
+        ),
+        action_turn_r_slow=value(
+            "action_turn_r_slow", "TONYPI_ACTION_TURN_R_SLOW", ACTION_TURN_R_SLOW, str
+        ),
+        action_turn_r_fast=value(
+            "action_turn_r_fast", "TONYPI_ACTION_TURN_R_FAST", ACTION_TURN_R_FAST, str
+        ),
+        action_turn_l_slow=value(
+            "action_turn_l_slow", "TONYPI_ACTION_TURN_L_SLOW", ACTION_TURN_L_SLOW, str
+        ),
+        action_turn_l_fast=value(
+            "action_turn_l_fast", "TONYPI_ACTION_TURN_L_FAST", ACTION_TURN_L_FAST, str
+        ),
         action_stand=value("action_stand", "TONYPI_ACTION_STAND", ACTION_STAND, str),
         head_pitch_id=value("head_pitch_id", "TONYPI_HEAD_PITCH_ID", HEAD_PITCH_ID, int),
         head_yaw_id=value("head_yaw_id", "TONYPI_HEAD_YAW_ID", HEAD_YAW_ID, int),
@@ -356,12 +406,23 @@ def validate_config(config: ServiceConfig) -> None:
     if not 1 <= config.sonar_max_valid_mm < config.sonar_disconnected_sentinel:
         errors.append("sonar max must be positive and below the disconnected sentinel")
 
+    if not config.deadzone < config.tier_slow_max < config.tier_fast_min <= 1.0:
+        errors.append("speed tiers must satisfy deadzone < tier_slow_max < tier_fast_min <= 1")
+
     actions = (
         config.action_forward,
         config.action_back,
         config.action_turn_r,
         config.action_turn_l,
         config.action_stand,
+        config.action_forward_slow,
+        config.action_forward_fast,
+        config.action_back_slow,
+        config.action_back_fast,
+        config.action_turn_r_slow,
+        config.action_turn_r_fast,
+        config.action_turn_l_slow,
+        config.action_turn_l_fast,
     )
     if any(_ACTION_RE.fullmatch(name or "") is None for name in actions):
         errors.append("action group names must match [A-Za-z0-9_.-]{1,128}")
@@ -387,8 +448,7 @@ def validate_config(config: ServiceConfig) -> None:
 
     if config.mode == MODE_HARDWARE and config.sonar_sim and not config.allow_sonar_sim_in_hardware:
         errors.append(
-            "TONYPI_SONAR_SIM is forbidden in hardware mode unless "
-            "TONYPI_ALLOW_SIM_WITH_HARDWARE=1"
+            "TONYPI_SONAR_SIM is forbidden in hardware mode unless TONYPI_ALLOW_SIM_WITH_HARDWARE=1"
         )
     if config.mode == MODE_DRY_RUN and config.require_sonar and not config.sonar_sim:
         errors.append("dry-run with required Sonar needs TONYPI_SONAR_SIM")
@@ -406,11 +466,7 @@ def validate_config(config: ServiceConfig) -> None:
         if not group_dir.is_dir():
             errors.append("action_group_dir does not exist or is not a directory")
         else:
-            missing = [
-                name
-                for name in actions
-                if not (group_dir / (name + ".d6a")).is_file()
-            ]
+            missing = [name for name in actions if not (group_dir / (name + ".d6a")).is_file()]
             if missing:
                 errors.append("missing action group files: %s" % ", ".join(missing))
 
@@ -489,11 +545,27 @@ def clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 
 
-def vector_to_mode(v: float, steer: float, deadzone: float = DEADZONE) -> str:
+def vector_to_mode(
+    v: float,
+    steer: float,
+    deadzone: float = DEADZONE,
+    slow_max: float = TIER_SLOW_MAX,
+    fast_min: float = TIER_FAST_MIN,
+) -> str:
+    """Turn-priority mode with speed tiers mapped to distinct gait groups."""
+
+    def tier(value: float) -> str:
+        magnitude = abs(value)
+        if magnitude <= slow_max:
+            return "_slow"
+        if magnitude <= fast_min:
+            return ""
+        return "_fast"
+
     if abs(steer) > deadzone:
-        return "turn_r" if steer > 0 else "turn_l"
+        return ("turn_r" if steer > 0 else "turn_l") + tier(steer)
     if abs(v) > deadzone:
-        return "forward" if v > 0 else "back"
+        return ("forward" if v > 0 else "back") + tier(v)
     return "stand"
 
 
@@ -554,6 +626,16 @@ class RobotSession:
     action_turn_r: str = ACTION_TURN_R
     action_turn_l: str = ACTION_TURN_L
     action_stand: str = ACTION_STAND
+    tier_slow_max: float = TIER_SLOW_MAX
+    tier_fast_min: float = TIER_FAST_MIN
+    action_forward_slow: str = ACTION_FORWARD_SLOW
+    action_forward_fast: str = ACTION_FORWARD_FAST
+    action_back_slow: str = ACTION_BACK_SLOW
+    action_back_fast: str = ACTION_BACK_FAST
+    action_turn_r_slow: str = ACTION_TURN_R_SLOW
+    action_turn_r_fast: str = ACTION_TURN_R_FAST
+    action_turn_l_slow: str = ACTION_TURN_L_SLOW
+    action_turn_l_fast: str = ACTION_TURN_L_FAST
     allow_cmd_while_moving: bool = True
     nod: Callable[[], List[Tuple[Any, ...]]] = field(default=nod_plan)
     shake: Callable[[], List[Tuple[Any, ...]]] = field(default=shake_plan)
@@ -570,6 +652,16 @@ class RobotSession:
             action_turn_r=config.action_turn_r,
             action_turn_l=config.action_turn_l,
             action_stand=config.action_stand,
+            tier_slow_max=config.tier_slow_max,
+            tier_fast_min=config.tier_fast_min,
+            action_forward_slow=config.action_forward_slow,
+            action_forward_fast=config.action_forward_fast,
+            action_back_slow=config.action_back_slow,
+            action_back_fast=config.action_back_fast,
+            action_turn_r_slow=config.action_turn_r_slow,
+            action_turn_r_fast=config.action_turn_r_fast,
+            action_turn_l_slow=config.action_turn_l_slow,
+            action_turn_l_fast=config.action_turn_l_fast,
             allow_cmd_while_moving=config.allow_cmd_while_moving,
             nod=lambda: nod_plan(config),
             shake=lambda: shake_plan(config),
@@ -592,7 +684,9 @@ class RobotSession:
         except (TypeError, ValueError):
             return []
         self.last_rx_ts = self.now()
-        return self._set_mode(vector_to_mode(v, steer, self.deadzone))
+        return self._set_mode(
+            vector_to_mode(v, steer, self.deadzone, self.tier_slow_max, self.tier_fast_min)
+        )
 
     def handle_cmd(self, raw_cmd: str, ts: Optional[float] = None) -> List[Tuple[Any, ...]]:
         cmd = (raw_cmd or "").strip().lower()
@@ -630,9 +724,17 @@ class RobotSession:
     def tick_group(self) -> Optional[str]:
         return {
             "forward": self.action_forward,
+            "forward_slow": self.action_forward_slow,
+            "forward_fast": self.action_forward_fast,
             "back": self.action_back,
+            "back_slow": self.action_back_slow,
+            "back_fast": self.action_back_fast,
             "turn_r": self.action_turn_r,
+            "turn_r_slow": self.action_turn_r_slow,
+            "turn_r_fast": self.action_turn_r_fast,
             "turn_l": self.action_turn_l,
+            "turn_l_slow": self.action_turn_l_slow,
+            "turn_l_fast": self.action_turn_l_fast,
         }.get(self.mode)
 
     def force_stand(self) -> List[Tuple[Any, ...]]:

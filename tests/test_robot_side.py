@@ -64,9 +64,7 @@ def test_hardware_mode_missing_actuator_sdk_fails_startup(
 
 def test_hardware_mode_forbids_sonar_sim_by_default() -> None:
     with pytest.raises(ts.ConfigError, match="forbidden in hardware mode"):
-        ts.load_config(
-            environ={"TONYPI_MODE": "hardware", "TONYPI_SONAR_SIM": "flat:500"}
-        )
+        ts.load_config(environ={"TONYPI_MODE": "hardware", "TONYPI_SONAR_SIM": "flat:500"})
     config = ts.load_config(
         environ={
             "TONYPI_MODE": "hardware",
@@ -111,7 +109,9 @@ def test_config_rejects_invalid_ranges(name: str, value: str, match: str) -> Non
 def test_required_sonar_preflight_requires_valid_reading() -> None:
     config = ts.ServiceConfig(mode=ts.MODE_HARDWARE, require_sonar=True)
 
-    ts.check_sonar_reading(config, ts.RuntimeHardware(sonar=SimpleNamespace(getDistance=lambda: 432)))
+    ts.check_sonar_reading(
+        config, ts.RuntimeHardware(sonar=SimpleNamespace(getDistance=lambda: 432))
+    )
 
     with pytest.raises(ts.StartupError, match="disconnected sentinel"):
         ts.check_sonar_reading(
@@ -124,7 +124,9 @@ def test_required_sonar_preflight_requires_valid_reading() -> None:
     with pytest.raises(ts.StartupError, match="read failed"):
         ts.check_sonar_reading(
             config,
-            ts.RuntimeHardware(sonar=SimpleNamespace(getDistance=lambda: (_ for _ in ()).throw(OSError("i2c")))),
+            ts.RuntimeHardware(
+                sonar=SimpleNamespace(getDistance=lambda: (_ for _ in ()).throw(OSError("i2c")))
+            ),
         )
 
 
@@ -156,11 +158,14 @@ def test_vector_to_mode_deadzone_and_turn_priority() -> None:
     assert ts.vector_to_mode(0.0, 0.0) == "stand"
     assert ts.vector_to_mode(0.19, 0.0) == "stand"  # 死区内
     assert ts.vector_to_mode(-0.19, 0.0) == "stand"
-    assert ts.vector_to_mode(0.21, 0.0) == "forward"
-    assert ts.vector_to_mode(-0.21, 0.0) == "back"  # v<0 后退
-    assert ts.vector_to_mode(0.0, 0.21) == "turn_r"
-    assert ts.vector_to_mode(0.0, -0.21) == "turn_l"
-    assert ts.vector_to_mode(0.9, 0.9) == "turn_r"  # 转向优先
+    assert ts.vector_to_mode(0.21, 0.0) == "forward_slow"  # 慢速档（one_step）
+    assert ts.vector_to_mode(-0.21, 0.0) == "back_slow"
+    assert ts.vector_to_mode(0.6, 0.0) == "forward"  # 常速档
+    assert ts.vector_to_mode(0.9, 0.0) == "forward_fast"  # 快速档
+    assert ts.vector_to_mode(0.0, 0.21) == "turn_r_slow"
+    assert ts.vector_to_mode(0.0, -0.5) == "turn_l"
+    assert ts.vector_to_mode(0.0, -0.8) == "turn_l_fast"
+    assert ts.vector_to_mode(0.9, 0.9) == "turn_r_fast"  # 转向优先
 
 
 def test_json_line_maps_to_discrete_gait_groups() -> None:
@@ -651,9 +656,7 @@ def test_color_forward_and_distance_telemetry_do_not_interleave_frames(
     service = ts.TonyPiService()
     service._conn = conn
     done = threading.Event()
-    worker = threading.Thread(
-        target=service._distance_loop, args=(lambda: 4321, done), daemon=True
-    )
+    worker = threading.Thread(target=service._distance_loop, args=(lambda: 4321, done), daemon=True)
     worker.start()
     try:
         for _ in range(50):

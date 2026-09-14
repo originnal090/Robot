@@ -235,6 +235,25 @@ MJPEG 流使用项目自带的纯 Python 解析器（不再经过 OpenCV/FFmpeg 
 
 点击“应用参数”立即对当前会话生效（非法值只写日志不崩溃）；“恢复默认”重新读取 `config.toml`。调参时建议先用 `recording` 后端，观察遥测区的目标确认与误差变化。
 
+#### 接近模式（走走停停）
+
+避障面板新增"接近模式"下拉框（会话启动时读入，运行中切换需重开会话），CLI 对应
+`--approach-mode`：
+
+| 模式 | 行为 |
+|---|---|
+| `fast_then_slow` | 远处用 fast 档冲刺，靠近后降慢速 |
+| `normal` | 全程常速 |
+| `normal_then_slow`（默认） | 常速接近，临近减速 |
+| `slow_realtime` | 慢速连续，实时识别（无走走停停） |
+
+前三种按 **走(walk)→停稳(settle)→识别(sense)** 循环：walk 段重复上次识别出的
+意图（时长 `walk_seconds_far`→`walk_seconds_near` 随球变大线性缩短）、settle 段
+停车丢帧 `settle_seconds`、sense 段逐帧检测 `sense_seconds`。手柄/点动绕过节拍，
+超声波避障随时打断 walk。机器人端 `tonypi_server.py` 按速度幅值三档选动作组
+（阈值 `tier_slow_max=0.45`、`tier_fast_min=0.75`，动作组名可配，
+`--check` 会校验存在性）。
+
 #### 手动测试面板
 
 “手动测试”区用于连通性与动作验证：

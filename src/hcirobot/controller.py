@@ -8,6 +8,18 @@ from .model import ControlState, Detection, RobotCommand
 
 _ACTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_]{1,32}")
 
+# Approach strategies.  Modes 1-3 gate motion into walk/settle/sense cycles
+# (see ApproachGate); "slow_realtime" is classic continuous control.  Speed
+# pairs are (far, near) velocity magnitudes chosen to land in the robot-side
+# gait bands: <=0.45 one_step, <=0.75 normal, >0.75 fast.
+APPROACH_MODES = ("fast_then_slow", "normal", "normal_then_slow", "slow_realtime")
+APPROACH_SPEEDS: dict[str, tuple[float, float]] = {
+    "fast_then_slow": (0.85, 0.30),
+    "normal": (0.60, 0.60),
+    "normal_then_slow": (0.60, 0.30),
+    "slow_realtime": (0.30, 0.30),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ControllerConfig:
@@ -33,6 +45,13 @@ class ControllerConfig:
     # course button-name namespace so both TCP_connect.py and tonypi_server.py
     # accept it: "right_grip" maps to the crouch-and-extinguish (outfire) group.
     arrival_action: str = "right_grip"
+    # Walk-burst approach (modes 1-3): walk -> settle -> sense phase cycle.
+    # Walk length shrinks as the ball grows: near = more frequent re-sensing.
+    approach_mode: str = "normal_then_slow"
+    walk_seconds_far: float = 1.5
+    walk_seconds_near: float = 0.5
+    settle_seconds: float = 0.4
+    sense_seconds: float = 0.7
 
     def __post_init__(self) -> None:
         float_values = (
@@ -75,6 +94,20 @@ class ControllerConfig:
             raise ValueError(
                 "arrival action must be 1-32 alphanumeric/underscore characters or empty"
             )
+        if self.approach_mode not in APPROACH_MODES:
+            raise ValueError(f"approach mode must be one of: {', '.join(APPROACH_MODES)}")
+        if (
+            min(
+                self.walk_seconds_far,
+                self.walk_seconds_near,
+                self.settle_seconds,
+                self.sense_seconds,
+            )
+            <= 0
+        ):
+            raise ValueError("approach phase durations must be positive")
+        if self.walk_seconds_near > self.walk_seconds_far:
+            raise ValueError("walk_seconds_near must not exceed walk_seconds_far")
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,12 +294,13 @@ class VisualApproachController:
     def _approach_speed(self, radius_ratio: float) -> float:
         if radius_ratio >= self.config.arrival_radius_ratio:
             return 0.0
+        far_speed, near_speed = APPROACH_SPEEDS[self.config.approach_mode]
         span = self.config.arrival_radius_ratio - self.config.slow_radius_ratio
         if span <= 0:
-            return self.config.near_speed
+            return near_speed
         scale = (self.config.arrival_radius_ratio - radius_ratio) / span
         scale = max(0.0, min(1.0, scale))
-        return self.config.near_speed + (self.config.far_speed - self.config.near_speed) * scale
+        return near_speed + (far_speed - near_speed) * scale
 
     def _minimum_active(self, value: float) -> float:
         if value == 0:

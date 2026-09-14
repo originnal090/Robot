@@ -49,10 +49,10 @@ def test_align_approach_slow_and_arrive() -> None:
     for index in range(3):
         decision = controller.update(target(0.02), 0.2 + index * 0.1)
     assert decision.state is ControlState.APPROACHING
-    assert decision.command.velocity == pytest.approx(0.25)
+    assert decision.command.velocity == pytest.approx(0.60)  # far, normal_then_slow
 
     near = controller.update(target(0.0, 0.14), 0.6)
-    assert 0.21 < near.command.velocity < 0.25
+    assert near.command.velocity == pytest.approx(0.45)  # midway, normal_then_slow
     for index in range(3):
         decision = controller.update(target(0.0, 0.18), 0.7 + index * 0.1)
         assert decision.command.velocity == 0

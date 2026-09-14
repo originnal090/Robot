@@ -17,6 +17,7 @@ from typing import Any
 import cv2
 from numpy.typing import NDArray
 
+from .approach import ApproachGate
 from .controller import ControlDecision, VisualApproachController
 from .detector import RedBallDetector
 from .model import ControlState, Detection, RobotCommand
@@ -116,7 +117,9 @@ class SessionControl:
         self._stop.set()
         self._cancel_robot()
 
-    def request_manual(self, velocity: float, steer: float, seconds: float, *, source: str = "manual") -> None:
+    def request_manual(
+        self, velocity: float, steer: float, seconds: float, *, source: str = "manual"
+    ) -> None:
         if not -1.0 <= velocity <= 1.0:
             raise ValueError("manual velocity must be between -1 and 1")
         if not -1.0 <= steer <= 1.0:
@@ -221,7 +224,9 @@ def _publish_latest(output: queue.Queue, stop: threading.Event, frame) -> bool:
     return False
 
 
-def _capture_frames(source, output: queue.Queue, stop: threading.Event, frame_recorder=None) -> None:
+def _capture_frames(
+    source, output: queue.Queue, stop: threading.Event, frame_recorder=None
+) -> None:
     try:
         for frame in source:
             if frame_recorder is not None:
@@ -283,7 +288,9 @@ def run_loop(
             "output_source": output_source,
             "armed": is_armed,
             "obstacle_state": obstacle_policy.state.value if obstacle_policy is not None else None,
-            "distance_mm": obstacle_policy.last_distance_mm if obstacle_policy is not None else None,
+            "distance_mm": obstacle_policy.last_distance_mm
+            if obstacle_policy is not None
+            else None,
             "avoid_count": obstacle_policy.avoid_count if obstacle_policy is not None else None,
         }
         event_values.update(kwargs)
@@ -314,6 +321,30 @@ def run_loop(
         output_grab = False
         output_source = source_name
 
+    def _latch_blocked(vision_flag: bool | None) -> None:
+        nonlocal is_armed, termination
+        controller.fail_safe("obstacle_blocked")
+        is_armed = False
+        send_command(RobotCommand.stop(), "shutdown")
+        termination = "obstacle_blocked"
+        if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
+            states_seen.append(ControlState.LOST_SAFE)
+        emit(
+            "obstacle",
+            json.dumps(
+                {
+                    "state": obstacle_policy.state.value,
+                    "reason": "blocked_latched",
+                    "action": "hold",
+                    "distance": obstacle_policy.last_distance_mm,
+                    "vision_blocked": vision_flag,
+                    "avoid_count": obstacle_policy.avoid_count,
+                },
+                ensure_ascii=False,
+            ),
+            frame_count=frame_count,
+        )
+
     states_seen: list[ControlState] = []
     frame_count = 0
     termination = "completed"
@@ -321,6 +352,13 @@ def run_loop(
     last_obstacle_emitted = float("-inf")
     manual_was_active = False
     save_frames = True  # flips off permanently once writing a frame fails
+    approach_gate = (
+        ApproachGate(lambda: controller.config, clock)
+        if controller.config.approach_mode != "slow_realtime"
+        else None
+    )
+    walk_command = RobotCommand.stop()
+    last_radius_ratio: float | None = None
     if armed:
         controller.arm(clock())
 
@@ -398,9 +436,44 @@ def run_loop(
             if isinstance(item, Exception):
                 raise item
 
+            manual = session.current_manual()
+            if approach_gate is not None and is_armed and manual is None:
+                # Burst-walking modes: during walk/settle the camera bounces, so
+                # vision work is skipped; the last sensed intent repeats during
+                # walk and sonar-based obstacle safety still runs every frame.
+                phase = approach_gate.advance(last_radius_ratio)
+                if phase != "sense":
+                    obstacle = None
+                    if obstacle_policy is not None:
+                        obstacle = obstacle_policy.update(robot.latest_distance(), None, clock())
+                        if obstacle_policy.latched_blocked:
+                            _latch_blocked(None)
+                            break
+                        if obstacle.action == "maneuver":
+                            approach_gate.hold_settle()
+                            send_vector(obstacle.velocity, obstacle.steer, "obstacle_maneuver")
+                            frame_count += 1
+                            continue
+                        if obstacle.action == "hold":
+                            send_command(RobotCommand.stop(), "obstacle_hold")
+                            frame_count += 1
+                            continue
+                    if phase == "walk":
+                        send_command(walk_command, "walk_burst")
+                    else:
+                        send_command(RobotCommand.stop(), "settle")
+                    frame_count += 1
+                    # Lightweight telemetry event (no image/detection): the GUI
+                    # ignores it visually, Unity HUD and tests see the output.
+                    emit("frame", "walk" if phase == "walk" else "settle", frame_count=frame_count)
+                    continue
+
             detection = detector.process(item)
             decision = controller.update(detection, clock())
-            manual = session.current_manual()
+            if approach_gate is not None and is_armed:
+                if decision.radius_ratio is not None:
+                    last_radius_ratio = decision.radius_ratio
+                walk_command = decision.command
             obstacle = None
             vision_blocked = None
             if obstacle_policy is not None:
@@ -408,34 +481,16 @@ def run_loop(
                 sonar = robot.latest_distance()
                 obstacle = obstacle_policy.update(sonar, vision_blocked, clock())
                 if obstacle_policy.latched_blocked:
-                    controller.fail_safe("obstacle_blocked")
-                    is_armed = False
-                    send_command(RobotCommand.stop(), "shutdown")
-                    termination = "obstacle_blocked"
-                    if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
-                        states_seen.append(ControlState.LOST_SAFE)
-                    emit(
-                        "obstacle",
-                        json.dumps(
-                            {
-                                "state": obstacle.state.value,
-                                "reason": obstacle.reason,
-                                "action": obstacle.action,
-                                "distance": obstacle_policy.last_distance_mm,
-                                "vision_blocked": vision_blocked,
-                                "avoid_count": obstacle_policy.avoid_count,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        frame_count=frame_count,
-                    )
+                    _latch_blocked(vision_blocked)
                     break
             if manual is not None and not manual_was_active and obstacle_policy is not None:
                 # First frame of a manual pulse: abort any in-flight avoidance
                 # phase so no residual backup/turn vector bursts out after it.
                 obstacle_policy.cancel_maneuver()
             manual_was_active = manual is not None
-            maneuver_suppressed = obstacle is not None and obstacle.action == "maneuver" and not is_armed
+            maneuver_suppressed = (
+                obstacle is not None and obstacle.action == "maneuver" and not is_armed
+            )
             if manual is not None:
                 send_vector(manual.velocity, manual.steer, manual.source)
             elif maneuver_suppressed:
@@ -457,7 +512,9 @@ def run_loop(
                 output_v=output_v,
                 output_steer=output_steer,
                 output_source=output_source,
-                distance_mm=obstacle_policy.last_distance_mm if obstacle_policy is not None else None,
+                distance_mm=obstacle_policy.last_distance_mm
+                if obstacle_policy is not None
+                else None,
                 obstacle_state=(
                     obstacle_policy.state.value
                     if obstacle_policy is not None and obstacle_policy.last_distance_mm is not None

@@ -62,7 +62,7 @@ def test_source_close_failure_still_stops_robot() -> None:
         run_loop(
             BrokenCloseSource(SyntheticConfig()),
             RedBallDetector(DetectorConfig()),
-            VisualApproachController(ControllerConfig()),
+            VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
             robot,
             armed=True,
             max_frames=1,
@@ -76,7 +76,7 @@ def test_unstoppable_source_is_reported_after_robot_stop() -> None:
         run_loop(
             UnstoppableSource(),
             RedBallDetector(DetectorConfig()),
-            VisualApproachController(ControllerConfig()),
+            VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
             robot,
             armed=True,
             frame_timeout_seconds=0.01,
@@ -89,7 +89,7 @@ def test_early_exit_does_not_leave_capture_thread() -> None:
     run_loop(
         SyntheticBallSource(SyntheticConfig()),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
+        VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         RecordingRobot(),
         armed=True,
         max_frames=1,
@@ -104,7 +104,7 @@ def test_blocked_video_read_enters_safe_state() -> None:
     result = run_loop(
         BlockingSource(),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
+        VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         robot,
         armed=True,
         frame_timeout_seconds=0.05,
@@ -122,7 +122,7 @@ def test_runtime_error_explicitly_sends_stop() -> None:
         run_loop(
             SyntheticBallSource(SyntheticConfig()),
             BrokenDetector(),
-            VisualApproachController(ControllerConfig()),
+            VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
             robot,
             armed=True,
             event_sink=events.append,
@@ -142,7 +142,7 @@ def test_synthetic_closed_loop_reaches_target() -> None:
         # under latest-wins frame dropping.
         SyntheticBallSource(SyntheticConfig(realtime=True)),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
+        VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         robot,
         armed=True,
         clock=StepClock(),

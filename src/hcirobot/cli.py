@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--arm", action="store_true", help="allow autonomous movement")
     parser.add_argument(
+        "--approach-mode",
+        choices=("fast_then_slow", "normal", "normal_then_slow", "slow_realtime"),
+        help="walk-burst approach strategy (overrides [controller] approach_mode)",
+    )
+    parser.add_argument(
         "--gamepad",
         action="store_true",
         help=(
@@ -223,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         validate_video_config(effective_video)
         validate_robot_config(effective_robot)
+        if args.approach_mode is not None:
+            config["controller"] = dict(config["controller"], approach_mode=args.approach_mode)
         effective_unity = build_unity_status_config(config, args)
         if args.check_config:
             print("config ok")

@@ -48,6 +48,15 @@ MANUAL_STOP_SECONDS = 0.3
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 
 
+def _default_approach_mode() -> str:
+    try:
+        return str(
+            load_config(Path("config.toml"))["controller"].get("approach_mode", "normal_then_slow")
+        )
+    except Exception:  # noqa: BLE001 - UI fallback only.
+        return "normal_then_slow"
+
+
 def _auto_arm_allowed(backend: str, host: str) -> bool:
     """Demo auto-arm is restricted to loopback TCP so it can only ever reach a simulator."""
     normalized_host = (host or "").strip().lower().strip("[]")
@@ -463,6 +472,23 @@ class RobotControlApp:
             style="Panel.TCheckbutton",
         )
         self.obstacle_checkbutton.pack(anchor="w")
+        mode_row = ttk.Frame(self.obstacle_panel, style="Panel.TFrame")
+        mode_row.pack(anchor="w", pady=(4, 0))
+        ttk.Label(mode_row, text="接近模式", style="Panel.TLabel").pack(side="left")
+        self.approach_var = tk.StringVar(value=_default_approach_mode())
+        self.approach_combo = ttk.Combobox(
+            mode_row,
+            textvariable=self.approach_var,
+            values=(
+                "fast_then_slow",
+                "normal",
+                "normal_then_slow",
+                "slow_realtime",
+            ),
+            state="readonly",
+            width=16,
+        )
+        self.approach_combo.pack(side="left", padx=(8, 0))
         grid = ttk.Frame(self.obstacle_panel, style="Panel.TFrame")
         grid.pack(anchor="w", fill="x", pady=(4, 0))
         self.obstacle_values: dict[str, ttk.Label] = {}
@@ -688,6 +714,7 @@ class RobotControlApp:
             "port": self.port_var.get().strip(),
             "mirror": mirror_endpoint,
             "obstacle": bool(self.obstacle_var.get()),
+            "approach_mode": self.approach_var.get(),
         }
         self.model.begin_start(obstacle_enabled=values["obstacle"])
         self._clear_frame_view()
@@ -710,6 +737,8 @@ class RobotControlApp:
         run_loop_entered = False
         try:
             config = load_config(Path(values["config"]))
+            # The mode selector is read once per session, like the obstacle switch.
+            config["controller"] = dict(config["controller"], approach_mode=values["approach_mode"])
             unity_publisher = UnityStatusPublisher(unity_status_config(config.get("unity")))
             # Built before any hardware/video resource is opened, so a bad
             # obstacle config surfaces through the normal error event path.

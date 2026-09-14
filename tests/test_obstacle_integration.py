@@ -112,7 +112,7 @@ def default_runtime(robot, *, policy, armed=False, session=None, sink=None, max_
         # unpaced source sheds frames before the consumer can process them.
         SyntheticBallSource(SyntheticConfig(realtime=True)),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
+        VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         robot,
         armed=armed,
         session=session,
@@ -357,7 +357,7 @@ def test_tcp_mock_distance_near_obstacle_forces_stop_and_avoid() -> None:
         result = run_loop(
             SyntheticBallSource(SyntheticConfig(realtime=True)),
             RedBallDetector(DetectorConfig()),
-            VisualApproachController(ControllerConfig()),
+            VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
             client,
             armed=True,
             max_frames=40,

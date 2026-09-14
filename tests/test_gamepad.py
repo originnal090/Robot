@@ -392,7 +392,7 @@ def build_runtime(robot: RecordingRobot, session: SessionControl, sink, **kwargs
     return run_loop(
         SyntheticBallSource(SyntheticConfig(realtime=True)),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
+        VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         robot,
         armed=False,
         session=session,
@@ -713,7 +713,7 @@ def _run_arrival_session(robot: RecordingRobot, controller: VisualApproachContro
 
 def test_arrived_session_fires_arrival_action_once() -> None:
     robot = RecordingRobot()
-    result = _run_arrival_session(robot, VisualApproachController(ControllerConfig()))
+    result = _run_arrival_session(robot, VisualApproachController(ControllerConfig(approach_mode="slow_realtime")))
     assert result.termination == "arrived"
     assert robot.actions.count("right_grip") == 1
     assert robot.commands[-1] == RobotCommand.stop()
