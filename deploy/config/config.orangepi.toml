@@ -6,7 +6,7 @@ fps = 10.0
 frame_timeout_seconds = 0.75
 
 [detection]
-lab_min = [30, 132, 100]
+lab_min = [30, 136, 100]
 lab_max = [220, 215, 150]
 processing_width = 640
 processing_height = 480
@@ -22,6 +22,15 @@ confirmation_frames = 3
 release_frames = 3
 
 [controller]
+approach_mode = "normal_then_slow"
+single_step_turns = true
+step_timeout_seconds = 10.0
+turn_seconds_near = 0.18
+turn_seconds_far = 0.45
+turn_full_error = 0.45
+near_lateral_enabled = false
+near_lateral_max_error = 0.25
+near_lateral_speed = 0.30
 align_enter_error = 0.08
 align_exit_error = 0.14
 arrival_radius_ratio = 0.18

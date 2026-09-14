@@ -1,0 +1,23 @@
+[Unit]
+Description=HCIRobot recoverable TonyPi MJPEG camera service
+After=network.target
+Conflicts=tonypi.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=video
+WorkingDirectory=/opt/hcirobot/robot_side
+EnvironmentFile=/etc/hcirobot/tonypi-camera.env
+ExecStartPre=/usr/bin/python3 /opt/hcirobot/robot_side/tonypi_camera.py --check
+ExecStart=/usr/bin/python3 /opt/hcirobot/robot_side/tonypi_camera.py
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=8
+
+[Install]
+WantedBy=multi-user.target

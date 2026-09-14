@@ -40,6 +40,7 @@ class GuiModel:
     vision_blocked: str = "--"
     avoid_count: int = 0
     obstacle_enabled: bool = False
+    control_only: bool = False
     latched_blocked: bool = False
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=500))
     # Bumped on every append so the view can skip unchanged log re-syncs.
@@ -62,6 +63,7 @@ class GuiModel:
     def can_arm(self) -> bool:
         return (
             self.session_state is SessionState.RUNNING
+            and not self.control_only
             and self.video_status == "画面正常"
             and not self.armed
             and not self.estop_latched
@@ -88,9 +90,10 @@ class GuiModel:
             self.estop_latched or self.latched_blocked or bool(self.fault)
         )
 
-    def begin_start(self, obstacle_enabled: bool = False) -> None:
+    def begin_start(self, obstacle_enabled: bool = False, *, control_only: bool = False) -> None:
         self.session_state = SessionState.STARTING
-        self.video_status = "正在打开"
+        self.control_only = control_only
+        self.video_status = "已禁用" if control_only else "正在打开"
         self.robot_status = "正在连接"
         self.control_state = "IDLE"
         self.frame_count = 0
@@ -103,10 +106,14 @@ class GuiModel:
         self.command = ZERO_COMMAND
         self.output_source = "--"
         # Snapshot of the obstacle switch; the worker reads the frozen value.
-        self.obstacle_enabled = obstacle_enabled
+        self.obstacle_enabled = obstacle_enabled and not control_only
         self._reset_obstacle_telemetry()
-        message = "开始创建预览会话；自治保持未武装"
-        if obstacle_enabled:
+        message = (
+            "开始创建仅手柄控制会话；不连接图传，自治不可武装"
+            if control_only
+            else "开始创建预览会话；自治保持未武装"
+        )
+        if self.obstacle_enabled:
             # Obstacle stopping is live while disarmed; maneuvers still need arm.
             message += "；避障停车生效，倒退/转向机动仅在武装后执行"
         self.append_log(message)
@@ -146,7 +153,7 @@ class GuiModel:
 
     def fail(self, message: str) -> None:
         self.session_state = SessionState.FAILED
-        self.video_status = "错误"
+        self.video_status = "已禁用" if self.control_only else "错误"
         self.robot_status = "错误"
         self.armed = False
         self.fault = message
@@ -157,13 +164,17 @@ class GuiModel:
 
     def apply_event(self, event: RuntimeEvent) -> None:
         if event.kind == "started":
+            if self.session_id and event.session_id not in (0, self.session_id):
+                return
             # "started" binds the session identity, so it runs before the filter;
             # every other event from an unbound or replaced session is dropped.
             if event.session_id:
                 self.session_id = event.session_id
+            if self.session_state is not SessionState.STARTING:
+                return  # stop/estop during startup must not revive the session
             self.session_state = SessionState.RUNNING
             self.robot_status = "已连接"
-            self.append_log("预览会话已启动")
+            self.append_log("仅手柄控制会话已启动" if self.control_only else "预览会话已启动")
             return
         if event.session_id not in (0, self.session_id):
             return  # late arrival from a session that was already replaced
@@ -198,6 +209,35 @@ class GuiModel:
             self.output_source = str(event.output_source or "--")
         elif event.kind == "state":
             self.append_log(event.message)
+        elif event.kind == "video_retry":
+            if self.session_state is SessionState.RUNNING:
+                self.video_status = "等待画面" if "已恢复" in event.message else "重连中"
+            self.append_log(event.message)
+        elif event.kind == "video_stale":
+            if self.session_state is SessionState.RUNNING:
+                self.video_status = "画面冻结"
+                self.command = ZERO_COMMAND
+                self.output_source = str(event.output_source or "video_stale_hold")
+            self.append_log(event.message)
+        elif event.kind == "video_recovered":
+            if self.session_state is SessionState.RUNNING:
+                self.video_status = "等待画面"
+            self.append_log(event.message)
+        elif event.kind == "manual_fallback":
+            if self.session_state is not SessionState.RUNNING:
+                return
+            self.armed = False
+            self.control_state = "MANUAL"
+            self.command = ZERO_COMMAND
+            self.output_source = str(event.output_source or "video_stale_hold")
+            self.append_log(event.message)
+        elif event.kind == "manual":
+            if self.session_state is not SessionState.RUNNING:
+                return
+            self.control_state = "MANUAL"
+            self.frame_count = event.frame_count
+            self.command = f"v={event.output_v:.2f}  steer={event.output_steer:+.2f}"
+            self.output_source = str(event.output_source or "manual")
         elif event.kind in ("gamepad", "warning", "capture", "mirror"):
             # Background-thread notes (connection changes, degraded side outputs,
             # frame-recorder completion).
@@ -211,11 +251,12 @@ class GuiModel:
             termination = event.message or "completed"
             fault_terminations = {
                 "video_timeout": "视频超时",
+                "video_frozen": "画面冻结",
                 "video_ended": "视频流意外结束",
                 "robot_connection_lost": "机器人连接丢失",
                 "runtime_error": "运行时错误",
             }
-            self.video_status = "已关闭"
+            self.video_status = "已禁用" if self.control_only else "已关闭"
             self.robot_status = "已断开"
             self.armed = False
             self.command = ZERO_COMMAND
@@ -230,6 +271,9 @@ class GuiModel:
                 if not self.fault:
                     self.fault = fault_terminations[termination]
                     self.append_log(f"故障：{self.fault}")
+            elif self.fault:
+                self.session_state = SessionState.FAILED
+                self.control_state = "LOST_SAFE"
             else:
                 self.session_state = SessionState.STOPPED
                 self.control_state = "LOST_SAFE" if self.estop_latched else "IDLE"

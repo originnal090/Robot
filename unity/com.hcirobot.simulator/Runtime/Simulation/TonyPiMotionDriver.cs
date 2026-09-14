@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace HciRobot.Simulator
@@ -9,19 +10,48 @@ namespace HciRobot.Simulator
     {
         [SerializeField] private Rigidbody body;
         [SerializeField, Min(0f)] private float maximumForwardSpeed = 1.0f;
+        // Placeholder until measured on hardware; independent of forward speed.
+        [SerializeField, Min(0f)] private float maximumLateralSpeed = 0.2f;
         [SerializeField, Min(0f)] private float maximumTurnDegreesPerSecond = 120f;
         [SerializeField, Range(0f, 1f)] private float deadzone = 0.20f;
         [SerializeField] private bool continuousMotion;
 
+        [Header("Single-step mirror preview (step sizes need hardware calibration)")]
+        [SerializeField, Min(0f)] private float smallStepTurnDegrees = 8f;
+        [SerializeField, Min(0f)] private float normalStepTurnDegrees = 20f;
+        [SerializeField, Min(0f)] private float fastStepTurnDegrees = 30f;
+        [SerializeField, Min(0f)] private float smallStepLateralMetres = 0.02f;
+        [SerializeField, Min(0f)] private float normalStepLateralMetres = 0.05f;
+        [SerializeField, Min(0f)] private float fastStepLateralMetres = 0.08f;
+        [SerializeField, Min(0.1f)] private float smallLeftTurnSeconds = 1.35f;
+        [SerializeField, Min(0.1f)] private float smallRightTurnSeconds = 1.45f;
+        [SerializeField, Min(0.1f)] private float smallLeftLateralSeconds = 1f;
+        [SerializeField, Min(0.1f)] private float smallRightLateralSeconds = 1.1f;
+        [SerializeField, Min(0.1f)] private float normalStepSeconds = 1f;
+        [SerializeField, Min(0.1f)] private float maximumMirrorWaitSeconds = 10f;
+
         private RobotCommand target = RobotCommand.Stop;
         private Vector2 actualOutput;
+        private readonly HashSet<string> seenStepIds = new HashSet<string>();
+        private string mirroredStepId;
+        private float stepElapsed;
+        private float stepDuration;
+        private float stepDegrees;
+        private float stepMetres;
+        private float stepStartedRealtime;
 
         public event Action<RobotCommand> CommandApplied;
         public event Action<string> ActionReceived;
+        public event Action<string, string> MirroredStepChanged;
 
         public Vector2 ActualOutput => actualOutput;
+        public float ActualLateralOutput { get; private set; }
         public RobotMotionMode CurrentMode => target.Mode;
         public string LastAction { get; private set; }
+        public string ActiveMirroredStepId => mirroredStepId;
+        public string LastMirroredStepStatus { get; private set; }
+        public string MirroredStepPhase => mirroredStepId == null ? LastMirroredStepStatus
+            : stepElapsed >= stepDuration ? "waiting_ack" : "playing";
 
         public float Deadzone
         {
@@ -52,20 +82,29 @@ namespace HciRobot.Simulator
 
         private void FixedUpdate()
         {
+            if (mirroredStepId != null)
+            {
+                UpdateMirroredStep(Time.fixedDeltaTime);
+                return;
+            }
             float velocity = target.Velocity;
             float steer = target.Steer;
+            float lateral = target.Lateral;
             if (!continuousMotion && target.Mode != RobotMotionMode.Continuous)
             {
-                RobotCommand discrete = TonyPiCommandMapper.ToCommand(velocity, steer, target.Grab, deadzone, false);
+                RobotCommand discrete = TonyPiCommandMapper.ToCommand(velocity, steer, target.Grab, deadzone, false, lateral);
                 velocity = discrete.Velocity;
                 steer = discrete.Steer;
+                lateral = discrete.Lateral;
             }
 
             Vector3 currentVelocity = body.velocity;
-            Vector3 planarVelocity = transform.forward * (velocity * maximumForwardSpeed);
+            Vector3 planarVelocity = transform.forward * (velocity * maximumForwardSpeed)
+                + transform.right * (lateral * maximumLateralSpeed);
             body.velocity = new Vector3(planarVelocity.x, currentVelocity.y, planarVelocity.z);
             body.angularVelocity = new Vector3(0f, steer * maximumTurnDegreesPerSecond * Mathf.Deg2Rad, 0f);
             actualOutput = new Vector2(velocity, steer);
+            ActualLateralOutput = lateral;
         }
 
         private void OnDisable()
@@ -81,6 +120,15 @@ namespace HciRobot.Simulator
 
         public void ApplyCommand(RobotCommand command)
         {
+            if (command.IsMirroredStep)
+            {
+                ApplyMirroredStep(command);
+                return;
+            }
+            if (mirroredStepId != null)
+            {
+                StopMotion();
+            }
             if (command.IsAction)
             {
                 LastAction = command.Action;
@@ -93,16 +141,102 @@ namespace HciRobot.Simulator
             }
 
             target = continuousMotion
-                ? TonyPiCommandMapper.ToCommand(command.Velocity, command.Steer, command.Grab, deadzone, true)
-                : TonyPiCommandMapper.ToCommand(command.Velocity, command.Steer, command.Grab, deadzone, false);
+                ? TonyPiCommandMapper.ToCommand(command.Velocity, command.Steer, command.Grab, deadzone, true, command.Lateral)
+                : TonyPiCommandMapper.ToCommand(command.Velocity, command.Steer, command.Grab, deadzone, false, command.Lateral);
             CommandApplied?.Invoke(target);
         }
 
         public void StopMotion()
         {
+            FinishMirroredStep("cancelled");
             target = RobotCommand.Stop;
             actualOutput = Vector2.zero;
+            ActualLateralOutput = 0f;
+            if (body != null)
+            {
+                body.velocity = new Vector3(0f, body.velocity.y, 0f);
+                body.angularVelocity = Vector3.zero;
+            }
             CommandApplied?.Invoke(target);
+        }
+
+        private void ApplyMirroredStep(RobotCommand command)
+        {
+            string ident = command.MirroredStepId;
+            string phase = command.MirroredStepPhase;
+            if (phase == "heartbeat")
+            {
+                return; // Transport watchdog only; never restart or extend the animation.
+            }
+            if (phase != "start")
+            {
+                if (seenStepIds.Count < 2048) seenStepIds.Add(ident);
+                if (ident == mirroredStepId)
+                {
+                    FinishMirroredStep(phase);
+                    StopMotion(); // No endpoint snap and no replay on late DONE.
+                }
+                return;
+            }
+            if (seenStepIds.Contains(ident)) return;
+            if (seenStepIds.Count >= 2048)
+            {
+                StopMotion(); // Fail closed instead of evicting IDs and replaying old steps.
+                return;
+            }
+            StopMotion();
+            seenStepIds.Add(ident);
+            mirroredStepId = ident;
+            stepElapsed = 0f;
+            stepStartedRealtime = Time.realtimeSinceStartup;
+            bool turn = command.Steer != 0f;
+            float magnitude = Mathf.Abs(turn ? command.Steer : command.Lateral);
+            float sign = Mathf.Sign(turn ? command.Steer : command.Lateral);
+            bool small = magnitude <= 0.45f;
+            bool fast = magnitude > 0.75f;
+            stepDegrees = turn ? sign * (small ? smallStepTurnDegrees : fast ? fastStepTurnDegrees : normalStepTurnDegrees) : 0f;
+            stepMetres = turn ? 0f : sign * (small ? smallStepLateralMetres : fast ? fastStepLateralMetres : normalStepLateralMetres);
+            stepDuration = Mathf.Max(0.1f, small
+                ? (turn ? (sign < 0 ? smallLeftTurnSeconds : smallRightTurnSeconds)
+                        : (sign < 0 ? smallLeftLateralSeconds : smallRightLateralSeconds))
+                : normalStepSeconds);
+            target = command;
+            LastMirroredStepStatus = "start";
+            CommandApplied?.Invoke(target);
+            MirroredStepChanged?.Invoke(ident, "start");
+        }
+
+        private void UpdateMirroredStep(float deltaTime)
+        {
+            if (Time.realtimeSinceStartup - stepStartedRealtime >= maximumMirrorWaitSeconds)
+            {
+                FinishMirroredStep("timeout");
+                StopMotion();
+                return;
+            }
+            float before = Mathf.Clamp01(stepElapsed / stepDuration);
+            stepElapsed += deltaTime;
+            float after = Mathf.Clamp01(stepElapsed / stepDuration);
+            // Smoothstep distributes one finite displacement across physics frames.
+            // At the budget's end we hold still even if hardware DONE is delayed.
+            float fractionPerSecond = (SmoothProgress(after) - SmoothProgress(before)) / Mathf.Max(deltaTime, 0.0001f);
+            float turnRate = stepDegrees * fractionPerSecond;
+            Vector3 lateralVelocity = transform.right * (stepMetres * fractionPerSecond);
+            body.velocity = new Vector3(lateralVelocity.x, body.velocity.y, lateralVelocity.z);
+            body.angularVelocity = new Vector3(0f, turnRate * Mathf.Deg2Rad, 0f);
+            actualOutput = new Vector2(0f, maximumTurnDegreesPerSecond > 0f ? turnRate / maximumTurnDegreesPerSecond : 0f);
+            ActualLateralOutput = maximumLateralSpeed > 0f ? stepMetres * fractionPerSecond / maximumLateralSpeed : 0f;
+        }
+
+        private static float SmoothProgress(float value) => value * value * (3f - 2f * value);
+
+        private void FinishMirroredStep(string status)
+        {
+            if (mirroredStepId == null) return;
+            string ident = mirroredStepId;
+            mirroredStepId = null;
+            LastMirroredStepStatus = status;
+            MirroredStepChanged?.Invoke(ident, status);
         }
     }
 }

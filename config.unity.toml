@@ -45,6 +45,8 @@ confirmation_frames = 2
 release_frames = 5
 
 [controller]
+# Unity currently consumes continuous vectors and has no STEP_V1 completion feedback.
+single_step_turns = false
 # 到达（ARRIVED）后自动下发的一次性动作，使用课程 CMD 按钮名：
 # right_grip = 蹲下灭火（outfire 动作组）；留空 "" 关闭。
 arrival_action = "right_grip"

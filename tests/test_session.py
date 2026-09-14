@@ -13,9 +13,11 @@ def build_runtime(robot: RecordingRobot, session: SessionControl, sink):
         # Realtime pacing matches a live camera: the capture loop keeps only
         # the latest frame, so an unpaced source would shed almost everything
         # before the consumer sees it.
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
+        VisualApproachController(ControllerConfig(
+            settle_seconds=0.01, sense_seconds=0.02,
+        )),
         robot,
         armed=False,
         session=session,

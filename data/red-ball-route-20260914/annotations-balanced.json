@@ -1,0 +1,1524 @@
+[
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00001.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00043.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00086.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00129.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00172.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00215.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00258.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00300.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00343.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00386.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00429.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00472.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00515.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00558.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00600.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00643.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00686.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00729.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00772.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00815.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00857.png",
+    "box": [
+      580,
+      154,
+      608,
+      210
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00900.png",
+    "box": [
+      508,
+      128,
+      536,
+      156
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00943.png",
+    "box": [
+      362,
+      164,
+      394,
+      202
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00986.png",
+    "box": [
+      290,
+      132,
+      318,
+      200
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01029.png",
+    "box": [
+      268,
+      138,
+      302,
+      174
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01072.png",
+    "box": [
+      232,
+      180,
+      264,
+      212
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01115.png",
+    "box": [
+      236,
+      154,
+      280,
+      200
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01157.png",
+    "box": [
+      200,
+      182,
+      242,
+      226
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01200.png",
+    "box": [
+      196,
+      194,
+      242,
+      240
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01243.png",
+    "box": [
+      270,
+      214,
+      314,
+      262
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01286.png",
+    "box": [
+      256,
+      226,
+      310,
+      302
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01329.png",
+    "box": [
+      200,
+      350,
+      270,
+      428
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01372.png",
+    "box": [
+      128,
+      284,
+      196,
+      386
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01414.png",
+    "box": [
+      32,
+      384,
+      118,
+      472
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01500.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01543.png",
+    "box": [
+      208,
+      46,
+      554,
+      404
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01586.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01629.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01672.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00001.png",
+    "box": [
+      362,
+      164,
+      384,
+      190
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00044.png",
+    "box": [
+      362,
+      162,
+      384,
+      188
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00073.png",
+    "box": [
+      362,
+      182,
+      386,
+      206
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00088.png",
+    "box": [
+      314,
+      236,
+      348,
+      274
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00102.png",
+    "box": [
+      276,
+      314,
+      316,
+      354
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00117.png",
+    "box": [
+      244,
+      306,
+      296,
+      360
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00131.png",
+    "box": [
+      288,
+      284,
+      344,
+      344
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00146.png",
+    "box": [
+      216,
+      352,
+      296,
+      438
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00175.png",
+    "box": [
+      242,
+      358,
+      320,
+      438
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00190.png",
+    "box": [
+      266,
+      404,
+      362,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00233.png",
+    "box": [
+      278,
+      402,
+      378,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00291.png",
+    "box": [
+      278,
+      402,
+      378,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00568.png",
+    "box": [
+      280,
+      402,
+      380,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01487.png",
+    "box": null,
+    "split": "train",
+    "note": "Manually inspected background-only frame; mined development hard negative"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01582.png",
+    "box": null,
+    "split": "train",
+    "note": "Manually inspected background-only frame; mined development hard negative"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01635.png",
+    "box": null,
+    "split": "train",
+    "note": "Manually inspected background-only frame; mined development hard negative"
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00001.png",
+    "box": [
+      342,
+      202,
+      360,
+      219
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00018.png",
+    "box": [
+      342,
+      202,
+      361,
+      219
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00036.png",
+    "box": [
+      342,
+      202,
+      361,
+      219
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00054.png",
+    "box": [
+      293,
+      245,
+      314,
+      261
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00072.png",
+    "box": [
+      288,
+      190,
+      305,
+      208
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00090.png",
+    "box": [
+      283,
+      233,
+      310,
+      260
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00108.png",
+    "box": [
+      303,
+      277,
+      323,
+      296
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00126.png",
+    "box": [
+      312,
+      219,
+      331,
+      236
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00144.png",
+    "box": [
+      412,
+      230,
+      432,
+      247
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00162.png",
+    "box": [
+      410,
+      351,
+      424,
+      368
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00180.png",
+    "box": [
+      420,
+      214,
+      441,
+      232
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00198.png",
+    "box": [
+      315,
+      249,
+      335,
+      269
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00216.png",
+    "box": [
+      301,
+      224,
+      326,
+      240
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00234.png",
+    "box": [
+      214,
+      219,
+      235,
+      240
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00252.png",
+    "box": [
+      124,
+      233,
+      144,
+      253
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00270.png",
+    "box": [
+      134,
+      212,
+      153,
+      232
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00288.png",
+    "box": [
+      230,
+      212,
+      252,
+      232
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00306.png",
+    "box": [
+      261,
+      235,
+      282,
+      256
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00324.png",
+    "box": [
+      266,
+      244,
+      288,
+      263
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00342.png",
+    "box": [
+      309,
+      252,
+      331,
+      272
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00360.png",
+    "box": [
+      332,
+      221,
+      356,
+      244
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00378.png",
+    "box": [
+      331,
+      244,
+      350,
+      265
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00396.png",
+    "box": [
+      367,
+      220,
+      386,
+      241
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00414.png",
+    "box": [
+      352,
+      223,
+      375,
+      246
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00432.png",
+    "box": [
+      269,
+      219,
+      293,
+      240
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00450.png",
+    "box": [
+      308,
+      202,
+      331,
+      225
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00468.png",
+    "box": [
+      296,
+      217,
+      320,
+      240
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00486.png",
+    "box": [
+      309,
+      271,
+      332,
+      293
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00504.png",
+    "box": [
+      343,
+      193,
+      368,
+      218
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213202",
+    "frame": "frame-00522.png",
+    "box": [
+      206,
+      188,
+      232,
+      216
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00001.png",
+    "box": [
+      316,
+      315,
+      342,
+      340
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00027.png",
+    "box": [
+      258,
+      220,
+      286,
+      248
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00054.png",
+    "box": [
+      352,
+      249,
+      381,
+      278
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00081.png",
+    "box": [
+      240,
+      233,
+      268,
+      260
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00108.png",
+    "box": [
+      312,
+      273,
+      341,
+      299
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00135.png",
+    "box": [
+      346,
+      239,
+      373,
+      271
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00162.png",
+    "box": [
+      391,
+      251,
+      421,
+      279
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00189.png",
+    "box": [
+      293,
+      270,
+      322,
+      299
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00215.png",
+    "box": [
+      338,
+      254,
+      368,
+      288
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00242.png",
+    "box": [
+      364,
+      240,
+      396,
+      273
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00269.png",
+    "box": [
+      264,
+      246,
+      298,
+      280
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00296.png",
+    "box": [
+      313,
+      269,
+      347,
+      303
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00323.png",
+    "box": [
+      325,
+      297,
+      360,
+      331
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00350.png",
+    "box": [
+      305,
+      331,
+      336,
+      363
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00377.png",
+    "box": [
+      284,
+      240,
+      320,
+      277
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00403.png",
+    "box": [
+      289,
+      390,
+      324,
+      423
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00430.png",
+    "box": [
+      332,
+      273,
+      372,
+      316
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00457.png",
+    "box": [
+      359,
+      320,
+      400,
+      359
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00484.png",
+    "box": [
+      286,
+      315,
+      328,
+      357
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00511.png",
+    "box": [
+      394,
+      291,
+      436,
+      337
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00538.png",
+    "box": [
+      314,
+      316,
+      360,
+      361
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00565.png",
+    "box": [
+      276,
+      310,
+      324,
+      356
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00591.png",
+    "box": [
+      293,
+      396,
+      337,
+      440
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00618.png",
+    "box": [
+      284,
+      334,
+      328,
+      384
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00645.png",
+    "box": [
+      313,
+      326,
+      363,
+      378
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00672.png",
+    "box": [
+      328,
+      369,
+      376,
+      419
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213247",
+    "frame": "frame-00699.png",
+    "box": [
+      427,
+      343,
+      474,
+      391
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00001.png",
+    "box": [
+      60,
+      357,
+      117,
+      419
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00036.png",
+    "box": [
+      82,
+      357,
+      140,
+      420
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00041.png",
+    "box": [
+      69,
+      357,
+      127,
+      420
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00046.png",
+    "box": [
+      102,
+      414,
+      155,
+      465
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00052.png",
+    "box": [
+      131,
+      376,
+      193,
+      439
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00057.png",
+    "box": [
+      141,
+      364,
+      202,
+      419
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00062.png",
+    "box": [
+      135,
+      408,
+      192,
+      456
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213345",
+    "frame": "frame-00067.png",
+    "box": [
+      189,
+      431,
+      241,
+      480
+    ],
+    "split": "train",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00001.png",
+    "box": [
+      104,
+      419,
+      179,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00031.png",
+    "box": [
+      126,
+      424,
+      201,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00034.png",
+    "box": [
+      124,
+      416,
+      204,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00038.png",
+    "box": [
+      110,
+      430,
+      181,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00041.png",
+    "box": [
+      146,
+      454,
+      210,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00044.png",
+    "box": [
+      193,
+      431,
+      275,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00048.png",
+    "box": [
+      202,
+      438,
+      285,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00051.png",
+    "box": null,
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00055.png",
+    "box": [
+      229,
+      412,
+      317,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00058.png",
+    "box": [
+      207,
+      464,
+      277,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00061.png",
+    "box": null,
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00065.png",
+    "box": [
+      336,
+      444,
+      420,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00068.png",
+    "box": [
+      337,
+      463,
+      409,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00071.png",
+    "box": null,
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-213403",
+    "frame": "frame-00075.png",
+    "box": [
+      373,
+      453,
+      456,
+      480
+    ],
+    "split": "test",
+    "source": "Color-assisted initial box, manually visually reviewed; visible extent, approximate motion-blur boundary",
+    "reviewed": true
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01567.png",
+    "box": null,
+    "split": "train",
+    "reviewed": true,
+    "source": "Manual background-only review after old-development regression; new holdout unchanged"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01587.png",
+    "box": null,
+    "split": "train",
+    "reviewed": true,
+    "source": "Manual background-only review after old-development regression; new holdout unchanged"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01624.png",
+    "box": null,
+    "split": "train",
+    "reviewed": true,
+    "source": "Manual background-only review after old-development regression; new holdout unchanged"
+  }
+]

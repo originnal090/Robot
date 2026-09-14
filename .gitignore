@@ -24,3 +24,7 @@ unity/**/MemoryCaptures/
 unity/**/*.csproj
 unity/**/*.sln
 unity/**/*.user
+
+# Local diagnostics and vendor-source deployment bundles.
+.gui-diagnostic.png
+tonypi-service-code.tar.gz

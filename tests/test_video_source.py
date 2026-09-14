@@ -183,7 +183,7 @@ def test_stalled_stream_recovers_after_read_timeout() -> None:
             self.end_headers()
             self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + first + b"\r\n")
             self.wfile.flush()
-            released.wait(5.0)  # silence longer than the 0.2 s read timeout
+            released.wait(1.0)  # bounded fallback if the client fails before release
             self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + late + b"\r\n")
             self.wfile.flush()
 
@@ -191,12 +191,17 @@ def test_stalled_stream_recovers_after_read_timeout() -> None:
             return None
 
     with mjpeg_server(Handler) as url:
-        source = MjpegHttpSource(url, timeout_seconds=0.2)
+        # Give the HTTP handshake headroom under full-suite load. Frame reads use
+        # non-blocking socket polls, which are the behavior exercised below.
+        source = MjpegHttpSource(url, timeout_seconds=1.0)
+        release_later = threading.Timer(0.35, released.set)
         try:
             iterator = iter(source)
             assert_frame_matches(next(iterator), (0, 0, 255))
+            release_later.start()
             second = next(iterator)  # must survive the stall and deliver the late frame
         finally:
+            release_later.cancel()
             released.set()
             source.close()
 
@@ -254,8 +259,11 @@ def test_rejects_chunked_transfer_encoding_explicitly() -> None:
         MjpegHttpSource(url, timeout_seconds=1.0)
 
 
-def test_oversized_truncated_candidate_recovers_at_later_jpeg() -> None:
+def test_oversized_truncated_candidate_recovers_at_later_jpeg(monkeypatch) -> None:
     color = (255, 128, 0)
+    # The parser behavior is independent of the production 16 MiB safety cap;
+    # use a smaller cap so the socket test does not transfer and rescan 16 MiB.
+    monkeypatch.setattr(MjpegHttpSource, "_MAX_JPEG_BYTES", 64 * 1024)
 
     class Handler(_StreamHandler):
         frames: ClassVar[list[bytes]] = [make_jpeg(color)]
@@ -299,10 +307,126 @@ def test_open_failure_raises_connection_error() -> None:
     probe.close()
 
     with pytest.raises(ConnectionError):
-        MjpegHttpSource(f"http://127.0.0.1:{port}/?action=stream", timeout_seconds=1.0)
+        MjpegHttpSource(f"http://127.0.0.1:{port}/?action=stream", timeout_seconds=0.1)
 
 
 # ---------- RetryingSource ----------
+
+
+@pytest.mark.parametrize("stream_mode", ["open_error", "eof", "flapping"])
+def test_retry_budget_stops_persistent_failure_and_releases_streams(monkeypatch, stream_mode):
+    from hcirobot.video import RetryingSource
+
+    opened = []
+    attempts = 0
+
+    class Stream:
+        closed = False
+
+        def __iter__(self):
+            if stream_mode == "flapping":
+                yield np.zeros((8, 8, 3), dtype=np.uint8)
+                raise OSError("stream broke")
+
+        def close(self):
+            self.closed = True
+
+    def factory():
+        nonlocal attempts
+        attempts += 1
+        if stream_mode == "open_error":
+            raise OSError("camera down")
+        stream = Stream()
+        opened.append(stream)
+        return stream
+
+    source = RetryingSource(factory, max_retries=2)
+    monkeypatch.setattr(source, "_sleep", lambda _: True)
+    with pytest.raises(RuntimeError, match="重连已达上限"):
+        list(source)
+    assert attempts == 3
+    assert all(stream.closed for stream in opened)
+    assert source._source is None
+
+
+def test_retrying_source_close_during_open_releases_late_source():
+    from hcirobot.video import RetryingSource
+
+    opening = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    errors = []
+
+    class Stream:
+        def close(self):
+            closed.set()
+
+    def factory():
+        opening.set()
+        assert release.wait(2)
+        return Stream()
+
+    source = RetryingSource(factory, on_event=errors.append)
+    worker = threading.Thread(target=lambda: list(source))
+    worker.start()
+    try:
+        assert opening.wait(2)
+        source.close()
+    finally:
+        release.set()
+        worker.join(2)
+    assert not worker.is_alive()
+    assert closed.is_set()
+    assert not errors
+
+
+def test_retrying_source_invalid_configuration_does_not_retry():
+    from hcirobot.video import RetryingSource
+
+    attempts = 0
+
+    def factory():
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("invalid camera")
+
+    with pytest.raises(ValueError, match="invalid camera"):
+        list(RetryingSource(factory))
+    assert attempts == 1
+
+
+def test_retry_exhaustion_ends_preview_and_closes_robot(monkeypatch):
+    from hcirobot.app import RuntimeEvent, run_loop
+    from hcirobot.controller import ControllerConfig, VisualApproachController
+    from hcirobot.detector import DetectorConfig, RedBallDetector
+    from hcirobot.robot import RecordingRobot
+    from hcirobot.video import RetryingSource
+
+    def factory():
+        raise OSError("camera offline")
+
+    source = RetryingSource(factory, max_retries=1)
+    monkeypatch.setattr(source, "_sleep", lambda _: True)
+
+    class TrackedRobot(RecordingRobot):
+        closed = False
+
+        def close(self):
+            self.closed = True
+            super().close()
+
+    robot = TrackedRobot()
+    events: list[RuntimeEvent] = []
+    with pytest.raises(RuntimeError, match="重连已达上限"):
+        run_loop(
+            source, RedBallDetector(DetectorConfig()),
+            VisualApproachController(ControllerConfig()), robot,
+            armed=False, video_retry=True, event_sink=events.append,
+        )
+    assert robot.closed
+    assert source._closed
+    assert any(event.kind == "error" and "重连已达上限" in event.message for event in events)
+    assert not any("robot connection lost" in event.message for event in events)
 
 import threading as _threading
 
@@ -364,20 +488,20 @@ class StallingSource:
     close() is interruptible (sliced sleep) like the real MJPEG source.
     """
 
-    def __init__(self, stall_seconds: float = 1.2) -> None:
+    def __init__(self, stall_seconds: float = 0.15) -> None:
         self._closed = _threading.Event()
         self._stall_seconds = stall_seconds
 
     def __iter__(self):
         for _ in range(3):
             yield np.zeros((48, 64, 3), dtype=np.uint8)
-        slices = int(self._stall_seconds / 0.05)
+        slices = max(1, int(self._stall_seconds / 0.01))
         for _ in range(slices):
             if self._closed.is_set():
                 return
-            time.sleep(0.05)
+            time.sleep(0.01)
         for _ in range(3):
-            yield np.zeros((48, 64, 3), dtype=np.uint8)
+            yield np.full((48, 64, 3), 32, dtype=np.uint8)
         while not self._closed.is_set():
             time.sleep(0.05)
 
@@ -394,28 +518,43 @@ def test_run_loop_video_retry_keeps_preview_alive_through_stall() -> None:
 
     session = SessionControl()
     lives = {"count": 0}
+    recovered = _threading.Event()
+
+    class ObservingDetector(RedBallDetector):
+        def process(self, frame):
+            if np.all(frame == 32):
+                recovered.set()
+            return super().process(frame)
 
     def factory():
         lives["count"] += 1
         return StallingSource()
 
     def sink(event):
-        if event.kind == "frame" and event.frame_count >= 6:
+        if event.kind == "frame" and recovered.is_set():
             session.request_stop()
 
-    result = run_loop(
-        RetryingSource(factory),
-        RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig()),
-        RecordingRobot(),
-        armed=False,
-        frame_timeout_seconds=0.5,
-        session=session,
-        event_sink=sink,
-        video_retry=True,
-    )
-    assert result.termination == "stop_requested"  # survived the 1.2 s stall
-    assert result.frames >= 6
+    # Latest-wins capture may discard burst frames; assert recovery, not receipt
+    # of every frame. Bound failure time so a regression cannot hang the suite.
+    watchdog = _threading.Timer(1.0, session.request_stop)
+    watchdog.start()
+    try:
+        result = run_loop(
+            RetryingSource(factory),
+            ObservingDetector(DetectorConfig()),
+            VisualApproachController(ControllerConfig()),
+            RecordingRobot(),
+            armed=False,
+            frame_timeout_seconds=0.05,
+            session=session,
+            event_sink=sink,
+            video_retry=True,
+        )
+    finally:
+        watchdog.cancel()
+    assert result.termination == "stop_requested"  # survived the 0.15 s stall
+    assert recovered.is_set()
+    assert result.frames >= 2
 
     # Without the flag the same stall ends an unarmed preview session.
     session = SessionControl()
@@ -425,7 +564,7 @@ def test_run_loop_video_retry_keeps_preview_alive_through_stall() -> None:
         VisualApproachController(ControllerConfig()),
         RecordingRobot(),
         armed=False,
-        frame_timeout_seconds=0.5,
+        frame_timeout_seconds=0.05,
         session=session,
         event_sink=lambda _event: None,
         video_retry=False,

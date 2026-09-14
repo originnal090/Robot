@@ -10,6 +10,8 @@ import select
 import socket
 import threading
 import time
+import uuid
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,6 +31,15 @@ class RobotBackend(Protocol):
     def send_action(self, name: str) -> None: ...
 
     def send_raw(self, payload: dict) -> None: ...
+
+    @property
+    def supports_steps(self) -> bool: ...
+
+    def start_step(self, command: RobotCommand) -> str: ...
+
+    def step_status(self, ident: str) -> str | None: ...
+
+    def heartbeat_step(self, ident: str) -> None: ...
 
     def latest_distance(self) -> tuple[float, float] | None:
         """Latest ultrasonic reading as (millimetres, time.monotonic() at receive).
@@ -82,7 +93,7 @@ class MirrorTcpRobot:
 
     A copy of every command is forwarded, but an unreachable/slow mirror must
     never disturb the primary robot session: connect failures and send errors
-    are swallowed, reconnection is attempted on a fixed backoff, and telemetry
+    are swallowed, reconnection uses a fixed backoff and finite session budget, and telemetry
     is not consumed (the primary stays the source of truth for DIST).
     """
 
@@ -94,22 +105,33 @@ class MirrorTcpRobot:
         connect_timeout: float = 2.0,
         minimum_send_interval: float = 0.1,
         reconnect_seconds: float = 5.0,
+        max_retries: int = 5,
         on_status: Callable[[str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
         self._client = TcpRobotClient(host, port, connect_timeout, minimum_send_interval)
+        self._max_retries = max_retries
+        self._retry_failures = 0
+        self._closed = False
         self._reconnect_seconds = reconnect_seconds
         self._on_status = on_status
         self._clock = clock
         self._connected = False
         self._next_attempt = float("-inf")
         self.failures = 0
+        self._outbox: deque[tuple[bytes, float]] = deque()
+        self._outbox_ready = threading.Condition()
+        self._mirror_worker: threading.Thread | None = None
 
     @property
     def target(self) -> str:
         return f"{self._client.host}:{self._client.port}"
 
     def _ensure_connected(self) -> bool:
+        if self._closed or self._retry_failures > self._max_retries:
+            return False
         if self._connected:
             return True
         if self._clock() < self._next_attempt:
@@ -118,14 +140,16 @@ class MirrorTcpRobot:
         try:
             self._client.connect()
         except (ConnectionError, OSError, TimeoutError):
-            self._connected = False
+            self._drop()
             return False
         self._connected = True
         self._report(f"镜像已连接：{self.target}")
         return True
 
-    def _forward(self, data: bytes) -> bool:
+    def _forward(self, data: bytes, deadline: float | None = None) -> bool:
         if not self._ensure_connected():
+            return False
+        if self._closed or (deadline is not None and time.monotonic() >= deadline):
             return False
         try:
             self._client._send_bytes(data)
@@ -135,24 +159,77 @@ class MirrorTcpRobot:
             return False
 
     def send(self, command: RobotCommand) -> None:
-        self._forward(encode_legacy_command(command))
+        self._dispatch(encode_legacy_command(command))
 
     def send_action(self, name: str) -> None:
         validate_action_name(name)
-        self._forward(f"CMD:{name}\n".encode())
+        self._dispatch(f"CMD:{name}\n".encode())
 
     def send_raw(self, payload: dict) -> None:
-        self._forward(encode_raw_payload(payload))
+        self._dispatch(encode_raw_payload(payload))
+
+    def mirror_step(self, payload: dict) -> None:
+        """Display-only events, never real STEP requests or synthetic ACKs.
+
+        Once steps are mirrored, all following controls share a bounded FIFO
+        worker so a delayed START cannot overtake a manual STOP. Network delays
+        on the mirror must not stall the primary robot's heartbeat.
+        """
+        data = ("MIRROR_STEP:" + json.dumps(payload, allow_nan=False) + "\n").encode()
+        with self._outbox_ready:
+            if self._closed:
+                return
+            if self._mirror_worker is None:
+                self._mirror_worker = threading.Thread(
+                    target=self._drain_mirror, name="robot-step-mirror", daemon=True
+                )
+                self._mirror_worker.start()
+        self._dispatch(data)
+
+    def _dispatch(self, data: bytes) -> None:
+        if self._mirror_worker is None:
+            self._forward(data)
+            return
+        with self._outbox_ready:
+            if self._closed:
+                return
+            if len(self._outbox) >= 32:
+                self._outbox.clear()
+                data = encode_legacy_command(RobotCommand.stop())
+            self._outbox.append((data, time.monotonic() + 0.5))
+            self._outbox_ready.notify()
+
+    def _drain_mirror(self) -> None:
+        while True:
+            with self._outbox_ready:
+                while not self._outbox and not self._closed:
+                    self._outbox_ready.wait()
+                if self._closed:
+                    return
+                data, deadline = self._outbox.popleft()
+            if time.monotonic() <= deadline:
+                self._forward(data, deadline)
+
+    def _stop_mirror_worker(self) -> None:
+        with self._outbox_ready:
+            self._closed = True
+            self._outbox.clear()
+            self._outbox_ready.notify_all()
+        if self._mirror_worker is not None:
+            self._client.cancel()
+            self._mirror_worker.join(timeout=1.0)
 
     def latest_distance(self) -> tuple[float, float] | None:
         return None  # mirror telemetry must not shadow the primary
 
     def cancel(self) -> None:
+        self._stop_mirror_worker()
         with contextlib.suppress(Exception):
             self._client.cancel()
         self._connected = False
 
     def close(self) -> None:
+        self._stop_mirror_worker()
         with contextlib.suppress(Exception):
             self._client.close()
         self._connected = False
@@ -162,7 +239,12 @@ class MirrorTcpRobot:
         # so the next _ensure_connected() opens a fresh connection.
         self._connected = False
         self.failures += 1
-        self._report(f"镜像断开（{self.target}），{self._reconnect_seconds:.0f}s 后自动重连")
+        self._retry_failures += 1
+        self._next_attempt = self._clock() + self._reconnect_seconds
+        if self._retry_failures > self._max_retries:
+            self._report(f"镜像重连已达上限（{self.target}），本次会话已停止镜像重连")
+        else:
+            self._report(f"镜像断开（{self.target}），{self._reconnect_seconds:.0f}s 后自动重连")
 
     def _report(self, message: str) -> None:
         callback = self._on_status
@@ -178,6 +260,18 @@ class FanoutRobot:
     def __init__(self, primary: RobotBackend, mirrors: tuple = ()) -> None:
         self.primary = primary
         self.mirrors = tuple(mirrors)
+        self._mirrored_step_id: str | None = None
+
+    def connect(self) -> None:
+        """Eagerly connect the primary while mirrors remain best-effort and lazy.
+
+        The GUI attaches the fanout before connecting so Stop/E-stop can cancel
+        an in-flight primary connection.  Without this delegation, enabling a
+        mirror made GUI startup fail before the TCP socket was opened.
+        """
+        connect = getattr(self.primary, "connect", None)
+        if connect is not None:
+            connect()
 
     def send(self, command: RobotCommand) -> None:
         self.primary.send(command)
@@ -199,6 +293,34 @@ class FanoutRobot:
 
     def latest_distance(self) -> tuple[float, float] | None:
         return self.primary.latest_distance()
+
+    @property
+    def supports_steps(self) -> bool:
+        return bool(getattr(self.primary, "supports_steps", False))
+
+    def start_step(self, command: RobotCommand) -> str:
+        ident = self.primary.start_step(command)
+        self._mirrored_step_id = ident
+        self._mirror_step({"id": ident, "phase": "start",
+                           "steer": command.steer, "lateral": command.lateral})
+        return ident
+
+    def step_status(self, ident: str) -> str | None:
+        status = self.primary.step_status(ident)
+        if ident == self._mirrored_step_id and status in ("done", "cancelled", "error"):
+            self._mirror_step({"id": ident, "phase": status})
+            self._mirrored_step_id = None
+        return status
+
+    def heartbeat_step(self, ident: str) -> None:
+        self.primary.heartbeat_step(ident)
+        if ident == self._mirrored_step_id:
+            self._mirror_step({"id": ident, "phase": "heartbeat"})
+
+    def _mirror_step(self, payload: dict) -> None:
+        for mirror in self.mirrors:
+            with contextlib.suppress(Exception):
+                mirror.mirror_step(payload)
 
     def cancel(self) -> None:
         for backend in (self.primary, *self.mirrors):
@@ -222,6 +344,9 @@ def encode_legacy_command(command: RobotCommand) -> bytes:
         "grab": command.grab,
         "t": datetime.now(UTC).isoformat(),
     }
+    # Keep legacy frames byte-schema compatible until lateral is explicitly used.
+    if command.lateral:
+        payload["lateral"] = round(command.lateral, 4)
     return (json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
 
 
@@ -238,8 +363,8 @@ def validate_raw_payload(payload: dict) -> None:
     missing = [key for key in _RAW_KEYS if key not in payload]
     if missing:
         raise ValueError(f"raw payload missing keys: {', '.join(missing)}")
-    for key in ("v", "steer"):
-        value = payload[key]
+    for key in ("v", "steer", "lateral"):
+        value = payload.get(key, 0.0)
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
@@ -261,6 +386,20 @@ class RecordingRobot:
     commands: list[RobotCommand] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
     raw_payloads: list[dict] = field(default_factory=list)
+    steps: list[tuple[str, RobotCommand]] = field(default_factory=list)
+    supports_steps = True
+
+    def start_step(self, command: RobotCommand) -> str:
+        ident = uuid.uuid4().hex
+        self.steps.append((ident, command))
+        self.send(command)
+        return ident
+
+    def step_status(self, ident: str) -> str | None:
+        return "done" if self.steps and self.steps[-1][0] == ident else None
+
+    def heartbeat_step(self, ident: str) -> None:
+        pass
 
     def send(self, command: RobotCommand) -> None:
         self.commands.append(command)
@@ -321,6 +460,8 @@ class TcpRobotClient:
         self._distance: tuple[float, float] | None = None
         self._data_lock = threading.Lock()
         self._reader: threading.Thread | None = None
+        self._supports_steps = False
+        self._steps: dict[str, str] = {}
 
     def connect(self) -> None:
         with self._lock:
@@ -331,7 +472,12 @@ class TcpRobotClient:
                     raise ConnectionError("robot client is closed")
                 if self._socket is not None:
                     return
-            sock = self._connect_cancellable()
+            try:
+                sock = self._connect_cancellable()
+            except OSError as exc:
+                raise ConnectionError(
+                    f"cannot connect to robot {self.host}:{self.port}: {exc}"
+                ) from exc
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.settimeout(self.connect_timeout)
             with self._state_lock:
@@ -389,6 +535,34 @@ class TcpRobotClient:
     def send_raw(self, payload: dict) -> None:
         self._send_bytes(encode_raw_payload(payload))
 
+    @property
+    def supports_steps(self) -> bool:
+        with self._data_lock:
+            return self._supports_steps
+
+    def start_step(self, command: RobotCommand) -> str:
+        if not self.supports_steps:
+            raise ValueError("robot server does not advertise STEP_V1")
+        if command.velocity or command.grab or bool(command.steer) == bool(command.lateral):
+            raise ValueError("single step requires only steer or lateral")
+        ident = uuid.uuid4().hex
+        payload = {"id": ident, "steer": command.steer, "lateral": command.lateral}
+        with self._data_lock:
+            if any(status == "accepted" for status in self._steps.values()):
+                raise ValueError("single step already pending")
+            self._steps = {ident: "accepted"}
+        self._send_bytes(("STEP:" + json.dumps(payload) + "\n").encode())
+        return ident
+
+    def step_status(self, ident: str) -> str | None:
+        with self._data_lock:
+            return self._steps.get(ident)
+
+    def heartbeat_step(self, ident: str) -> None:
+        if not re.fullmatch(r"[a-f0-9]{32}", ident):
+            raise ValueError("invalid step ID")
+        self._send_bytes(("STEP_PING:" + ident + "\n").encode())
+
     def latest_distance(self) -> tuple[float, float] | None:
         """Latest telemetry distance as (millimetres, time.monotonic() at receive).
 
@@ -433,7 +607,24 @@ class TcpRobotClient:
 
     def _handle_telemetry_line(self, raw: bytes) -> None:
         text = raw.decode("utf-8", errors="replace").strip()
-        if text.startswith("DIST:"):
+        if text == "CAPS:STEP_V1":
+            with self._data_lock:
+                self._supports_steps = True
+        elif text.startswith("STEP_STATUS:"):
+            try:
+                payload = json.loads(text[12:])
+                ident, status = payload["id"], payload["status"]
+                if not isinstance(ident, str) or status not in (
+                    "accepted", "done", "cancelled", "error"
+                ):
+                    return
+            except (ValueError, TypeError, KeyError):
+                return
+            with self._data_lock:
+                if self._steps.get(ident) == "accepted":
+                    self._steps[ident] = status
+            self._emit("step", text[12:])
+        elif text.startswith("DIST:"):
             payload = text[5:].strip()
             try:
                 value = int(payload)
@@ -527,6 +718,9 @@ class TcpRobotClient:
         with self._state_lock:
             if self._socket is sock:
                 self._socket = None
+                with self._data_lock:
+                    self._supports_steps = False
+                    self._steps = {ident: "error" for ident in self._steps}
         self._close_socket(sock)
 
     @staticmethod

@@ -98,6 +98,45 @@ def test_log_is_bounded() -> None:
     assert model.logs[0] == "200"
 
 
+def test_late_started_does_not_revive_stopping_session() -> None:
+    model = GuiModel()
+    model.begin_start()
+    model.request_stop()
+    model.apply_event(RuntimeEvent("started", session_id=1))
+    assert model.session_state is SessionState.STOPPING
+    assert not model.can_manual
+    model.apply_event(RuntimeEvent("finished", "stop_requested", session_id=1))
+    assert model.session_state is SessionState.STOPPED
+
+
+def test_old_started_cannot_replace_current_session() -> None:
+    model = running_model(2)
+    model.apply_event(RuntimeEvent("started", session_id=1))
+    assert model.session_id == 2
+    assert model.session_state is SessionState.RUNNING
+
+
+def test_finished_preserves_cleanup_fault() -> None:
+    model = running_model(1)
+    model.fail("cleanup failed")
+    model.apply_event(RuntimeEvent("finished", "stop_requested", session_id=1))
+    assert model.session_state is SessionState.FAILED
+    assert model.fault == "cleanup failed"
+
+
+def test_video_retry_disables_arming_until_new_frame() -> None:
+    model = running_model(1)
+    model.apply_event(frame_event(session_id=1))
+    assert model.can_arm
+    model.apply_event(RuntimeEvent("video_retry", "视频中断", session_id=1))
+    assert model.video_status == "重连中"
+    assert not model.can_arm
+    model.apply_event(RuntimeEvent("video_retry", "视频已恢复", session_id=1))
+    assert not model.can_arm
+    model.apply_event(frame_event(session_id=1))
+    assert model.can_arm
+
+
 def test_stop_request_zeroes_telemetry_and_finished_confirms() -> None:
     model = running_model(3)
     model.apply_event(

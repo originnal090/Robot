@@ -52,6 +52,16 @@ class ControllerConfig:
     walk_seconds_near: float = 0.5
     settle_seconds: float = 0.4
     sense_seconds: float = 0.7
+    # Fixed request windows for small/normal gait tiers, not step-angle control.
+    turn_seconds_near: float = 0.18
+    turn_seconds_far: float = 0.45
+    turn_full_error: float = 0.45  # Below this error, use the small-step group.
+    single_step_turns: bool = True
+    step_timeout_seconds: float = 10.0
+    # Opt-in until the lateral gait has been calibrated on the actual floor.
+    near_lateral_enabled: bool = False
+    near_lateral_max_error: float = 0.25
+    near_lateral_speed: float = 0.30
 
     def __post_init__(self) -> None:
         float_values = (
@@ -69,6 +79,16 @@ class ControllerConfig:
             self.far_speed,
             self.near_speed,
             self.minimum_active_steer,
+            self.walk_seconds_far,
+            self.walk_seconds_near,
+            self.settle_seconds,
+            self.sense_seconds,
+            self.turn_seconds_near,
+            self.turn_seconds_far,
+            self.turn_full_error,
+            self.step_timeout_seconds,
+            self.near_lateral_max_error,
+            self.near_lateral_speed,
         )
         if not all(math.isfinite(value) for value in float_values):
             raise ValueError("all controller values must be finite")
@@ -102,12 +122,28 @@ class ControllerConfig:
                 self.walk_seconds_near,
                 self.settle_seconds,
                 self.sense_seconds,
+                self.turn_seconds_near,
+                self.turn_seconds_far,
             )
             <= 0
         ):
             raise ValueError("approach phase durations must be positive")
         if self.walk_seconds_near > self.walk_seconds_far:
             raise ValueError("walk_seconds_near must not exceed walk_seconds_far")
+        if self.turn_seconds_near > self.turn_seconds_far:
+            raise ValueError("turn_seconds_near must not exceed turn_seconds_far")
+        if not self.align_enter_error < self.turn_full_error <= 1:
+            raise ValueError("turn_full_error must exceed align_enter_error and be <= 1")
+        if not isinstance(self.near_lateral_enabled, bool):
+            raise TypeError("near_lateral_enabled must be a boolean")
+        if not isinstance(self.single_step_turns, bool):
+            raise TypeError("single_step_turns must be a boolean")
+        if self.step_timeout_seconds <= 0:
+            raise ValueError("step_timeout_seconds must be positive")
+        if not 0 < self.near_lateral_max_error <= 1:
+            raise ValueError("near_lateral_max_error must be in (0, 1]")
+        if not 0.20 < self.near_lateral_speed <= 0.45:
+            raise ValueError("near_lateral_speed must be in the slow gait band (0.20, 0.45]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +169,8 @@ class VisualApproachController:
         self._misalign_streak = 0
         self._arrival_streak = 0
         self._lost_streak = 0
+        self._last_correction_sign = 0
+        self._fine_alignment = False
 
     def update_config(self, config: ControllerConfig) -> None:
         """Swap tuning parameters at runtime via an atomic reference swap."""
@@ -183,6 +221,8 @@ class VisualApproachController:
             radius_ratio = None
             self._lost_streak += 1
             self._arrival_streak = 0
+            self._align_streak = 0
+            self._misalign_streak = 0
 
         if self.state is ControlState.SEARCHING:
             return self._update_search(current, error, radius_ratio, now)
@@ -232,13 +272,19 @@ class VisualApproachController:
                 self.state = ControlState.APPROACHING
                 self.reason = "target_aligned"
                 self._misalign_streak = 0
+                self._last_correction_sign = 0
+                self._fine_alignment = False
                 return self._update_approach(True, error, radius_ratio, now)
+            # Confirmation must happen at rest; minimum-active steering here
+            # used to push an already aligned target out of the deadband.
+            self.reason = "alignment_pending"
+            return self._decision(RobotCommand.stop(), error, radius_ratio)
         else:
             self._align_streak = 0
         steer = self._clamp(error * self.config.align_steer_gain, self.config.align_steer_max)
         steer = self._minimum_active(steer)
         self.reason = "aligning"
-        return self._decision(RobotCommand(steer=steer), error, radius_ratio)
+        return self._decision(self._correction(steer, error, radius_ratio), error, radius_ratio)
 
     def _update_approach(
         self,
@@ -266,14 +312,17 @@ class VisualApproachController:
         else:
             self._misalign_streak = 0
 
-        if abs(error) > self.config.align_enter_error:
+        # Once aligned, retain that heading throughout the hysteresis band.
+        # Starting another discrete turn at the tighter entry threshold defeats
+        # hysteresis and produces alternating corrections on camera sway.
+        if abs(error) > self.config.align_exit_error:
             steer = self._clamp(
                 error * self.config.approach_steer_gain,
                 self.config.approach_steer_max,
             )
             steer = self._minimum_active(steer)
             self.reason = "approach_correction"
-            return self._decision(RobotCommand(steer=steer), error, radius_ratio)
+            return self._decision(self._correction(steer, error, radius_ratio), error, radius_ratio)
 
         velocity = self._approach_speed(radius_ratio)
         self.reason = "approaching"
@@ -285,7 +334,29 @@ class VisualApproachController:
             self._search_initial_direction = 1 if self._last_target_error >= 0 else -1
         self._clear_streaks()
 
+    def _correction(self, steer: float, error: float, radius_ratio: float) -> RobotCommand:
+        if self.config.approach_mode != "slow_realtime":
+            sign = 1 if error > 0 else -1
+            if self._last_correction_sign and sign != self._last_correction_sign:
+                self._fine_alignment = True
+            self._last_correction_sign = sign
+            if self._fine_alignment or abs(error) < self.config.turn_full_error:
+                # Reduce the actual discrete step by selecting small_step.
+                # Never try to obtain fractional steps through shorter timing.
+                steer = math.copysign(min(abs(steer), 0.35), steer)
+        if (
+            self.config.near_lateral_enabled
+            and self.config.approach_mode != "slow_realtime"
+            and radius_ratio >= self.config.slow_radius_ratio
+            and abs(error) <= self.config.near_lateral_max_error
+        ):
+            self.reason = "near_lateral_correction"
+            return RobotCommand(lateral=math.copysign(self.config.near_lateral_speed, error))
+        return RobotCommand(steer=steer)
+
     def _clear_streaks(self) -> None:
+        self._last_correction_sign = 0
+        self._fine_alignment = False
         self._align_streak = 0
         self._misalign_streak = 0
         self._arrival_streak = 0

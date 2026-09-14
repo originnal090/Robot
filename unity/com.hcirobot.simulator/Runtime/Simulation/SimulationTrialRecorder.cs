@@ -286,6 +286,9 @@ namespace HciRobot.Simulator
                 angular_velocity = ToArray(angularVelocity),
                 actual_velocity = output.x,
                 actual_steer = output.y,
+                actual_lateral = motionDriver != null ? motionDriver.ActualLateralOutput : 0f,
+                mirrored_step_id = motionDriver != null ? motionDriver.ActiveMirroredStepId : null,
+                mirrored_step_phase = motionDriver != null ? motionDriver.MirroredStepPhase : null,
                 motion_mode = motionDriver != null ? motionDriver.CurrentMode.ToString() : null,
                 distance_mm = distanceMillimetres,
                 autonomy_state = latestState,
@@ -496,6 +499,9 @@ namespace HciRobot.Simulator
             public float[] angular_velocity;
             public float actual_velocity;
             public float actual_steer;
+            public float actual_lateral;
+            public string mirrored_step_id;
+            public string mirrored_step_phase;
             public string motion_mode;
             public int distance_mm;
             public string autonomy_state;

@@ -93,6 +93,22 @@ def test_core_a_min_above_lab_a_max_is_rejected() -> None:
         DetectorConfig(core_a_min=250)
 
 
+@pytest.mark.parametrize("center", [(0, 0), (80, 60), (159, 119)])
+def test_core_support_roi_matches_full_frame_count(center: tuple[int, int]) -> None:
+    """ROI optimization must preserve support at interior and clipped image edges."""
+    blob = np.zeros((120, 160), dtype=np.uint8)
+    cv2.circle(blob, center, 22, 255, -1)
+    contours, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contour = contours[0]
+    core = np.zeros_like(blob)
+    core[::2, ::3] = 255
+    support = cv2.countNonZero(cv2.bitwise_and(blob, core))
+    area = cv2.contourArea(contour)
+    for fraction in [(support - 0.5) / area, (support + 0.5) / area]:
+        detector = RedBallDetector(DetectorConfig(minimum_core_fraction=fraction))
+        assert detector._has_core_support(contour, core, area) == (support >= fraction * area)
+
+
 def test_real_robot_frames_detect_the_ball_stably() -> None:
     detector = RedBallDetector(DetectorConfig())
     for name, center_x, center_y, radius in REAL_FRAME_CASES:

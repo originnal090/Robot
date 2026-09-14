@@ -25,6 +25,24 @@ def _vector_line(v: float, steer: float) -> str:
     return json.dumps({"v": v, "steer": steer, "grab": False, "t": "t0"})
 
 
+def test_alignment_reversal_selects_real_small_step_action_group() -> None:
+    from hcirobot.controller import ControllerConfig, VisualApproachController
+    from hcirobot.model import Detection
+
+    controller = VisualApproachController(ControllerConfig())
+    controller.arm(0)
+    session = ts.RobotSession()
+    for now, error, expected in [
+        (0.1, 0.6, "turn_right"),
+        (0.2, -0.6, "turn_left_small_step"),
+        (0.3, 0.6, "turn_right_small_step"),
+    ]:
+        detection = Detection(True, True, (1 + error) * 320, 240, 30, 640, 480)
+        command = controller.update(detection, now).command
+        session.handle_line(_vector_line(command.velocity, command.steer))
+        assert session.tick_group() == expected
+
+
 def _free_port(sock_type: int) -> int:
     with socket.socket(socket.AF_INET, sock_type) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -166,6 +184,50 @@ def test_vector_to_mode_deadzone_and_turn_priority() -> None:
     assert ts.vector_to_mode(0.0, -0.5) == "turn_l"
     assert ts.vector_to_mode(0.0, -0.8) == "turn_l_fast"
     assert ts.vector_to_mode(0.9, 0.9) == "turn_r_fast"  # 转向优先
+
+
+@pytest.mark.parametrize("sign,side", [(-1, "left"), (1, "right")])
+@pytest.mark.parametrize(
+    "magnitude,suffix", [(0.21, "_10"), (0.45, "_10"), (0.6, ""), (0.75, ""), (1.0, "_fast")]
+)
+def test_lateral_wire_command_selects_vendor_gait_and_legacy_stop_clears_it(
+    sign, side, magnitude, suffix
+) -> None:
+    from hcirobot.model import RobotCommand
+    from hcirobot.robot import encode_legacy_command
+
+    session = ts.RobotSession.from_config(ts.ServiceConfig(mode=ts.MODE_DRY_RUN))
+    session.handle_line(encode_legacy_command(RobotCommand(lateral=sign * magnitude)).decode())
+    assert session.tick_group() == f"{side}_move{suffix}"
+    session.handle_line(_vector_line(0, 0))
+    assert session.mode == "stand"
+    assert session.tick_group() is None
+
+
+def test_lateral_priority_deadzone_watchdog_and_configuration() -> None:
+    assert ts.vector_to_mode(0.6, 0.35, lateral=0.9) == "turn_r_slow"
+    assert ts.vector_to_mode(0.6, 0, lateral=-0.35) == "lateral_l_slow"
+    assert ts.vector_to_mode(0.6, 0, lateral=0.2) == "forward"
+    assert ts.vector_to_mode(0, 0, lateral=-0.2) == "stand"
+    config = ts.load_config(
+        environ={"TONYPI_MODE": "dry-run", "TONYPI_ACTION_LATERAL_R_SLOW": "custom_right"}
+    )
+    session = ts.RobotSession.from_config(config)
+    session.now = lambda: 10.0
+    session.handle_line('{"v":0,"steer":0,"lateral":0.35}')
+    assert session.tick_group() == "custom_right"
+    assert session.watchdog_plan(11.0)
+    assert session.mode == "stand"
+
+
+@pytest.mark.parametrize("lateral", [True, "0.3", None, float("nan"), float("inf"), -1.1, 1.1])
+def test_invalid_lateral_does_not_change_gait_or_refresh_watchdog(lateral) -> None:
+    session = ts.RobotSession(now=lambda: 10.0)
+    session.handle_line(_vector_line(0.6, 0))
+    session.now = lambda: 10.5
+    assert session.handle_line(json.dumps({"v": 0, "steer": 0, "lateral": lateral})) == []
+    assert session.mode == "forward"
+    assert session.last_rx_ts == 10.0
 
 
 def test_json_line_maps_to_discrete_gait_groups() -> None:

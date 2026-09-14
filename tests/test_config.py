@@ -20,13 +20,15 @@ def test_repository_configs_are_valid() -> None:
         ('backend = "recording"', 'backend = "tpc"', "robot backend"),
         ("port = 5075", "port = 0", "robot port"),
         ("fps = 10.0", "fps = 0.0", "video fps"),
-        ("frame_timeout_seconds = 0.75", "frame_timeout_seconds = -1", "video frame timeout"),
+        ("frame_timeout_seconds = 1.5", "frame_timeout_seconds = -1", "video frame timeout"),
     ],
 )
 def test_invalid_runtime_config_fails_before_resources_open(
     tmp_path: Path, old: str, new: str, message: str
 ) -> None:
-    text = (ROOT / "config.toml").read_text(encoding="utf-8").replace(old, new, 1)
+    text = (ROOT / "config.toml").read_text(encoding="utf-8")
+    assert old in text, f"invalid-config fixture no longer matches config.toml: {old}"
+    text = text.replace(old, new, 1)
     path = tmp_path / "invalid.toml"
     path.write_text(text, encoding="utf-8")
 

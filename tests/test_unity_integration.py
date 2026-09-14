@@ -26,13 +26,15 @@ def test_run_loop_streams_schema_v1_over_real_udp_socket() -> None:
     receiver.bind(("127.0.0.1", 0))
     receiver.settimeout(1.0)
     publisher = UnityStatusPublisher(
-        UnityStatusConfig(enabled=True, host="127.0.0.1", port=receiver.getsockname()[1], frame_rate_hz=1000.0)
+        UnityStatusConfig(
+            enabled=True, host="127.0.0.1", port=receiver.getsockname()[1], frame_rate_hz=1000.0
+        )
     )
     try:
         result = run_loop(
             # Realtime pacing: with latest-wins frame dropping, an unpaced
             # synthetic source exhausts itself before 3 frames get processed.
-            SyntheticBallSource(SyntheticConfig(realtime=True)),
+            SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
             RedBallDetector(DetectorConfig()),
             VisualApproachController(ControllerConfig()),
             RecordingRobot(),
@@ -47,7 +49,10 @@ def test_run_loop_streams_schema_v1_over_real_udp_socket() -> None:
                 payload, _ = receiver.recvfrom(65535)
             except TimeoutError:
                 break
-            messages.append(json.loads(payload))
+            message = json.loads(payload)
+            messages.append(message)
+            if message["event"]["kind"] == "finished":
+                break
     finally:
         publisher.close()
         receiver.close()

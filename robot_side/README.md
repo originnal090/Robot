@@ -6,13 +6,34 @@
 
 ## 协议保持不变
 
-- JSONL：`{"v":float,"steer":float,"grab":bool,"t":...}\n`；转向优先，负 `v` 后退。
+- JSONL：`{"v":float,"steer":float,"grab":bool,"t":...}\n`；可选 `lateral`，转向优先，负 `v` 后退。
 - CMD：保留 `right_grip`、`right_trigger`、`left_trigger`，新增 `nod`、`shake`、`stand`。
 - DIST：连接期间按间隔发送 `DIST:<毫米>\n`；课程 SDK 的未连接哨兵 `99999` 原样发送。
 - 仍只服务一个 TCP 客户端，不做认证、自动重连或控制权仲裁。
 
 默认值仍为 TCP `0.0.0.0:5075`、颜色 UDP `127.0.0.1:6001`、死区 `0.20`、
 看门狗 `0.60s`、步态节拍 `0.30s`、命令冷却 `0.50s`、距离节拍 `0.30s`。
+
+## 横移协议扩展（暂未接入控制策略）
+
+可选数值 `lateral` 范围为 `[-1,1]`，相对机器人身体正向：负值左移、正值右移。
+省略或为零时保持旧行为；旧式全零帧也会结束横移。优先级为
+`转向 > 横移 > 前后移动`，不会混合两个步态。非法横移值被忽略且不刷新看门狗。
+
+| 幅值 | 左移 | 右移 |
+| --- | --- | --- |
+| ≤ 0.20 | 横移轴死区 | 横移轴死区 |
+| > 0.20 且 ≤ 0.45 | `left_move_10` | `right_move_10` |
+| > 0.45 且 ≤ 0.75 | `left_move` | `right_move` |
+| > 0.75 | `left_move_fast` | `right_move_fast` |
+
+这些文件名已与课程 ZIP 核对，后缀 `_10` 不是已测得的位移承诺。
+可用 `TONYPI_ACTION_LATERAL_L/R`、`TONYPI_ACTION_LATERAL_L/R_SLOW` 和
+`TONYPI_ACTION_LATERAL_L/R_FAST` 分别覆盖动作组。启用动作目录检查时，这六个文件也会检查。
+
+PC 底层可构造 `RobotCommand(lateral=...)` 或通过 `send_raw` 传入该字段，镜像会原样转发。
+默认 `lateral=0`，旧命令编码不会新增字段。GUI、手柄、追球与避障策略均未生成横移请求。
+使用前需更新机器人端；课程原版服务不会执行这个扩展。横移步长、周期与稳定性尚未真机标定。
 
 ## 必须显式选择运行模式
 
@@ -33,7 +54,7 @@ TONYPI_MODE=hardware PYTHONPATH=/home/pi/TonyPi/HiwonderSDK python3 tonypi_serve
 
 - `hiwonder.Board.setPWMServoPulse` 存在；
 - `hiwonder.ActionGroupControl.runActionGroup` 或 `runAction` 存在；
-- 若设置 `TONYPI_ACTION_GROUP_CHECK_DIR`，目录及配置的五个动作组 `.d6a` 文件必须存在；该变量只校验文件，必须指向已安装 Hiwonder SDK 实际使用的目录，不会改变 SDK 的查找路径；旧名 `TONYPI_ACTION_GROUP_DIR` 仍兼容；
+- 若设置 `TONYPI_ACTION_GROUP_CHECK_DIR`，目录及配置的全部步态、站立动作组 `.d6a` 文件必须存在；该变量只校验文件，必须指向已安装 Hiwonder SDK 实际使用的目录，不会改变 SDK 的查找路径；旧名 `TONYPI_ACTION_GROUP_DIR` 仍兼容；
 - 若 `TONYPI_REQUIRE_SONAR=1`，Sonar 模块、构造和 `getDistance` 必须可用。
 
 ## Sonar 策略

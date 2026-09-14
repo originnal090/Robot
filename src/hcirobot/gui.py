@@ -5,6 +5,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from dataclasses import asdict, replace
 from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Any
@@ -12,11 +13,13 @@ from typing import Any
 import cv2
 from PIL import Image, ImageTk
 
-from .app import RuntimeEvent, SessionControl, run_loop
+from .app import RuntimeEvent, SessionControl, run_loop, run_manual_loop
 from .cli import build_source
 from .config import controller_config, detector_config, load_config, unity_status_config
 from .controller import ControllerConfig, VisualApproachController
 from .detector import DetectorConfig, RedBallDetector
+from .detector_profile import load_detector
+from .edge_detector import EdgeBallDetector
 from .frame_recorder import FrameRecorder
 from .gamepad import TOGGLE_HINT, GamepadMonitor, GamepadTeleop, map_to_command
 from .gui_model import GuiModel, SessionState
@@ -44,8 +47,11 @@ BORDER = "#344047"
 MANUAL_JOG_LEVEL = 0.35
 MANUAL_JOG_SECONDS = 0.35
 MANUAL_STOP_SECONDS = 0.3
+FRAME_STALE_STOP_SECONDS = 0.35
+DUPLICATE_FRAME_LIMIT = 5
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+_DEFAULT_EDGE_MODEL = Path("artifacts/edge-model-20260914/red_ball_svm.npz")
 
 
 def _default_approach_mode() -> str:
@@ -103,9 +109,11 @@ class RobotControlApp:
         self.demo_auto_arm_done = False
         self.events: queue.Queue[RuntimeEvent] = queue.Queue()
         self.latest_frame: RuntimeEvent | None = None
+        self._displayed_frame: RuntimeEvent | None = None
+        self._frame_lock = threading.Lock()
         self.session_control: SessionControl | None = None
         self.session_thread: threading.Thread | None = None
-        self.active_detector: RedBallDetector | None = None
+        self.active_detector: RedBallDetector | EdgeBallDetector | None = None
         self.active_controller: VisualApproachController | None = None
         self.tuning_vars: dict[str, tk.StringVar] = {}
         self.manual_buttons: list[ttk.Button] = []
@@ -262,6 +270,8 @@ class RobotControlApp:
             fg=MUTED,
             font=("Segoe UI", 14),
             compound="center",
+            width=1,
+            height=1,
         )
         self.video_label.grid(row=0, column=0, sticky="nsew")
         # Resizes are debounced: rendering on every <Configure> made dragging the
@@ -327,6 +337,7 @@ class RobotControlApp:
         self.host_var = tk.StringVar(value="127.0.0.1")
         self.port_var = tk.StringVar(value="5075")
         self.config_var = tk.StringVar(value=str(self.config_path))
+        self.control_only_var = tk.BooleanVar(value=False)
 
         self._field(sidebar, 0, "视频源", self.source_var, browse=True)
         ttk.Label(
@@ -335,39 +346,48 @@ class RobotControlApp:
             style="PanelMuted.TLabel",
             wraplength=300,
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self.control_only_checkbutton = ttk.Checkbutton(
+            sidebar,
+            text="仅手柄控制（不连接图传）",
+            variable=self.control_only_var,
+            command=self._refresh_control_mode,
+            style="Panel.TCheckbutton",
+        )
+        self.control_only_checkbutton.grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 6))
         ttk.Label(sidebar, text="控制后端", style="Panel.TLabel").grid(
-            row=2, column=0, sticky="w", pady=4
+            row=3, column=0, sticky="w", pady=4
         )
         backend = ttk.Combobox(
             sidebar, textvariable=self.backend_var, values=("recording", "tcp"), state="readonly"
         )
-        backend.grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
-        self._field(sidebar, 3, "机器人地址", self.host_var)
-        self._field(sidebar, 4, "端口", self.port_var)
+        backend.grid(row=3, column=1, columnspan=2, sticky="ew", pady=4)
+        self._field(sidebar, 4, "机器人地址", self.host_var)
+        self._field(sidebar, 5, "端口", self.port_var)
         # Optional command mirror, e.g. 127.0.0.1:5075 for the Unity twin.
         self.mirror_var = tk.StringVar(value="")
-        self._field(sidebar, 5, "镜像地址", self.mirror_var)
+        self._field(sidebar, 6, "镜像地址", self.mirror_var)
         ttk.Label(
             sidebar,
             text="镜像地址可留空；填 host:port 后每条命令同时发一份（如本机 Unity 孪生）",
             style="PanelMuted.TLabel",
             wraplength=300,
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        self._field(sidebar, 7, "配置文件", self.config_var, browse=True, config_file=True)
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._field(sidebar, 8, "配置文件", self.config_var, browse=True, config_file=True)
 
-        ttk.Separator(sidebar).grid(row=8, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_tuning_panel(sidebar, row=9)
+        self._build_detector_selector(sidebar, row=9)
         ttk.Separator(sidebar).grid(row=11, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_obstacle_panel(sidebar, row=12)
+        self._build_tuning_panel(sidebar, row=12)
         ttk.Separator(sidebar).grid(row=14, column=0, columnspan=3, sticky="ew", pady=10)
-        self._build_manual_panel(sidebar, row=15)
+        self._build_obstacle_panel(sidebar, row=15)
         ttk.Separator(sidebar).grid(row=17, column=0, columnspan=3, sticky="ew", pady=10)
+        self._build_manual_panel(sidebar, row=18)
+        ttk.Separator(sidebar).grid(row=20, column=0, columnspan=3, sticky="ew", pady=10)
         ttk.Label(sidebar, text="运行日志", style="PanelTitle.TLabel").grid(
-            row=18, column=0, columnspan=3, sticky="w"
+            row=21, column=0, columnspan=3, sticky="w"
         )
         log_frame = ttk.Frame(sidebar, style="Panel.TFrame")
-        log_frame.grid(row=19, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        sidebar.rowconfigure(19, weight=1)
+        log_frame.grid(row=22, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        sidebar.rowconfigure(22, weight=1)
         self.log_text = tk.Text(
             log_frame,
             height=8,
@@ -383,6 +403,38 @@ class RobotControlApp:
         self.log_text.configure(yscrollcommand=scrollbar.set)
         self.log_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+    def _build_detector_selector(self, sidebar: ttk.Frame, row: int) -> None:
+        panel = ttk.Frame(sidebar, style="Panel.TFrame")
+        panel.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(7, 0))
+        panel.columnconfigure(1, weight=1)
+        self.edge_model_var = tk.BooleanVar(value=False)
+        default_path = str(_DEFAULT_EDGE_MODEL.resolve()) if _DEFAULT_EDGE_MODEL.is_file() else ""
+        self.edge_model_path_var = tk.StringVar(value=default_path)
+        self.edge_model_checkbutton = ttk.Checkbutton(
+            panel,
+            text="使用端侧模型 / 实验版本",
+            variable=self.edge_model_var,
+            command=self._refresh_detector_selector,
+            style="Panel.TCheckbutton",
+        )
+        self.edge_model_checkbutton.grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(panel, text="模型文件", style="Panel.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        self.edge_model_entry = ttk.Entry(panel, textvariable=self.edge_model_path_var)
+        self.edge_model_entry.grid(row=1, column=1, sticky="ew", padx=(8, 5), pady=(4, 0))
+        self.edge_model_browse_button = ttk.Button(
+            panel, text="选择", command=self._browse_edge_model
+        )
+        self.edge_model_browse_button.grid(row=1, column=2, pady=(4, 0))
+        ttk.Label(
+            panel,
+            text="关闭时使用 LAB；JSON 版本含固定检测参数，NPZ 使用当前参数；下次启动生效",
+            style="PanelMuted.TLabel",
+            wraplength=300,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(3, 0))
+        self._refresh_detector_selector()
 
     def _build_tuning_panel(self, sidebar: ttk.Frame, row: int) -> None:
         ttk.Label(sidebar, text="参数调优", style="PanelTitle.TLabel").grid(
@@ -670,6 +722,26 @@ class RobotControlApp:
         if selected:
             self.config_var.set(selected)
 
+    def _browse_edge_model(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="选择端侧识别模型",
+            filetypes=(("实验版本", "*.json"), ("NumPy 模型", "*.npz"), ("全部", "*.*")),
+        )
+        if selected:
+            self.edge_model_path_var.set(selected)
+
+    def _refresh_detector_selector(self) -> None:
+        editable = self.model.can_start and not self.control_only_var.get()
+        self.edge_model_checkbutton.configure(state="normal" if editable else "disabled")
+        path_state = "normal" if editable and self.edge_model_var.get() else "disabled"
+        self.edge_model_entry.configure(state=path_state)
+        self.edge_model_browse_button.configure(state=path_state)
+
+    def _refresh_control_mode(self) -> None:
+        """Reflect options that do not apply when no video source is opened."""
+        self._refresh_detector_selector()
+        self._refresh_view()
+
     def _demo_start(self) -> None:
         """Demo mode entry: auto-start the preview session once the window is up."""
         if self._closing:
@@ -681,6 +753,9 @@ class RobotControlApp:
 
     def _demo_try_arm(self) -> None:
         """Arm automatically in demo mode, but only for a loopback TCP backend."""
+        if self.model.control_only:
+            self.demo_auto_arm_done = True
+            return
         if self.demo_auto_arm_done or not self.model.can_arm or self.session_control is None:
             return
         if not _auto_arm_allowed(self.backend_var.get(), self.host_var.get().strip()):
@@ -694,7 +769,7 @@ class RobotControlApp:
         self.demo_auto_arm_done = True
 
     def _start_session(self) -> None:
-        if not self.model.can_start:
+        if self._closing or self._worker_alive() or not self.model.can_start:
             return
         mirror_text = self.mirror_var.get().strip()
         if mirror_text:
@@ -706,22 +781,51 @@ class RobotControlApp:
                 return
         else:
             mirror_endpoint = None
+        backend = self.backend_var.get().strip()
+        host = self.host_var.get().strip()
+        port_text = self.port_var.get().strip()
+        if backend == "tcp":
+            try:
+                port = int(port_text)
+                if not host:
+                    raise ValueError("机器人地址不能为空")
+                if not 1 <= port <= 65535:
+                    raise ValueError("端口必须在 1 到 65535 之间")
+            except ValueError as exc:
+                message = str(exc) if str(exc).startswith(("机器人", "端口")) else "端口必须是整数"
+                self.model.append_log(f"机器人连接参数无效：{message}")
+                self._refresh_view()
+                return
+        else:
+            port = 0
         values = {
             "config": self.config_var.get().strip(),
             "source": self.source_var.get().strip(),
-            "backend": self.backend_var.get(),
-            "host": self.host_var.get().strip(),
-            "port": self.port_var.get().strip(),
+            "backend": backend,
+            "host": host,
+            "port": port,
             "mirror": mirror_endpoint,
-            "obstacle": bool(self.obstacle_var.get()),
+            "control_only": bool(self.control_only_var.get()),
+            "obstacle": bool(self.obstacle_var.get()) and not self.control_only_var.get(),
             "approach_mode": self.approach_var.get(),
+            "use_edge_model": bool(self.edge_model_var.get()),
+            "edge_model_path": self.edge_model_path_var.get().strip(),
         }
-        self.model.begin_start(obstacle_enabled=values["obstacle"])
-        self._clear_frame_view()
+        if not values["control_only"] and values["use_edge_model"] and not values["edge_model_path"]:
+            self.model.append_log("端侧模型已启用，请先选择模型文件")
+            self._refresh_view()
+            return
+        self.model.begin_start(
+            obstacle_enabled=values["obstacle"], control_only=values["control_only"]
+        )
+        self._clear_frame_view(
+            "仅手柄控制：未连接图传" if values["control_only"] else "等待开始预览"
+        )
         self.active_detector = None
         self.active_controller = None
         self._refresh_view()
         self.session_control = SessionControl()
+        self.model.session_id = self.session_control.session_id
         self.session_thread = threading.Thread(
             target=self._session_worker,
             args=(values, self.session_control),
@@ -731,15 +835,40 @@ class RobotControlApp:
         self.session_thread.start()
 
     def _session_worker(self, values: dict[str, Any], control: SessionControl) -> None:
+        def publish(event: RuntimeEvent) -> None:
+            self._publish_event(replace(event, session_id=control.session_id))
+
         source = None
         robot = None
         unity_publisher = None
         run_loop_entered = False
         try:
             config = load_config(Path(values["config"]))
+            unity_publisher = UnityStatusPublisher(unity_status_config(config.get("unity")))
+            if values["control_only"]:
+                robot = self._build_robot_backend(values, config, publish)
+                control.attach_robot(robot)
+                self._connect_robot_backend(values, robot, publish)
+                self.active_detector = None
+                self.active_controller = None
+                run_loop_entered = True
+                run_manual_loop(
+                    robot,
+                    session=control,
+                    event_sink=fanout_event_sinks(publish, unity_publisher),
+                )
+                return
             # The mode selector is read once per session, like the obstacle switch.
             config["controller"] = dict(config["controller"], approach_mode=values["approach_mode"])
-            unity_publisher = UnityStatusPublisher(unity_status_config(config.get("unity")))
+            detection = detector_config(config["detection"])
+            if values["use_edge_model"]:
+                detector = load_detector(Path(values["edge_model_path"]), detection)
+                publish(
+                    RuntimeEvent("state", f"识别器：端侧模型 {values['edge_model_path']}")
+                )
+            else:
+                detector = RedBallDetector(detection)
+                publish(RuntimeEvent("state", "识别器：LAB"))
             # Built before any hardware/video resource is opened, so a bad
             # obstacle config surfaces through the normal error event path.
             obstacle_policy = self._build_obstacle_policy(
@@ -758,47 +887,16 @@ class RobotControlApp:
                 # Video files keep their video_ended semantics.
                 source = RetryingSource(
                     open_source,
-                    on_event=lambda message: self._publish_event(RuntimeEvent("warning", message)),
+                    on_event=lambda message: publish(RuntimeEvent("video_retry", message)),
                 )
                 retry_video = True
             else:
                 source = open_source()
                 retry_video = False
-            if values["backend"] == "tcp":
-                robot = TcpRobotClient(
-                    values["host"],
-                    int(values["port"]),
-                    float(config["robot"]["connect_timeout_seconds"]),
-                    float(config["robot"]["send_interval_seconds"]),
-                )
-                if values["mirror"] is not None:
-                    mirror_host, mirror_port = values["mirror"]
-                    if same_endpoint(
-                        values["host"], int(values["port"]), (mirror_host, mirror_port)
-                    ):
-                        # The 5075 server keeps ONE client: mirroring to the
-                        # primary itself would kick our own session in a loop.
-                        self._publish_event(
-                            RuntimeEvent(
-                                "warning",
-                                "镜像地址与机器人相同，已忽略；镜像应指向 Unity 等另一个端点",
-                            )
-                        )
-                    else:
-                        mirror = MirrorTcpRobot(
-                            mirror_host,
-                            mirror_port,
-                            connect_timeout=1.0,
-                            on_status=self._publish_mirror_log,
-                        )
-                        robot = FanoutRobot(robot, (mirror,))
-            else:
-                robot = RecordingRobot()
+            robot = self._build_robot_backend(values, config, publish)
             # Attach before connect so Stop/E-stop can cancel a pending TCP start.
             control.attach_robot(robot)
-            if values["backend"] == "tcp":
-                robot.connect()
-            detector = RedBallDetector(detector_config(config["detection"]))
+            self._connect_robot_backend(values, robot, publish)
             controller = VisualApproachController(controller_config(config["controller"]))
             self.active_detector = detector
             self.active_controller = controller
@@ -814,9 +912,15 @@ class RobotControlApp:
                 armed=False,
                 frame_timeout_seconds=float(config["video"]["frame_timeout_seconds"]),
                 session=control,
-                event_sink=fanout_event_sinks(self._publish_event, unity_publisher),
+                event_sink=fanout_event_sinks(publish, unity_publisher),
                 frame_recorder=self.frame_recorder,
                 video_retry=retry_video,
+                frame_stale_stop_seconds=min(
+                    FRAME_STALE_STOP_SECONDS,
+                    float(config["video"]["frame_timeout_seconds"]),
+                ),
+                duplicate_frame_limit=DUPLICATE_FRAME_LIMIT,
+                preserve_manual_on_video_failure=True,
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.
@@ -842,12 +946,52 @@ class RobotControlApp:
                 if cancelled_start
                 else RuntimeEvent("error", message)
             )
-            self._publish_event(event)
+            publish(event)
             if unity_publisher is not None:
                 unity_publisher.publish(event)
         finally:
             if unity_publisher is not None:
                 unity_publisher.close()
+
+    def _build_robot_backend(self, values: dict[str, Any], config: dict, publish):
+        if values["backend"] != "tcp":
+            return RecordingRobot()
+        robot = TcpRobotClient(
+            values["host"],
+            values["port"],
+            float(config["robot"]["connect_timeout_seconds"]),
+            float(config["robot"]["send_interval_seconds"]),
+        )
+        if values["mirror"] is None:
+            return robot
+        mirror_host, mirror_port = values["mirror"]
+        if same_endpoint(values["host"], values["port"], (mirror_host, mirror_port)):
+            publish(
+                RuntimeEvent(
+                    "warning",
+                    "镜像地址与机器人相同，已忽略；镜像应指向 Unity 等另一个端点",
+                )
+            )
+            return robot
+        mirror = MirrorTcpRobot(
+            mirror_host,
+            mirror_port,
+            connect_timeout=1.0,
+            on_status=lambda message: publish(RuntimeEvent("mirror", message)),
+        )
+        return FanoutRobot(robot, (mirror,))
+
+    @staticmethod
+    def _connect_robot_backend(values: dict[str, Any], robot, publish) -> None:
+        if values["backend"] != "tcp":
+            return
+        endpoint = f"{values['host']}:{values['port']}"
+        publish(RuntimeEvent("state", f"正在连接机器人：{endpoint}"))
+        try:
+            robot.connect()
+        except (ConnectionError, OSError, TimeoutError) as exc:
+            raise ConnectionError(f"无法连接机器人 {endpoint}：{exc}") from exc
+        publish(RuntimeEvent("state", f"机器人 TCP 已连接：{endpoint}"))
 
     def _build_obstacle_policy(self, config: dict, backend: str, enabled: bool):
         """Obstacle policy for this session, or None when reactive avoidance is off.
@@ -873,8 +1017,12 @@ class RobotControlApp:
 
     def _publish_event(self, event: RuntimeEvent) -> None:
         if event.kind == "frame":
-            self.latest_frame = event
+            with self._frame_lock:
+                self.latest_frame = event
             return
+        if event.kind == "video_retry" and "已恢复" not in event.message:
+            with self._frame_lock:
+                self.latest_frame = None
         self.events.put(event)
 
     def _publish_gamepad_log(self, message: str) -> None:
@@ -948,7 +1096,7 @@ class RobotControlApp:
     def _drain_pending(self) -> None:
         # Queue events are drained first so started/finished ordering wins over
         # frame data, which bypasses the queue via self.latest_frame.
-        while True:
+        for _ in range(100):
             try:
                 event = self.events.get_nowait()
             except queue.Empty:
@@ -957,10 +1105,12 @@ class RobotControlApp:
                 self._handle_event(event)
             except Exception as exc:  # noqa: BLE001 - one bad event must not kill the loop.
                 self.model.append_log(f"事件处理异常：{type(exc).__name__}: {exc}")
-        frame_event, self.latest_frame = self.latest_frame, None
+        with self._frame_lock:
+            frame_event, self.latest_frame = self.latest_frame, None
         if frame_event is not None and self._should_show_frame(frame_event):
             try:
                 self.model.apply_event(frame_event)
+                self._displayed_frame = frame_event
                 self._render_frame(frame_event)
             except Exception as exc:  # noqa: BLE001 - a bad frame must not kill the loop.
                 self.model.append_log(f"帧处理异常：{type(exc).__name__}: {exc}")
@@ -970,15 +1120,21 @@ class RobotControlApp:
         self._refresh_view()
 
     def _handle_event(self, event: RuntimeEvent) -> None:
-        # "started" binds the session identity (the model applies it before its
-        # own filter), so it must bypass the staleness check here as well.
-        if event.kind != "started" and not self._event_matches_session(event):
+        if not self._event_matches_session(event):
             return
         if event.kind == "error":
             self.model.fail(event.message)
             self._clear_frame_view("会话已结束")
             return
         self.model.apply_event(event)
+        if (event.kind == 'started' and self.active_detector is not None
+                and getattr(self.active_detector, 'profile_id', None) is not None
+                and self.active_controller is not None):
+            self._set_tuning_from_config({
+                'detection': asdict(self.active_detector.config),
+                'controller': asdict(self.active_controller.config),
+            })
+            self.model.append_log(f'实验版本：{self.active_detector.profile_id}（已载入版本参数）')
         if event.kind in ("finished", "estop"):
             self._clear_frame_view("会话已结束")
 
@@ -991,7 +1147,9 @@ class RobotControlApp:
         )
 
     def _clear_frame_view(self, message: str = "等待开始预览") -> None:
-        self.latest_frame = None
+        with self._frame_lock:
+            self.latest_frame = None
+        self._displayed_frame = None
         self._photo = None
         try:
             self.video_label.configure(image="", text=message)
@@ -1019,7 +1177,7 @@ class RobotControlApp:
                 pass
 
     def _render_latest(self) -> None:
-        event = self.latest_frame
+        event = self._displayed_frame
         if event is None or not self._should_show_frame(event):
             return
         self._render_frame(event)
@@ -1081,7 +1239,8 @@ class RobotControlApp:
                 core_a_min=self._tuning_int("core_a_min"),
                 minimum_core_fraction=self._tuning_float("minimum_core_fraction"),
             )
-            controller_cfg = ControllerConfig(
+            controller_cfg = replace(
+                self.active_controller.config,
                 align_enter_error=self._tuning_float("align_enter_error"),
                 align_exit_error=self._tuning_float("align_exit_error"),
                 arrival_radius_ratio=self._tuning_float("arrival_radius_ratio"),
@@ -1152,6 +1311,8 @@ class RobotControlApp:
         self._refresh_view()
 
     def _reset(self) -> None:
+        if self._worker_alive():
+            return
         self.model.reset()
         self._refresh_view()
 
@@ -1173,8 +1334,12 @@ class RobotControlApp:
         if self.session_thread is None or not self.session_thread.is_alive():
             self.root.destroy()
 
+    def _worker_alive(self) -> bool:
+        return self.session_thread is not None and self.session_thread.is_alive()
+
     def _refresh_view(self) -> None:
         model = self.model
+        worker_busy = self._closing or self._worker_alive()
         self.session_badge.configure(text=model.session_state.value)
         badge_color = GOOD if model.session_state is SessionState.RUNNING else PANEL_ALT
         if model.session_state is SessionState.FAILED or model.estop_latched:
@@ -1202,17 +1367,29 @@ class RobotControlApp:
             foreground=DANGER if model.latched_blocked else ACCENT
         )
         self.obstacle_checkbutton.configure(
-            state="normal" if model.can_toggle_obstacle else "disabled"
+            state="normal"
+            if model.can_toggle_obstacle and not self.control_only_var.get()
+            else "disabled"
         )
-        self.start_button.configure(state="normal" if model.can_start else "disabled")
+        self.control_only_checkbutton.configure(
+            state="normal" if model.can_start and not worker_busy else "disabled"
+        )
+        self._refresh_detector_selector()
+        self.start_button.configure(
+            text="连接手柄控制" if self.control_only_var.get() else "开始预览",
+            state="normal" if model.can_start and not worker_busy else "disabled"
+        )
         self.arm_button.configure(state="normal" if model.can_arm else "disabled")
         self.stop_button.configure(state="normal" if model.can_stop else "disabled")
-        self.reset_button.configure(state="normal" if model.can_reset else "disabled")
+        self.reset_button.configure(
+            state="normal" if model.can_reset and not worker_busy else "disabled"
+        )
         capture_active, capture_saved, _dropped, _dir = self.frame_recorder.snapshot()
         self.capture_button.configure(
             text=f"停止采集（{capture_saved}）" if capture_active else "采集样本",
             state="normal"
-            if capture_active or model.session_state is SessionState.RUNNING
+            if capture_active
+            or (model.session_state is SessionState.RUNNING and not model.control_only)
             else "disabled",
         )
         manual_state = "normal" if model.can_manual else "disabled"
@@ -1225,6 +1402,8 @@ class RobotControlApp:
         )
         if model.session_state is not SessionState.RUNNING:
             gamepad_mode, mode_color = "未运行", MUTED
+        elif model.control_only:
+            gamepad_mode, mode_color = "仅手柄控制", GOOD
         elif model.armed:
             gamepad_mode, mode_color = "自主寻路", ACCENT
         else:

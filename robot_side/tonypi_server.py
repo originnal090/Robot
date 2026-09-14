@@ -2,20 +2,23 @@
 # ruff: noqa: BLE001, UP006, UP031, UP035, UP041, UP045, TRY004
 """TonyPi robot-side TCP service compatible with the course JSONL/CMD protocol.
 
-The service also emits ``DIST:<millimetres>`` lines when a Sonar source is
-available. Runtime mode is explicit: hardware mode fails closed when actuator
-SDKs/APIs are unavailable; dry-run mode only prints actuator operations.
+Sonar/DIST telemetry is deliberately disabled for this deployment. Runtime mode
+is explicit: hardware mode fails closed when actuator SDKs/APIs are unavailable;
+dry-run mode only prints actuator operations.
 """
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
 import socket
+import sqlite3
 import sys
 import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -54,6 +57,12 @@ ACTION_TURN_R_SLOW = "turn_right_small_step"
 ACTION_TURN_R_FAST = "turn_right_fast"
 ACTION_TURN_L_SLOW = "turn_left_small_step"
 ACTION_TURN_L_FAST = "turn_left_fast"
+ACTION_LATERAL_R = "right_move"
+ACTION_LATERAL_L = "left_move"
+ACTION_LATERAL_R_SLOW = "right_move_10"
+ACTION_LATERAL_L_SLOW = "left_move_10"
+ACTION_LATERAL_R_FAST = "right_move_fast"
+ACTION_LATERAL_L_FAST = "left_move_fast"
 
 CMD_MAP = {
     "right_grip": "outfire",
@@ -137,6 +146,12 @@ class ServiceConfig:
     action_turn_l_slow: str = ACTION_TURN_L_SLOW
     action_turn_l_fast: str = ACTION_TURN_L_FAST
     action_stand: str = ACTION_STAND
+    action_lateral_r: str = ACTION_LATERAL_R
+    action_lateral_l: str = ACTION_LATERAL_L
+    action_lateral_r_slow: str = ACTION_LATERAL_R_SLOW
+    action_lateral_l_slow: str = ACTION_LATERAL_L_SLOW
+    action_lateral_r_fast: str = ACTION_LATERAL_R_FAST
+    action_lateral_l_fast: str = ACTION_LATERAL_L_FAST
     head_pitch_id: int = HEAD_PITCH_ID
     head_yaw_id: int = HEAD_YAW_ID
     pulse_min: int = PULSE_MIN
@@ -331,6 +346,24 @@ def load_config(
             "action_turn_l_fast", "TONYPI_ACTION_TURN_L_FAST", ACTION_TURN_L_FAST, str
         ),
         action_stand=value("action_stand", "TONYPI_ACTION_STAND", ACTION_STAND, str),
+        action_lateral_r=value(
+            "action_lateral_r", "TONYPI_ACTION_LATERAL_R", ACTION_LATERAL_R, str
+        ),
+        action_lateral_l=value(
+            "action_lateral_l", "TONYPI_ACTION_LATERAL_L", ACTION_LATERAL_L, str
+        ),
+        action_lateral_r_slow=value(
+            "action_lateral_r_slow", "TONYPI_ACTION_LATERAL_R_SLOW", ACTION_LATERAL_R_SLOW, str
+        ),
+        action_lateral_l_slow=value(
+            "action_lateral_l_slow", "TONYPI_ACTION_LATERAL_L_SLOW", ACTION_LATERAL_L_SLOW, str
+        ),
+        action_lateral_r_fast=value(
+            "action_lateral_r_fast", "TONYPI_ACTION_LATERAL_R_FAST", ACTION_LATERAL_R_FAST, str
+        ),
+        action_lateral_l_fast=value(
+            "action_lateral_l_fast", "TONYPI_ACTION_LATERAL_L_FAST", ACTION_LATERAL_L_FAST, str
+        ),
         head_pitch_id=value("head_pitch_id", "TONYPI_HEAD_PITCH_ID", HEAD_PITCH_ID, int),
         head_yaw_id=value("head_yaw_id", "TONYPI_HEAD_YAW_ID", HEAD_YAW_ID, int),
         pulse_min=value("pulse_min", "TONYPI_PULSE_MIN", PULSE_MIN, int),
@@ -423,6 +456,12 @@ def validate_config(config: ServiceConfig) -> None:
         config.action_turn_r_fast,
         config.action_turn_l_slow,
         config.action_turn_l_fast,
+        config.action_lateral_r,
+        config.action_lateral_l,
+        config.action_lateral_r_slow,
+        config.action_lateral_l_slow,
+        config.action_lateral_r_fast,
+        config.action_lateral_l_fast,
     )
     if any(_ACTION_RE.fullmatch(name or "") is None for name in actions):
         errors.append("action group names must match [A-Za-z0-9_.-]{1,128}")
@@ -517,27 +556,9 @@ def _load_sonar(mode: str, required: bool) -> Optional[ModuleType]:
 def prepare_runtime(config: ServiceConfig) -> RuntimeHardware:
     """Validate and load runtime dependencies without moving any actuator."""
     board, agc = _load_hardware(config.mode)
-    sonar = None
-    if config.sonar_sim:
-        # Already parsed by validate_config; source gets a per-connection time origin.
-        pass
-    else:
-        sonar_module = _load_sonar(config.mode, config.require_sonar)
-        if sonar_module is not None:
-            try:
-                sonar = sonar_module.Sonar()
-            except Exception as exc:
-                if config.require_sonar:
-                    raise StartupError("required Sonar initialization failed: %s" % exc)
-                print("[WARN] Sonar init failed; DIST telemetry disabled:", exc)
-            if sonar is not None and not callable(getattr(sonar, "getDistance", None)):
-                if config.require_sonar:
-                    raise StartupError("required Sonar.getDistance API unavailable")
-                print("[WARN] Sonar.getDistance API unavailable; DIST telemetry disabled")
-                sonar = None
-        elif config.require_sonar:
-            raise StartupError("required Sonar source unavailable")
-    return RuntimeHardware(board=board, agc=agc, sonar=sonar)
+    # Do not initialize or read the Sonar SDK.  The compatibility helpers below
+    # remain importable for old callers, but the running service never uses them.
+    return RuntimeHardware(board=board, agc=agc)
 
 
 # Pure protocol/planning logic.
@@ -551,8 +572,9 @@ def vector_to_mode(
     deadzone: float = DEADZONE,
     slow_max: float = TIER_SLOW_MAX,
     fast_min: float = TIER_FAST_MIN,
+    lateral: float = 0.0,
 ) -> str:
-    """Turn-priority mode with speed tiers mapped to distinct gait groups."""
+    """Exclusive gait priority: turn > lateral > forward/backward."""
 
     def tier(value: float) -> str:
         magnitude = abs(value)
@@ -564,6 +586,8 @@ def vector_to_mode(
 
     if abs(steer) > deadzone:
         return ("turn_r" if steer > 0 else "turn_l") + tier(steer)
+    if abs(lateral) > deadzone:
+        return ("lateral_r" if lateral > 0 else "lateral_l") + tier(lateral)
     if abs(v) > deadzone:
         return ("forward" if v > 0 else "back") + tier(v)
     return "stand"
@@ -637,6 +661,12 @@ class RobotSession:
     action_turn_l_slow: str = ACTION_TURN_L_SLOW
     action_turn_l_fast: str = ACTION_TURN_L_FAST
     allow_cmd_while_moving: bool = True
+    action_lateral_r: str = ACTION_LATERAL_R
+    action_lateral_l: str = ACTION_LATERAL_L
+    action_lateral_r_slow: str = ACTION_LATERAL_R_SLOW
+    action_lateral_l_slow: str = ACTION_LATERAL_L_SLOW
+    action_lateral_r_fast: str = ACTION_LATERAL_R_FAST
+    action_lateral_l_fast: str = ACTION_LATERAL_L_FAST
     nod: Callable[[], List[Tuple[Any, ...]]] = field(default=nod_plan)
     shake: Callable[[], List[Tuple[Any, ...]]] = field(default=shake_plan)
 
@@ -663,6 +693,12 @@ class RobotSession:
             action_turn_l_slow=config.action_turn_l_slow,
             action_turn_l_fast=config.action_turn_l_fast,
             allow_cmd_while_moving=config.allow_cmd_while_moving,
+            action_lateral_r=config.action_lateral_r,
+            action_lateral_l=config.action_lateral_l,
+            action_lateral_r_slow=config.action_lateral_r_slow,
+            action_lateral_l_slow=config.action_lateral_l_slow,
+            action_lateral_r_fast=config.action_lateral_r_fast,
+            action_lateral_l_fast=config.action_lateral_l_fast,
             nod=lambda: nod_plan(config),
             shake=lambda: shake_plan(config),
         )
@@ -674,19 +710,36 @@ class RobotSession:
         if text.startswith("CMD:"):
             ts = self.now()
             self.last_rx_ts = ts
-            return self.handle_cmd(text[4:], ts)
+            plan = self.handle_cmd(text[4:], ts)
+            print("[RX] CMD:%s -> %s" % (text[4:].strip(), plan or "ignored"))
+            return plan
         try:
             msg = json.loads(text)
             if not isinstance(msg, dict):
                 raise TypeError("payload is not a JSON object")
+            lateral = msg.get("lateral", 0.0)
+            if (
+                isinstance(lateral, bool)
+                or not isinstance(lateral, (int, float))
+                or not math.isfinite(lateral)
+                or not -1.0 <= lateral <= 1.0
+            ):
+                return []  # Invalid extensions must not refresh the watchdog.
             v = float(msg.get("v", 0.0))
             steer = float(msg.get("steer", 0.0))
         except (TypeError, ValueError):
             return []
         self.last_rx_ts = self.now()
-        return self._set_mode(
-            vector_to_mode(v, steer, self.deadzone, self.tier_slow_max, self.tier_fast_min)
+        mode = vector_to_mode(
+            v, steer, self.deadzone, self.tier_slow_max, self.tier_fast_min, lateral
         )
+        plan = self._set_mode(mode)
+        action = self.tick_group()
+        print(
+            "[RX] v=%+.3f steer=%+.3f lateral=%+.3f -> %s%s"
+            % (v, steer, lateral, mode, " (%s)" % action if action else "")
+        )
+        return plan
 
     def handle_cmd(self, raw_cmd: str, ts: Optional[float] = None) -> List[Tuple[Any, ...]]:
         cmd = (raw_cmd or "").strip().lower()
@@ -735,6 +788,12 @@ class RobotSession:
             "turn_l": self.action_turn_l,
             "turn_l_slow": self.action_turn_l_slow,
             "turn_l_fast": self.action_turn_l_fast,
+            "lateral_r": self.action_lateral_r,
+            "lateral_l": self.action_lateral_l,
+            "lateral_r_slow": self.action_lateral_r_slow,
+            "lateral_l_slow": self.action_lateral_l_slow,
+            "lateral_r_fast": self.action_lateral_r_fast,
+            "lateral_l_fast": self.action_lateral_l_fast,
         }.get(self.mode)
 
     def force_stand(self) -> List[Tuple[Any, ...]]:
@@ -983,6 +1042,10 @@ class TonyPiService:
         self._udp_socket = None  # type: Optional[socket.socket]
         self._fault = None  # type: Optional[str]
         self._last_sonar_warning = float("-inf")
+        self._step = None
+        self._step_history = {}
+        self._step_wakeup = threading.Event()
+        self.action_directory = Path("/home/pi/TonyPi/ActionGroups")
 
     @property
     def fault(self) -> Optional[str]:
@@ -992,7 +1055,9 @@ class TonyPiService:
     def stop(self) -> None:
         self._stop.set()
         with self._lock:
+            self._cancel_step_locked()
             sockets = (self._conn, self._server_socket, self._udp_socket)
+        self._step_wakeup.set()
         for sock in sockets:
             if sock is None:
                 continue
@@ -1059,6 +1124,136 @@ class TonyPiService:
             return False
         return True
 
+    def _cancel_step_locked(self) -> None:
+        if self._step is not None:
+            self._step["cancel"].set()
+            self._step_wakeup.set()
+
+    def _step_reply(self, conn, request) -> None:
+        payload = {key: request[key] for key in ("id", "status", "detail")}
+        self._send_line(conn, ("STEP_STATUS:" + json.dumps(payload) + "\n").encode(), "STEP")
+
+    def _handle_step_line(self, conn, text: str) -> bool:
+        """Handle the isolated extension; never fall through to legacy JSON."""
+        if text.startswith("STEP_PING:"):
+            with self._lock:
+                if self._step is not None and self._step["id"] == text[10:]:
+                    self._step["heartbeat"] = time.monotonic()
+            return True
+        if not text.startswith("STEP:"):
+            return False
+        try:
+            payload = json.loads(text[5:])
+            ident = payload["id"]
+            if not isinstance(ident, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", ident):
+                return True
+            steer, lateral = payload.get("steer", 0.0), payload.get("lateral", 0.0)
+            valid = set(payload) <= {"id", "steer", "lateral"}
+            valid = valid and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                and math.isfinite(v) and -1 <= v <= 1 for v in (steer, lateral)
+            )
+            valid = valid and bool(steer) != bool(lateral)
+        except (ValueError, TypeError, KeyError):
+            return True
+        with self._lock:
+            previous = self._step_history.get(ident)
+            if previous is not None:
+                # Every ID is immutable, including rejected/cancelled requests.
+                reply = dict(previous)
+            else:
+                reply = {"id": ident, "status": "error", "detail": "invalid_step"}
+                if len(self._step_history) >= 1024:
+                    reply["detail"] = "session_step_limit"
+                else:
+                    mode = vector_to_mode(0, steer, self.session.deadzone,
+                                          self.session.tier_slow_max,
+                                          self.session.tier_fast_min, lateral) if valid else "stand"
+                    if mode == "stand":
+                        pass
+                    elif self._step is not None or self.session.mode != "stand":
+                        reply["detail"] = "busy"
+                    elif self.config.mode != MODE_DRY_RUN and not callable(
+                        getattr(self.runtime.board, "setBusServoPulse", None)
+                    ):
+                        reply["detail"] = "step_unavailable"
+                    else:
+                        # Resolve through the configured mappings, not a user path.
+                        self.session.mode = mode
+                        group = self.session.tick_group()
+                        self.session.mode = "stand"
+                        reply.update(status="accepted", detail="", group=group, conn=conn,
+                                     cancel=threading.Event(), heartbeat=time.monotonic())
+                        self._step = reply
+                    self._step_history[ident] = reply
+                reply = dict(reply)
+        self._step_reply(conn, reply)
+        self._step_wakeup.set()
+        return True
+
+    def _play_step(self, request) -> None:
+        """Play one validated d6a sequence using the vendor's frame semantics.
+
+        runActionGroup swallows exceptions and runAction silently skips missing
+        files/busy state. Read the immutable sequence before any servo output,
+        and use the same Board API with explicit failure/cancellation reporting.
+        """
+        if self.config.mode == MODE_DRY_RUN:
+            print("[DRY] single step:", request["group"])
+            return
+        path = (self.action_directory / (request["group"] + ".d6a")).resolve()
+        if path.parent != self.action_directory.resolve():
+            raise ActuatorError("step action outside action directory")
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+            rows = database.execute("SELECT * FROM ActionGroup ORDER BY rowid").fetchall()
+        if not rows:
+            raise ActuatorError("empty step action")
+        total_ms = 0
+        for row in rows:
+            if len(row) < 3 or not isinstance(row[1], int) or not 20 <= row[1] <= 30000:
+                raise ActuatorError("invalid step frame duration")
+            if len(row) > 26 or any(type(p) is not int or not 0 <= p <= 1000 for p in row[2:]):
+                raise ActuatorError("invalid step servo pulse")
+            total_ms += row[1]
+        if total_ms > 30000:
+            raise ActuatorError("step action exceeds 30 seconds")
+        for row in rows:
+            if request["cancel"].is_set():
+                return
+            if time.monotonic() - request["heartbeat"] > 1.5:
+                request["cancel"].set()
+                return
+            for servo, pulse in enumerate(row[2:], 1):
+                self.runtime.board.setBusServoPulse(servo, pulse, row[1])
+            # Finish the already-issued physical frame before reporting cancel.
+            time.sleep(row[1] / 1000.0)
+        if time.monotonic() - request["heartbeat"] > 1.5:
+            request["cancel"].set()
+
+    def _run_step(self) -> bool:
+        with self._lock:
+            request = self._step
+        if request is None:
+            return False
+        status, detail = "done", ""
+        try:
+            with self._actuator_lock:
+                if not request["cancel"].is_set():
+                    self._play_step(request)
+        except Exception as exc:
+            status, detail = "error", type(exc).__name__ + ": " + str(exc)
+        with self._lock:
+            if request["cancel"].is_set() and status != "error":
+                status, detail = "cancelled", "interrupted_or_heartbeat_lost"
+            request.update(status=status, detail=detail)
+            if self._step is request:
+                self._step = None
+            reply = dict(request)
+        self._step_reply(request["conn"], reply)
+        if status == "error":
+            self._latch_fault("single step failed: " + detail)
+        return True
+
     def _send_line(self, conn: socket.socket, data: bytes, tag: str) -> bool:
         try:
             with self._write_lock:
@@ -1115,13 +1310,16 @@ class TonyPiService:
 
     def _motion_loop(self) -> None:
         while not self._stop.is_set():
+            if self._run_step():
+                continue
             with self._lock:
                 watchdog = self.session.watchdog_plan()
             if watchdog and not self._execute_plan(watchdog):
                 break
             if not self._run_current_group():
                 break
-            self._stop.wait(self.config.step_interval_s)
+            self._step_wakeup.wait(self.config.step_interval_s)
+            self._step_wakeup.clear()
 
     def _warn_sonar(self, message: str) -> None:
         now = time.monotonic()
@@ -1191,7 +1389,10 @@ class TonyPiService:
                 text = line.decode("utf-8", "ignore").strip()
                 if not text:
                     continue
+                if self._handle_step_line(conn, text):
+                    continue
                 with self._lock:
+                    self._cancel_step_locked()
                     plan = self.session.handle_line(text)
                 if not self._execute_plan(plan):
                     return
@@ -1218,27 +1419,20 @@ class TonyPiService:
                 print("[TCP] Connected:", addr)
                 with self._lock:
                     self._conn = conn
+                    self._step_history = {}
                     plan = self.session.force_stand()
                 if not self._execute_plan(plan):
                     break
+                if self.config.mode == MODE_DRY_RUN or callable(
+                    getattr(self.runtime.board, "setBusServoPulse", None)
+                ):
+                    self._send_line(conn, b"CAPS:STEP_V1\n", "CAPS")
 
-                distance_done = threading.Event()
-                telemetry = None  # type: Optional[threading.Thread]
-                source = build_distance_source(self.config, self.runtime.sonar)
-                if source is not None:
-                    telemetry = threading.Thread(
-                        target=self._distance_loop,
-                        args=(source, distance_done),
-                        name="distance",
-                        daemon=True,
-                    )
-                    telemetry.start()
                 try:
                     self._handle_connection(conn)
                 finally:
-                    distance_done.set()
-                    if telemetry is not None:
-                        telemetry.join(timeout=2.0)
+                    with self._lock:
+                        self._cancel_step_locked()
                     try:
                         conn.close()
                     except OSError:
@@ -1361,7 +1555,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         config = load_config(args)
         runtime = prepare_runtime(config)
         if args.check:
-            check_sonar_reading(config, runtime)
             check_network_bindings(config)
             print(
                 "[CHECK] OK: mode=%s, configuration, SDK/API and network binds are ready"

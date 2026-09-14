@@ -1,9 +1,9 @@
-"""Offline evaluation of RedBallDetector against a directory of captured frames.
+"""Offline evaluation of a red-ball detector against captured frames.
 
-Runs the detector over every image in ``--frames`` (sorted by name), writes an
-annotated copy of each frame plus a ``summary.json`` containing per-frame
-results and aggregate stability metrics (detection rate, run-length
-distribution of consecutive hits, and mean center jitter).
+Runs the detector over every image in ``--frames`` (sorted by name), writes
+annotated frames at the requested sampling interval plus a ``summary.json``
+containing per-frame results and aggregate stability metrics (detection rate,
+run-length distribution of consecutive hits, mean center jitter, and timing).
 
 Example:
     uv run python tools/eval_detector.py --frames artifacts/tonypi-video \
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import time
 from dataclasses import asdict, replace
 from itertools import pairwise
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 import cv2
 
 from hcirobot.detector import DetectorConfig, RedBallDetector
+from hcirobot.edge_detector import EdgeBallDetector
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp"}
 
@@ -41,6 +43,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--frames", type=Path, required=True, help="directory of frame images")
     parser.add_argument("--out", type=Path, required=True, help="output directory")
+    parser.add_argument("--edge-model", type=Path, help="optional exported edge SVM model")
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=1,
+        help="save every Nth annotated frame (all frames are still evaluated)",
+    )
     parser.add_argument("--lab-min", type=parse_lab_triple, default=None, help="LAB lower bound, e.g. 55,145,118")
     parser.add_argument("--lab-max", type=parse_lab_triple, default=None, help="LAB upper bound, e.g. 190,195,150")
     parser.add_argument("--min-area", type=float, default=None, help="minimum contour area override")
@@ -142,7 +151,13 @@ def annotate(frame, detection, name: str):
 
 def evaluate(args: argparse.Namespace) -> dict:
     config = build_config(args)
-    detector = RedBallDetector(config)
+    if args.save_every < 1:
+        raise SystemExit("--save-every must be positive")
+    detector = (
+        EdgeBallDetector(args.edge_model, config)
+        if args.edge_model is not None
+        else RedBallDetector(config)
+    )
     frame_paths = collect_frame_paths(args.frames)
     if not frame_paths:
         raise SystemExit(f"no frame images found in {args.frames}")
@@ -150,12 +165,15 @@ def evaluate(args: argparse.Namespace) -> dict:
 
     records: list[dict] = []
     skipped: list[str] = []
-    for path in frame_paths:
+    elapsed_ms: list[float] = []
+    for index, path in enumerate(frame_paths):
         frame = cv2.imread(str(path))
         if frame is None:
             skipped.append(path.name)
             continue
+        started = time.perf_counter()
         detection = detector.process(frame)
+        elapsed_ms.append((time.perf_counter() - started) * 1000)
         center = None
         if detection.center_x is not None and detection.center_y is not None:
             center = [detection.center_x, detection.center_y]
@@ -172,7 +190,8 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "aspect_ratio": detection.aspect_ratio,
             }
         )
-        cv2.imwrite(str(args.out / path.name), annotate(frame, detection, path.name))
+        if index % args.save_every == 0 or index == len(frame_paths) - 1:
+            cv2.imwrite(str(args.out / path.name), annotate(frame, detection, path.name))
 
     candidate_flags = [record["candidate"] for record in records]
     detected_flags = [record["detected"] for record in records]
@@ -181,8 +200,14 @@ def evaluate(args: argparse.Namespace) -> dict:
 
     summary = {
         "frames_dir": str(args.frames),
+        "detector": {
+            "type": "edge_svm" if args.edge_model is not None else "lab",
+            "model": str(args.edge_model) if args.edge_model is not None else None,
+            "model_bytes": args.edge_model.stat().st_size if args.edge_model is not None else None,
+        },
         "total_frames": len(records),
         "skipped": skipped,
+        "saved_every_n_frames": args.save_every,
         "config": asdict(config),
         "aggregate": {
             "candidate_frames": sum(candidate_flags),
@@ -200,6 +225,12 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "distribution": distribution(detected_runs),
             },
             "center_jitter_px": center_jitter(records),
+            "inference_ms": {
+                "mean": round(statistics.mean(elapsed_ms), 3),
+                "median": round(statistics.median(elapsed_ms), 3),
+                "p95": round(sorted(elapsed_ms)[round(0.95 * (len(elapsed_ms) - 1))], 3),
+                "max": round(max(elapsed_ms), 3),
+            },
         },
         "per_frame": records,
     }
@@ -224,6 +255,7 @@ def main() -> None:
     print(f"candidate runs: {aggregate['candidate_runs']}")
     print(f"detected runs:  {aggregate['detected_runs']}")
     print(f"center jitter:  {aggregate['center_jitter_px']}")
+    print(f"inference ms:   {aggregate['inference_ms']}")
     print(f"summary written to {args.out / 'summary.json'}")
 
 

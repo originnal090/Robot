@@ -62,6 +62,7 @@ class RobotCommand:
     velocity: float = 0.0
     steer: float = 0.0
     grab: bool = False
+    lateral: float = 0.0  # Body-relative: positive right, negative left.
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.velocity) or not math.isfinite(self.steer):
@@ -70,6 +71,13 @@ class RobotCommand:
             raise ValueError("velocity must be between 0 and 1")
         if not -1.0 <= self.steer <= 1.0:
             raise ValueError("steer must be between -1 and 1")
+        if (
+            isinstance(self.lateral, bool)
+            or not isinstance(self.lateral, (int, float))
+            or not math.isfinite(self.lateral)
+            or not -1.0 <= self.lateral <= 1.0
+        ):
+            raise ValueError("lateral must be a finite number between -1 and 1")
 
     @classmethod
     def stop(cls) -> RobotCommand:

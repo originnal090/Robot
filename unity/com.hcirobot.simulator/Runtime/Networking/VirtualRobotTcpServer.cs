@@ -33,6 +33,7 @@ namespace HciRobot.Simulator
         private long lastValidCommandTicks;
         private int watchdogStopQueued;
         private string pendingError;
+        private string mirroredStepId;
 
         public bool HasClient
         {
@@ -302,6 +303,10 @@ namespace HciRobot.Simulator
 
         private void QueueStop()
         {
+            lock (clientGate)
+            {
+                mirroredStepId = null;
+            }
             while (pendingCommands.TryDequeue(out _))
             {
             }
@@ -323,9 +328,32 @@ namespace HciRobot.Simulator
                 return;
             }
 
-            pendingCommands.Enqueue(command);
-            Interlocked.Exchange(ref lastValidCommandTicks, DateTime.UtcNow.Ticks);
-            Interlocked.Exchange(ref watchdogStopQueued, 0);
+            lock (clientGate)
+            {
+                // A previous reader can finish parsing after a new connection
+                // has replaced it. Do not enqueue its late command.
+                if (!ReferenceEquals(client, source)) return;
+                bool refreshWatchdog = true;
+                if (command.IsMirroredStep)
+                {
+                    bool matches = mirroredStepId == command.MirroredStepId;
+                    if (command.MirroredStepPhase == "heartbeat" && !matches) return;
+                    if (command.MirroredStepPhase == "start")
+                        mirroredStepId = command.MirroredStepId;
+                    else
+                    {
+                        refreshWatchdog = matches;
+                        if (matches && command.MirroredStepPhase != "heartbeat") mirroredStepId = null;
+                    }
+                }
+                else mirroredStepId = null;
+                pendingCommands.Enqueue(command);
+                if (refreshWatchdog)
+                {
+                    Interlocked.Exchange(ref lastValidCommandTicks, DateTime.UtcNow.Ticks);
+                    Interlocked.Exchange(ref watchdogStopQueued, 0);
+                }
+            }
         }
 
         private bool CloseClientIfCurrent(TcpClient target)

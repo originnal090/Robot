@@ -6,11 +6,10 @@ fps = 10.0
 frame_timeout_seconds = 1.5
 
 [detection]
-# Tuned on 200 captured robot frames (see artifacts/eval-output): the ball reads
-# A 133-190 while background clutter stays at A <= ~138, so A is the discriminator.
-# Wide L/B bounds avoid clipping the shaded edges of the small (~25 px) ball, which
-# used to break circularity; minimum_circularity 0.60 keeps small rasterized disks.
-lab_min = [30, 132, 100]
+# Capture development set (2026-09-14): A >= 136 separates the near ball from
+# warm background while retaining the existing shape and strong-red-core gates.
+# Wide L/B bounds retain shaded edges; see docs/edge-recognition.md for evaluation.
+lab_min = [30, 136, 100]
 lab_max = [220, 215, 150]
 processing_width = 640
 processing_height = 480
@@ -40,10 +39,23 @@ slow_radius_ratio = 0.06
 # 走的时长随球变大而缩短（越近识别越频繁）。速度值对应机器人端三档动作组：
 # <=0.45 one_step / <=0.75 常速 / >0.75 fast。
 approach_mode = "normal_then_slow"
+# 转向/横移执行一次，收到 DONE 后才开始 settle。需新版 STEP_V1 机器人服务。
+# 旧课程服务或未实现 STEP 的仿真可显式设为 false，使用定时窗口。
+single_step_turns = true
+step_timeout_seconds = 10.0
 walk_seconds_far = 1.5
 walk_seconds_near = 0.5
 settle_seconds = 0.4
 sense_seconds = 0.7
+# 识别窗口保持静止；下列时长是小步/普通档请求窗口，不控制单步转角。
+# 小偏差或跨侧后的修正使用小步档；时间不再按偏差插值或跨侧减半。
+turn_seconds_near = 0.18
+turn_seconds_far = 0.45
+turn_full_error = 0.45
+# 可选：近距离、小偏差用慢速横移；真机步幅未标定，默认关闭。
+near_lateral_enabled = false
+near_lateral_max_error = 0.25
+near_lateral_speed = 0.30
 align_enter_error = 0.08
 align_exit_error = 0.14
 search_steer = 0.35

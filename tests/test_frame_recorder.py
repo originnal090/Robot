@@ -101,7 +101,7 @@ def test_run_loop_stops_recorder_when_session_ends(tmp_path: Path) -> None:
             session.request_stop()
 
     result = run_loop(
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(ControllerConfig()),
         robot,

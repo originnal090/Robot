@@ -40,8 +40,8 @@ TonyPi 人形机器人闭环基线：机器人或 Unity 虚拟摄像头画面 �
   默认存到 `artifacts/captures/capture-<时间戳>/`，适合训模型/标阈值采数据。
 - **命令镜像（Unity 孪生）**：控制真机的同时把每条命令镜像一份发给本机
   Unity 仿真（GUI 侧栏"镜像地址"填 `127.0.0.1:5075`，CLI `--robot-mirror`，
-  可重复）。镜像是尽力而为的：断线只记日志并按 5 s 退避重连，绝不影响真机
-  会话；超声波遥测始终以主后端为准。
+  可重复）。镜像是尽力而为的：断线记日志并按 5 s 退避重连，每会话最多重试 5 次；
+  达到上限后停用镜像重连，主机器人会话继续；超声波遥测始终以主后端为准。
 - **协议兼容**：输出与课程 `TCP_connect.py` 的 JSONL `{"v","steer","grab","t"}`
   和 `CMD:<name>` 完全兼容，且按其离散动作语义输出（转向优先、死区之上）。
 
@@ -206,6 +206,10 @@ TCP 断开、DIST 过期；窄通道、U 型障碍和死胡同作为当前能力
 
 ## Orange Pi / TonyPi 部署准备
 
+两次 2026-09-14 采集的 LAB 调参、2.35 KB 实验 SVM、训练复现和板端离线基准，
+见 [端侧红球识别说明](docs/edge-recognition.md)。CLI 可用 `--edge-model PATH`
+选择学习模型；默认仍走 LAB。OrangePi 实板性能尚未测量。
+
 仓库提供了可替换路径和用户名的模板：
 
 - `deploy/config/config.orangepi.toml`：Orange Pi 真机配置起点；
@@ -219,10 +223,12 @@ uv run python tools/preflight_orangepi.py --config deploy/config/config.orangepi
 # 配好相机后才加 --probe-video；机器人架空后才加 --probe-robot
 ```
 
-视频或 TCP 断线会安全终止当前会话，**不会自动重连并恢复运动**。重新运行后仍需显式武装。
+机器人主 TCP 断线会终止当前会话，不自动重连。GUI 的实时视频预览在中断后最多重试 5 次，持续失败或反复闪断达到上限后报错结束，需手动开始预览；视频稳定输出 5 秒后重置重试额度。武装期间仍由视频超时保护终止会话，**不会自动重连并恢复运动**。镜像连接每会话最多重试 5 次。旧会话清理结束前不能重新开始或复位；重新运行后仍需显式武装。
 
 ## 参数调优
 
+- 识别器：GUI 可勾选“使用端侧模型”并选择 `.npz` 权重；关闭时使用 LAB，
+  选项在下次会话启动时生效；
 - 运行中：GUI“参数调优”面板（LAB 阈值、面积、圆度、确认帧数、对准/到达
   阈值），点“应用参数”立即生效；
 - 离线：`uv run python tools/eval_detector.py --frames artifacts/tonypi-video

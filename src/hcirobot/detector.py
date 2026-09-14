@@ -13,13 +13,16 @@ from .model import Detection
 
 @dataclass(frozen=True, slots=True)
 class DetectorConfig:
-    # Bounds tuned on 200 captured TonyPi frames (artifacts/tonypi-video): the ball reads
+    # Earlier 200-frame calibration (artifacts/tonypi-video): the ball reads
     # L 111-182, A 133-190, B 115-140 while background clutter stays at A <= ~138, so the
     # A channel is the discriminator. Wide L/B bounds keep shaded ball edges (the ball is
     # only ~25 px wide) from being clipped into non-circular slivers; the previous narrow
     # defaults (55,145,118)-(190,195,150) clipped ~40% of the ball and produced zero
     # candidates on real frames.
-    lab_min: tuple[int, int, int] = (30, 132, 100)
+    # 2026-09-14 capture replay (artifacts/lab-tuning-20260914): A >= 136 separates
+    # the near ball from warm background connected at A >= 132.
+    # The strongly-red core, shape and temporal gates remain necessary.
+    lab_min: tuple[int, int, int] = (30, 136, 100)
     lab_max: tuple[int, int, int] = (220, 215, 150)
     processing_width: int = 640
     processing_height: int = 480
@@ -124,9 +127,13 @@ class RedBallDetector:
         fraction = self.config.minimum_core_fraction
         if fraction <= 0:
             return True
-        blob = np.zeros(core_mask.shape, dtype=np.uint8)
-        cv2.drawContours(blob, [contour], -1, 255, -1)
-        core_pixels = cv2.countNonZero(cv2.bitwise_and(blob, core_mask))
+        # Count only the candidate ROI. On Orange Pi this avoids allocating and
+        # scanning a full 640x480 mask for every small background contour.
+        x, y, width, height = cv2.boundingRect(contour)
+        blob = np.zeros((height, width), dtype=np.uint8)
+        cv2.drawContours(blob, [contour], -1, 255, -1, offset=(-x, -y))
+        core_roi = core_mask[y : y + height, x : x + width]
+        core_pixels = cv2.countNonZero(cv2.bitwise_and(blob, core_roi))
         return core_pixels >= fraction * area
 
     def process(self, frame: NDArray[np.uint8]) -> Detection:
@@ -173,7 +180,11 @@ class RedBallDetector:
             aspect_ratio = width / height
             if circularity < self.config.minimum_circularity:
                 continue
-            if not self.config.minimum_aspect_ratio <= aspect_ratio <= self.config.maximum_aspect_ratio:
+            if (
+                not self.config.minimum_aspect_ratio
+                <= aspect_ratio
+                <= self.config.maximum_aspect_ratio
+            ):
                 continue
             if not self._has_core_support(contour, core_mask, area):
                 continue

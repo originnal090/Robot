@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import itertools
 import json
 import queue
@@ -47,6 +48,7 @@ class RuntimeEvent:
     output_v: float = 0.0
     output_steer: float = 0.0
     output_grab: bool = False
+    output_lateral: float = 0.0
     output_source: str = "shutdown"
     armed: bool = False
     obstacle_state: str | None = None
@@ -248,6 +250,151 @@ def _emit(sink: EventSink | None, event: RuntimeEvent) -> None:
         sink(event)
 
 
+def _frame_fingerprint(frame: NDArray[Any]) -> bytes:
+    """Return a compact exact fingerprint for detecting a frozen decoded frame."""
+    header = f"{frame.shape}:{frame.dtype.str}:".encode()
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(header)
+    try:
+        digest.update(memoryview(frame))
+    except (BufferError, TypeError, ValueError):
+        digest.update(frame.tobytes())
+    return digest.digest()
+
+
+def run_manual_loop(
+    robot: RobotBackend,
+    *,
+    session: SessionControl | None = None,
+    event_sink: EventSink | None = None,
+    poll_seconds: float = 0.03,
+) -> RunResult:
+    """Run manual/gamepad control without opening a camera or detector."""
+    if poll_seconds <= 0:
+        raise ValueError("manual poll interval must be positive")
+    session = session or SessionControl()
+    session_id = session.session_id
+    event_seq = itertools.count(1)
+    output_v = 0.0
+    output_steer = 0.0
+    output_source = "manual_hold"
+    command_count = 0
+    manual_was_active = False
+    termination = "completed"
+    final_state = ControlState.IDLE
+    cleanup_error: Exception | None = None
+
+    def emit(kind: str, message: str = "") -> None:
+        _emit(
+            event_sink,
+            RuntimeEvent(
+                kind,
+                message,
+                frame_count=command_count,
+                seq=next(event_seq),
+                session_id=session_id,
+                output_v=output_v,
+                output_steer=output_steer,
+                output_source=output_source,
+                armed=False,
+            ),
+        )
+
+    def send_stop(source_name: str) -> None:
+        nonlocal output_v, output_steer, output_source, command_count
+        robot.send(RobotCommand.stop())
+        output_v = 0.0
+        output_steer = 0.0
+        output_source = source_name
+        command_count += 1
+
+    def send_manual(command: ManualCommand) -> None:
+        nonlocal output_v, output_steer, output_source, command_count
+        robot.send_raw(
+            {
+                "v": round(command.velocity, 4),
+                "steer": round(command.steer, 4),
+                "grab": False,
+                "t": datetime.now(UTC).isoformat(),
+            }
+        )
+        output_v = command.velocity
+        output_steer = command.steer
+        output_source = command.source
+        command_count += 1
+
+    emit("started", "manual-only session started")
+    try:
+        send_stop("manual_hold")
+        emit("manual", "manual control ready")
+        while True:
+            action = session.consume_action()
+            if action is not None:
+                robot.send_action(action)
+                emit("action", action)
+            if session.consume_estop():
+                termination = "estop"
+                final_state = ControlState.LOST_SAFE
+                send_stop("estop")
+                emit("estop", "operator emergency stop")
+                break
+            if session.stopped:
+                termination = "stop_requested"
+                send_stop("shutdown")
+                emit("stopping", "stop requested")
+                break
+            session.consume_disarm()
+            if session.consume_arm():
+                emit("warning", "仅手柄控制模式已忽略自治武装请求")
+            manual = session.current_manual()
+            if manual is not None:
+                send_manual(manual)
+                manual_was_active = True
+                emit("manual", "manual command")
+            elif manual_was_active:
+                send_stop("manual_hold")
+                manual_was_active = False
+                emit("manual", "manual command expired")
+            time.sleep(poll_seconds)
+    except ConnectionError as exc:
+        final_state = ControlState.LOST_SAFE
+        if session.consume_estop():
+            termination = "estop"
+            output_source = "estop"
+            emit("estop", "operator emergency stop")
+        elif session.stopped:
+            termination = "stop_requested"
+            output_source = "shutdown"
+            emit("stopping", "stop requested")
+        else:
+            termination = "robot_connection_lost"
+            output_source = "shutdown"
+            emit("error", f"robot connection lost: {exc}")
+    except Exception as exc:
+        final_state = ControlState.LOST_SAFE
+        termination = "runtime_error"
+        output_source = "shutdown"
+        emit("error", f"runtime error: {type(exc).__name__}: {exc}")
+        raise
+    finally:
+        try:
+            robot.close()
+        except Exception as exc:  # noqa: BLE001 - report after final cleanup.
+            cleanup_error = exc
+        output_v = 0.0
+        output_steer = 0.0
+        output_source = "estop" if termination == "estop" else "shutdown"
+
+    states = (final_state,)
+    result = RunResult(command_count, final_state, states, termination)
+    if cleanup_error is not None:
+        emit("error", f"cleanup error: {type(cleanup_error).__name__}: {cleanup_error}")
+    emit("finished", termination)
+    if cleanup_error is not None:
+        raise cleanup_error
+    return result
+
+
 def run_loop(
     source,
     detector: RedBallDetector,
@@ -264,9 +411,18 @@ def run_loop(
     obstacle_policy: ObstaclePolicy | None = None,
     frame_recorder=None,
     video_retry: bool = False,
+    frame_stale_stop_seconds: float | None = None,
+    duplicate_frame_limit: int = 0,
+    preserve_manual_on_video_failure: bool = False,
 ) -> RunResult:
     if frame_timeout_seconds <= 0:
         raise ValueError("frame timeout must be positive")
+    if frame_stale_stop_seconds is not None and not (
+        0 < frame_stale_stop_seconds <= frame_timeout_seconds
+    ):
+        raise ValueError("frame stale stop must be positive and no greater than frame timeout")
+    if duplicate_frame_limit < 0:
+        raise ValueError("duplicate frame limit must not be negative")
     if obstacle_policy is not None and getattr(robot, "latest_distance", None) is None:
         raise ValueError("obstacle policy requires a robot backend with distance telemetry")
     if output_dir is not None:
@@ -278,13 +434,19 @@ def run_loop(
     output_v = 0.0
     output_steer = 0.0
     output_grab = False
+    output_lateral = 0.0
     output_source = "shutdown"
+    step_id: str | None = None
+    step_started = 0.0
+    step_interrupted = False
+    last_step_heartbeat = float("-inf")
 
     def emit(kind: str, message: str = "", **kwargs: Any) -> None:
         event_values = {
             "output_v": output_v,
             "output_steer": output_steer,
             "output_grab": output_grab,
+            "output_lateral": output_lateral,
             "output_source": output_source,
             "armed": is_armed,
             "obstacle_state": obstacle_policy.state.value if obstacle_policy is not None else None,
@@ -300,15 +462,22 @@ def run_loop(
         )
 
     def send_command(command: RobotCommand, source_name: str) -> None:
-        nonlocal output_v, output_steer, output_grab, output_source
+        nonlocal output_v, output_steer, output_grab, output_lateral, output_source
+        nonlocal step_interrupted
+        if step_id is not None:
+            step_interrupted = True
         robot.send(command)
         output_v = command.velocity
         output_steer = command.steer
         output_grab = command.grab
+        output_lateral = command.lateral
         output_source = source_name
 
     def send_vector(velocity: float, steer: float, source_name: str) -> None:
-        nonlocal output_v, output_steer, output_grab, output_source
+        nonlocal output_v, output_steer, output_grab, output_lateral, output_source
+        nonlocal step_interrupted
+        if step_id is not None:
+            step_interrupted = True
         payload = {
             "v": round(velocity, 4),
             "steer": round(steer, 4),
@@ -319,6 +488,7 @@ def run_loop(
         output_v = float(payload["v"])
         output_steer = float(payload["steer"])
         output_grab = False
+        output_lateral = 0.0
         output_source = source_name
 
     def _latch_blocked(vision_flag: bool | None) -> None:
@@ -374,15 +544,38 @@ def run_loop(
     emit("started", "session started")
     cleanup_error: Exception | None = None
     last_frame_received = time.monotonic()
+    previous_fingerprint: bytes | None = None
+    duplicate_count = 0
+    vision_hold_active = False
 
     def finish_safe(reason: str) -> None:
         controller.fail_safe(reason)
         send_command(RobotCommand.stop(), "shutdown")
 
+    def enter_video_fallback(message: str) -> None:
+        """Drop autonomy while preserving the robot link for manual control."""
+        nonlocal is_armed, walk_command, last_radius_ratio, vision_hold_active
+        was_armed = is_armed
+        if was_armed:
+            is_armed = False
+            controller.reset()
+            walk_command = RobotCommand.stop()
+            last_radius_ratio = None
+            if approach_gate is not None:
+                approach_gate.hold_settle()
+            send_command(RobotCommand.stop(), "video_stale_hold")
+        if not vision_hold_active:
+            vision_hold_active = True
+            emit("video_stale", message, frame_count=frame_count)
+        if was_armed:
+            emit("manual_fallback", "图传异常，自治已解除；手柄控制保持可用", frame_count=frame_count)
+
     try:
         while True:
             action = session.consume_action()
             if action is not None:
+                if step_id is not None:
+                    step_interrupted = True
                 robot.send_action(action)
                 emit("action", action)
             if session.consume_estop():
@@ -398,27 +591,92 @@ def run_loop(
                 termination = "stop_requested"
                 emit("stopping", "stop requested")
                 break
+            if max_frames > 0 and frame_count >= max_frames:
+                termination = "max_frames"
+                break
             # consume_disarm() runs first so a stray request is cleared even
             # when the session is already disarmed.
             if session.consume_disarm() and is_armed:
                 is_armed = False
                 controller.reset()
+                walk_command = RobotCommand.stop()
+                last_radius_ratio = None
+                if approach_gate is not None:
+                    approach_gate.hold_settle()
                 send_command(RobotCommand.stop(), "disarmed")
                 emit("disarmed", "manual takeover: autonomy disarmed")
             if session.consume_arm():
-                is_armed = True
-                if controller.state is ControlState.IDLE:
-                    controller.arm(clock())
+                if vision_hold_active:
+                    emit("warning", "图传尚未恢复，已忽略自治武装请求")
+                else:
+                    is_armed = True
+                    if controller.state is ControlState.IDLE:
+                        walk_command = RobotCommand.stop()
+                        last_radius_ratio = None
+                        if approach_gate is not None:
+                            approach_gate.hold_settle()
+                        controller.arm(clock())
                     emit("armed", "autonomy armed")
+
+            if step_id is not None:
+                status = robot.step_status(step_id)
+                if status in ("done", "cancelled") and (status == "done" or step_interrupted):
+                    completed_id = step_id
+                    step_id = None
+                    walk_command = RobotCommand.stop()
+                    approach_gate.hold_settle()
+                    send_command(RobotCommand.stop(), "step_complete")
+                    emit("step", f"{completed_id}: {status}", frame_count=frame_count)
+                elif status in ("error", "cancelled"):
+                    finish_safe("step_" + status)
+                    termination = "step_" + status
+                    break
+                elif time.monotonic() - step_started >= controller.config.step_timeout_seconds:
+                    finish_safe("step_timeout")
+                    termination = "step_timeout"
+                    break
+                elif not step_interrupted and time.monotonic() - last_step_heartbeat >= 0.2:
+                    robot.heartbeat_step(step_id)
+                    last_step_heartbeat = time.monotonic()
+
+            manual = session.current_manual()
+            manual_started = manual is not None and not manual_was_active
+            if manual_started and obstacle_policy is not None:
+                # A manual pulse cancels residual autonomous avoidance immediately,
+                # even when no video frame is available to drive the vision loop.
+                obstacle_policy.cancel_maneuver()
+            if approach_gate is not None and (manual is not None or manual_was_active):
+                approach_gate.hold_settle()
+                walk_command = RobotCommand.stop()
+            if manual is not None:
+                send_vector(manual.velocity, manual.steer, manual.source)
+                manual_was_active = True
+                emit("manual", "manual command", frame_count=frame_count)
+            elif manual_was_active:
+                manual_was_active = False
+                send_command(RobotCommand.stop(), "manual_hold")
+                emit("manual", "manual command expired", frame_count=frame_count)
 
             try:
                 item = frames.get(timeout=min(frame_timeout_seconds, 0.05))
             except queue.Empty:
-                if time.monotonic() - last_frame_received < frame_timeout_seconds:
+                silence_seconds = time.monotonic() - last_frame_received
+                if (
+                    frame_stale_stop_seconds is not None
+                    and silence_seconds >= frame_stale_stop_seconds
+                    and not vision_hold_active
+                ):
+                    if preserve_manual_on_video_failure:
+                        enter_video_fallback("等待新帧；自治已解除，手柄控制保持可用")
+                    else:
+                        send_command(RobotCommand.stop(), "video_stale_hold")
+                        vision_hold_active = True
+                        emit("video_stale", "等待新帧，已停止自治输出", frame_count=frame_count)
+                if silence_seconds < frame_timeout_seconds:
                     continue
                 if controller.state is ControlState.IDLE:
-                    if video_retry:
-                        continue  # a retrying source owns recovery; preview stays up
+                    if video_retry or (preserve_manual_on_video_failure and vision_hold_active):
+                        continue  # keep the robot link and manual controls alive
                     termination = "preview_timeout"
                     break
                 finish_safe("video_timeout")
@@ -427,6 +685,9 @@ def run_loop(
                 break
             last_frame_received = time.monotonic()
             if item is _END:
+                if video_retry and preserve_manual_on_video_failure:
+                    enter_video_fallback("图传已结束；自治已解除，手柄控制保持可用")
+                    continue
                 if controller.state not in (ControlState.ARRIVED, ControlState.IDLE):
                     finish_safe("video_ended")
                     termination = "video_ended"
@@ -434,14 +695,53 @@ def run_loop(
                         states_seen.append(ControlState.LOST_SAFE)
                 break
             if isinstance(item, Exception):
+                if video_retry and preserve_manual_on_video_failure:
+                    enter_video_fallback(
+                        f"图传重连已停止：{type(item).__name__}: {item}；手柄控制保持可用"
+                    )
+                    continue
                 raise item
 
-            manual = session.current_manual()
+            if duplicate_frame_limit:
+                fingerprint = _frame_fingerprint(item)
+                if fingerprint == previous_fingerprint:
+                    duplicate_count += 1
+                    if duplicate_count >= duplicate_frame_limit:
+                        if preserve_manual_on_video_failure:
+                            enter_video_fallback(
+                                f"画面冻结：连续 {duplicate_count} 帧未变化；手柄控制保持可用"
+                            )
+                        else:
+                            if not vision_hold_active:
+                                if is_armed:
+                                    send_command(RobotCommand.stop(), "video_stale_hold")
+                                vision_hold_active = True
+                                emit(
+                                    "video_stale",
+                                    f"画面冻结：连续 {duplicate_count} 帧未变化",
+                                    frame_count=frame_count,
+                                )
+                            if is_armed:
+                                is_armed = False
+                                controller.fail_safe("video_frozen")
+                                termination = "video_frozen"
+                                if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
+                                    states_seen.append(ControlState.LOST_SAFE)
+                                break
+                    continue
+                previous_fingerprint = fingerprint
+                duplicate_count = 0
+            if vision_hold_active:
+                vision_hold_active = False
+                emit("video_recovered", "已收到新画面", frame_count=frame_count)
+
             if approach_gate is not None and is_armed and manual is None:
                 # Burst-walking modes: during walk/settle the camera bounces, so
                 # vision work is skipped; the last sensed intent repeats during
                 # walk and sonar-based obstacle safety still runs every frame.
-                phase = approach_gate.advance(last_radius_ratio)
+                phase = "step_wait" if step_id is not None else approach_gate.advance(
+                    last_radius_ratio, walk_command
+                )
                 if phase != "sense":
                     obstacle = None
                     if obstacle_policy is not None:
@@ -451,15 +751,41 @@ def run_loop(
                             break
                         if obstacle.action == "maneuver":
                             approach_gate.hold_settle()
+                            walk_command = RobotCommand.stop()
                             send_vector(obstacle.velocity, obstacle.steer, "obstacle_maneuver")
                             frame_count += 1
+                            emit("frame", obstacle.reason, frame_count=frame_count)
                             continue
                         if obstacle.action == "hold":
+                            approach_gate.hold_settle()
+                            walk_command = RobotCommand.stop()
                             send_command(RobotCommand.stop(), "obstacle_hold")
                             frame_count += 1
+                            emit("frame", obstacle.reason, frame_count=frame_count)
                             continue
-                    if phase == "walk":
-                        send_command(walk_command, "walk_burst")
+                    if phase == "step_wait":
+                        # No repeated gait vectors or STOP while awaiting DONE.
+                        # The server executes exactly one sequence autonomously.
+                        output_source = "step_wait"
+                    elif phase == "walk":
+                        if controller.config.single_step_turns and (
+                            walk_command.steer or walk_command.lateral
+                        ):
+                            if not getattr(robot, "supports_steps", False):
+                                finish_safe("step_protocol_unavailable")
+                                termination = "step_protocol_unavailable"
+                                emit("error", "机器人未声明 STEP_V1，请更新服务或显式关闭单步模式")
+                                break
+                            step_id = robot.start_step(walk_command)
+                            step_started = last_step_heartbeat = time.monotonic()
+                            step_interrupted = False
+                            output_v, output_steer = walk_command.velocity, walk_command.steer
+                            output_lateral = walk_command.lateral
+                            output_grab = False
+                            output_source = "walk_burst"
+                            emit("step", f"{step_id}: requested", frame_count=frame_count)
+                        else:
+                            send_command(walk_command, "walk_burst")
                     else:
                         send_command(RobotCommand.stop(), "settle")
                     frame_count += 1
@@ -470,9 +796,8 @@ def run_loop(
 
             detection = detector.process(item)
             decision = controller.update(detection, clock())
-            if approach_gate is not None and is_armed:
-                if decision.radius_ratio is not None:
-                    last_radius_ratio = decision.radius_ratio
+            if approach_gate is not None and is_armed and manual is None:
+                last_radius_ratio = decision.radius_ratio
                 walk_command = decision.command
             obstacle = None
             vision_blocked = None
@@ -483,27 +808,32 @@ def run_loop(
                 if obstacle_policy.latched_blocked:
                     _latch_blocked(vision_blocked)
                     break
-            if manual is not None and not manual_was_active and obstacle_policy is not None:
-                # First frame of a manual pulse: abort any in-flight avoidance
-                # phase so no residual backup/turn vector bursts out after it.
-                obstacle_policy.cancel_maneuver()
-            manual_was_active = manual is not None
             maneuver_suppressed = (
                 obstacle is not None and obstacle.action == "maneuver" and not is_armed
             )
             if manual is not None:
-                send_vector(manual.velocity, manual.steer, manual.source)
+                pass  # already sent above; vision work only updates the preview
             elif maneuver_suppressed:
                 # An un-armed session must never self-activate an avoidance
                 # motion: the maneuver degrades to a plain hold.
                 send_command(RobotCommand.stop(), "unarmed_hold")
             elif obstacle is not None and obstacle.action == "maneuver":
+                if approach_gate is not None:
+                    approach_gate.hold_settle()
+                    walk_command = RobotCommand.stop()
                 send_vector(obstacle.velocity, obstacle.steer, "obstacle_maneuver")
             elif obstacle is not None and obstacle.action == "hold":
+                if approach_gate is not None:
+                    approach_gate.hold_settle()
+                    walk_command = RobotCommand.stop()
                 send_command(RobotCommand.stop(), "obstacle_hold")
             else:
                 source_name = "autonomy" if is_armed else "unarmed_hold"
-                send_command(decision.command, source_name)
+                # Gated modes only cache intent while sensing. Executing it
+                # here used to add the whole sense window to each motion burst
+                # and destroy the stationary frames needed for confirmation.
+                command = RobotCommand.stop() if approach_gate is not None else decision.command
+                send_command(command, source_name)
             frame_count += 1
             rendered = annotate(
                 item,
@@ -596,6 +926,7 @@ def run_loop(
         output_v = 0.0
         output_steer = 0.0
         output_grab = False
+        output_lateral = 0.0
         if session.consume_estop():
             controller.estop("operator_estop")
             output_source = "estop"
@@ -622,6 +953,7 @@ def run_loop(
             output_v = 0.0
             output_steer = 0.0
             output_grab = False
+            output_lateral = 0.0
             output_source = "shutdown"
         if not states_seen or states_seen[-1] is not ControlState.LOST_SAFE:
             states_seen.append(ControlState.LOST_SAFE)
@@ -637,6 +969,7 @@ def run_loop(
         output_v = 0.0
         output_steer = 0.0
         output_grab = False
+        output_lateral = 0.0
         output_source = "estop" if termination == "estop" else "shutdown"
         try:
             source.close()

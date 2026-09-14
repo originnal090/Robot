@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate configuration and exit before opening runtime resources",
     )
     parser.add_argument("--source", help="synthetic, camera index, video path, or MJPEG URL")
+    parser.add_argument(
+        "--edge-model",
+        type=Path,
+        help="use an experimental .npz SVM or a versioned .json detector profile",
+    )
     parser.add_argument("--backend", choices=("recording", "tcp"))
     parser.add_argument("--robot-host")
     parser.add_argument("--robot-port", type=int)
@@ -231,6 +236,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.approach_mode is not None:
             config["controller"] = dict(config["controller"], approach_mode=args.approach_mode)
         effective_unity = build_unity_status_config(config, args)
+        detection_config = detector_config(config["detection"])
+        if args.edge_model is not None:
+            from .detector_profile import load_detector
+
+            detector = load_detector(args.edge_model, detection_config)
+        else:
+            detector = RedBallDetector(detection_config)
         if args.check_config:
             print("config ok")
             return 0
@@ -274,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         result = run_loop(
             source,
-            RedBallDetector(detector_config(config["detection"])),
+            detector,
             VisualApproachController(controller_config(config["controller"])),
             robot,
             armed=args.arm,

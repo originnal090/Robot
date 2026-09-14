@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using System.Text;
+using System.Reflection;
+using System.Net.Sockets;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace HciRobot.Simulator.Tests
 {
@@ -17,6 +20,21 @@ namespace HciRobot.Simulator.Tests
             Assert.That(command.Velocity, Is.EqualTo(0.4f).Within(0.0001f));
             Assert.That(command.Steer, Is.EqualTo(-0.3f).Within(0.0001f));
             Assert.That(command.Grab, Is.True);
+            Assert.That(command.Lateral, Is.Zero);
+        }
+
+        [TestCase(-0.35f)]
+        [TestCase(0.35f)]
+        public void JsonDtoSchema_ParsesOptionalLateral(float lateral)
+        {
+            string json = "{\"v\":0,\"steer\":0,\"lateral\":"
+                + lateral.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+            Assert.That(RobotProtocolParser.TryParseLine(json, 0.2f, true, out RobotCommand command), Is.True);
+            Assert.That(command.Lateral, Is.EqualTo(lateral));
+            Assert.That(command.Steer, Is.Zero);
+            Assert.That(command.Velocity, Is.Zero);
+            Assert.That(RobotProtocolParser.TryParseLine("{\"v\":0,\"steer\":0,\"lateral\":1.1}", 0.2f, true, out _), Is.False);
+            Assert.That(RobotProtocolParser.TryParseLine("{\"v\":0,\"steer\":0,\"lateral\":-1.1}", 0.2f, true, out _), Is.False);
         }
 
         [Test]
@@ -45,6 +63,82 @@ namespace HciRobot.Simulator.Tests
         public void DistanceTelemetry_IsSingleAsciiLine()
         {
             Assert.That(Encoding.ASCII.GetString(RobotTelemetryFormatter.DistanceLine(317)), Is.EqualTo("DIST:317\n"));
+        }
+
+        [Test]
+        public void MirroredStep_StartPreservesGaitMagnitudeInDiscreteMode()
+        {
+            const string line = "MIRROR_STEP:{\"id\":\"step_1\",\"phase\":\"start\",\"steer\":-0.35,\"lateral\":0}";
+            Assert.That(RobotProtocolParser.TryParseLine(line, 0.2f, false, out RobotCommand command), Is.True);
+            Assert.That(command.IsMirroredStep, Is.True);
+            Assert.That(command.MirroredStepId, Is.EqualTo("step_1"));
+            Assert.That(command.MirroredStepPhase, Is.EqualTo("start"));
+            Assert.That(command.Steer, Is.EqualTo(-0.35f));
+            Assert.That(command.IsAction, Is.False);
+        }
+
+        [TestCase("heartbeat")]
+        [TestCase("done")]
+        [TestCase("cancelled")]
+        [TestCase("error")]
+        public void MirroredStep_ParsesLifecycleWithoutMotionFields(string phase)
+        {
+            string line = "MIRROR_STEP:{\"id\":\"step_1\",\"phase\":\"" + phase + "\"}";
+            Assert.That(RobotProtocolParser.TryParseLine(line, 0.2f, false, out RobotCommand command), Is.True);
+            Assert.That(command.MirroredStepPhase, Is.EqualTo(phase));
+            Assert.That(command.Velocity, Is.Zero);
+        }
+
+        [TestCase("{\"id\":\"a\",\"phase\":\"unknown\"}")]
+        [TestCase("{\"id\":\"bad id\",\"phase\":\"done\"}")]
+        [TestCase("{\"id\":\"a\",\"phase\":\"start\"}")]
+        [TestCase("{\"id\":\"a\",\"phase\":\"start\",\"steer\":0.4,\"lateral\":0.3}")]
+        [TestCase("{\"id\":\"a\",\"phase\":\"start\",\"steer\":0.4,\"lateral\":true}")]
+        [TestCase("{\"id\":\"a\",\"phase\":\"start\",\"steer\":2,\"lateral\":0}")]
+        public void MirroredStep_RejectsMalformedEvents(string json)
+        {
+            Assert.That(RobotProtocolParser.TryParseLine("MIRROR_STEP:" + json, 0.2f, false, out _), Is.False);
+        }
+
+        [Test]
+        public void MirroredStep_ServerQueuesOnMainThreadAndWatchdogStopsIt()
+        {
+            var robot = new GameObject("mirror transport test");
+            robot.SetActive(false); // No real listener in this deterministic transport test.
+            var source = new TcpClient();
+            try
+            {
+                robot.AddComponent<Rigidbody>();
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                var server = robot.AddComponent<VirtualRobotTcpServer>();
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                typeof(TonyPiMotionDriver).GetMethod("Awake", flags).Invoke(driver, null);
+                typeof(VirtualRobotTcpServer).GetField("motionDriver", flags).SetValue(server, driver);
+                typeof(VirtualRobotTcpServer).GetField("client", flags).SetValue(server, source);
+                var handle = typeof(VirtualRobotTcpServer).GetMethod("HandleLine", flags);
+                var update = typeof(VirtualRobotTcpServer).GetMethod("Update", flags);
+                handle.Invoke(server, new object[] { source,
+                    "MIRROR_STEP:{\"id\":\"one\",\"phase\":\"start\",\"steer\":0.35,\"lateral\":0}" });
+                Assert.That(driver.ActiveMirroredStepId, Is.Null);
+                update.Invoke(server, null);
+                Assert.That(driver.ActiveMirroredStepId, Is.EqualTo("one"));
+                var lastTicks = typeof(VirtualRobotTcpServer).GetField("lastValidCommandTicks", flags);
+                lastTicks.SetValue(server, 1L);
+                handle.Invoke(server, new object[] { source, "MIRROR_STEP:{\"id\":\"wrong\",\"phase\":\"heartbeat\"}" });
+                Assert.That(lastTicks.GetValue(server), Is.EqualTo(1L));
+                handle.Invoke(server, new object[] { source, "MIRROR_STEP:{\"id\":\"one\",\"phase\":\"heartbeat\"}" });
+                update.Invoke(server, null);
+                Assert.That(driver.ActiveMirroredStepId, Is.EqualTo("one"));
+                lastTicks.SetValue(server, 1L);
+                update.Invoke(server, null);
+                Assert.That(driver.ActiveMirroredStepId, Is.Null);
+                Assert.That(driver.LastMirroredStepStatus, Is.EqualTo("cancelled"));
+            }
+            finally
+            {
+                source.Close();
+                Object.DestroyImmediate(robot);
+            }
         }
     }
 }

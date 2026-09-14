@@ -1,0 +1,475 @@
+[
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00001.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00043.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00086.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00129.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00172.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00215.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00258.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00300.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00343.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00386.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00429.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00472.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00515.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00558.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00600.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00643.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00686.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00729.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00772.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00815.png",
+    "box": null,
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00857.png",
+    "box": [
+      580,
+      154,
+      608,
+      210
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00900.png",
+    "box": [
+      508,
+      128,
+      536,
+      156
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00943.png",
+    "box": [
+      362,
+      164,
+      394,
+      202
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-00986.png",
+    "box": [
+      290,
+      132,
+      318,
+      200
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01029.png",
+    "box": [
+      268,
+      138,
+      302,
+      174
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01072.png",
+    "box": [
+      232,
+      180,
+      264,
+      212
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01115.png",
+    "box": [
+      236,
+      154,
+      280,
+      200
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01157.png",
+    "box": [
+      200,
+      182,
+      242,
+      226
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01200.png",
+    "box": [
+      196,
+      194,
+      242,
+      240
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01243.png",
+    "box": [
+      270,
+      214,
+      314,
+      262
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01286.png",
+    "box": [
+      256,
+      226,
+      310,
+      302
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01329.png",
+    "box": [
+      200,
+      350,
+      270,
+      428
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01372.png",
+    "box": [
+      128,
+      284,
+      196,
+      386
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01414.png",
+    "box": [
+      32,
+      384,
+      118,
+      472
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01500.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01543.png",
+    "box": [
+      208,
+      46,
+      554,
+      404
+    ],
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01586.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01629.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01672.png",
+    "box": null,
+    "split": "train"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00001.png",
+    "box": [
+      362,
+      164,
+      384,
+      190
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00044.png",
+    "box": [
+      362,
+      162,
+      384,
+      188
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00073.png",
+    "box": [
+      362,
+      182,
+      386,
+      206
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00088.png",
+    "box": [
+      314,
+      236,
+      348,
+      274
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00102.png",
+    "box": [
+      276,
+      314,
+      316,
+      354
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00117.png",
+    "box": [
+      244,
+      306,
+      296,
+      360
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00131.png",
+    "box": [
+      288,
+      284,
+      344,
+      344
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00146.png",
+    "box": [
+      216,
+      352,
+      296,
+      438
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00175.png",
+    "box": [
+      242,
+      358,
+      320,
+      438
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00190.png",
+    "box": [
+      266,
+      404,
+      362,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00233.png",
+    "box": [
+      278,
+      402,
+      378,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00291.png",
+    "box": [
+      278,
+      402,
+      378,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-093059",
+    "frame": "frame-00568.png",
+    "box": [
+      280,
+      402,
+      380,
+      480
+    ],
+    "split": "test"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01487.png",
+    "box": null,
+    "split": "train",
+    "note": "Manually inspected background-only frame; mined development hard negative"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01582.png",
+    "box": null,
+    "split": "train",
+    "note": "Manually inspected background-only frame; mined development hard negative"
+  },
+  {
+    "capture": "capture-20260914-091540",
+    "frame": "frame-01635.png",
+    "box": null,
+    "split": "train",
+    "note": "Manually inspected background-only frame; mined development hard negative"
+  }
+]

@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .controller import ControllerConfig
+from .model import RobotCommand
 
 
 class ApproachGate:
@@ -34,7 +35,11 @@ class ApproachGate:
     def phase(self) -> str:
         return self._phase
 
-    def advance(self, radius_ratio: float | None) -> str:
+    def advance(
+        self,
+        radius_ratio: float | None,
+        command: RobotCommand | None = None,
+    ) -> str:
         config = self._config()
         now = self._clock()
         if self._phase_until is None:
@@ -47,7 +52,15 @@ class ApproachGate:
         elif self._phase == "settle":
             self._phase, duration = "sense", config.sense_seconds
         else:
-            self._phase, duration = "walk", self.walk_duration(radius_ratio, config)
+            if command == RobotCommand.stop():
+                # Keep sensing through pending alignment/arrival or a missed
+                # target, instead of spending a blind cycle repeating STOP.
+                self._phase_until = now + config.sense_seconds
+                return self._phase
+            duration = self.walk_duration(radius_ratio, config)
+            if command is not None and (command.steer or command.lateral):
+                duration = self.turn_duration(command, config)
+            self._phase = "walk"
         self._phase_until = now + duration
         return self._phase
 
@@ -55,6 +68,17 @@ class ApproachGate:
         """Abort the current walk burst: stand still and re-sense next."""
         self._phase = "settle"
         self._phase_until = self._clock() + self._config().settle_seconds
+
+    @staticmethod
+    def turn_duration(command: RobotCommand, config: ControllerConfig) -> float:
+        """Fixed request window per gait tier, NOT a fractional action step.
+
+        Used only by the explicit legacy fallback. STEP_V1 corrections in
+        run_loop wait for completion instead of this deadline. A shorter
+        legacy window cannot shrink the step angle or guarantee one execution.
+        """
+        magnitude = abs(command.steer or command.lateral)
+        return config.turn_seconds_near if magnitude <= 0.45 else config.turn_seconds_far
 
     @staticmethod
     def walk_duration(radius_ratio: float | None, config: ControllerConfig) -> float:

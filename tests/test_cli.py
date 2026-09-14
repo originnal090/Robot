@@ -7,6 +7,24 @@ from hcirobot import cli
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_missing_edge_model_fails_before_runtime_resources(monkeypatch, capsys) -> None:
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("runtime resource was opened")
+
+    monkeypatch.setattr(cli, "build_source", unexpected)
+    monkeypatch.setattr(cli, "UnityStatusPublisher", unexpected)
+    result = cli.main(
+        [
+            "--config",
+            str(ROOT / "config.toml"),
+            "--edge-model",
+            str(ROOT / "missing-edge-model.json"),
+        ]
+    )
+    assert result == 1
+    assert "missing-edge-model" in capsys.readouterr().err
+
+
 def test_check_config_exits_before_runtime_resources(monkeypatch, capsys) -> None:
     def unexpected(*_args, **_kwargs):
         raise AssertionError("runtime resource was opened")

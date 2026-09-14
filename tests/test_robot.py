@@ -26,6 +26,49 @@ def test_legacy_payload_matches_course_server_contract() -> None:
     assert isinstance(payload["t"], str)
 
 
+@pytest.mark.parametrize("lateral", [-0.35, 0.35])
+def test_lateral_survives_tcp_mirror_and_final_stop(lateral: float) -> None:
+    from hcirobot.robot import FanoutRobot, MirrorTcpRobot
+
+    primary, primary_thread = _start_server()
+    mirror, mirror_thread = _start_server()
+    robot = FanoutRobot(
+        TcpRobotClient("127.0.0.1", primary.bound_port, minimum_send_interval=0),
+        (MirrorTcpRobot("127.0.0.1", mirror.bound_port, minimum_send_interval=0),),
+    )
+    try:
+        robot.connect()
+        robot.send(RobotCommand(lateral=lateral))
+        robot.close()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and min(len(primary.commands), len(mirror.commands)) < 2:
+            time.sleep(0.01)
+        for server in (primary, mirror):
+            assert server.commands[0]["lateral"] == lateral
+            assert server.commands[0]["v"] == server.commands[0]["steer"] == 0
+            assert server.commands[-1].get("lateral", 0) == 0
+            assert server.commands[-1]["v"] == server.commands[-1]["steer"] == 0
+    finally:
+        robot.close()
+        primary.stop()
+        mirror.stop()
+        primary_thread.join(2.0)
+        mirror_thread.join(2.0)
+
+
+@pytest.mark.parametrize("lateral", [True, "0.3", None, float("nan"), float("inf"), -1.1, 1.1])
+def test_lateral_rejects_invalid_values_in_typed_and_raw_commands(lateral) -> None:
+    with pytest.raises(ValueError, match="lateral"):
+        RobotCommand(lateral=lateral)
+    with pytest.raises(ValueError, match="lateral"):
+        encode_raw_payload({"v": 0, "steer": 0, "grab": False, "t": "t0", "lateral": lateral})
+
+
+def test_raw_lateral_round_trip() -> None:
+    payload = {"v": 0, "steer": 0, "grab": False, "t": "t0", "lateral": -0.35}
+    assert json.loads(encode_raw_payload(payload)) == payload
+
+
 def test_tcp_client_sends_commands_and_final_stop() -> None:
     server = MockRobotServer(port=0)
     ready = threading.Event()
@@ -518,6 +561,55 @@ def test_mock_server_none_distance_source_never_sends_but_control_still_works() 
 # ---------- mirror / fanout ----------
 
 
+def test_mirror_stops_retrying_after_budget_and_after_close(monkeypatch):
+    from hcirobot.robot import MirrorTcpRobot
+
+    now = [0.0]
+    notes = []
+    attempts = 0
+    mirror = MirrorTcpRobot(
+        "localhost", clock=lambda: now[0], max_retries=2, on_status=notes.append
+    )
+
+    def fail():
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(mirror._client, "connect", fail)
+    for _ in range(20):
+        mirror.send(RobotCommand.stop())
+        now[0] += 6
+    assert attempts == 3
+    assert sum("重连已达上限" in note for note in notes) == 1
+    mirror.close()
+    mirror.send(RobotCommand.stop())
+    assert attempts == 3
+
+
+def test_mirror_disconnect_waits_full_backoff(monkeypatch):
+    from hcirobot.robot import MirrorTcpRobot
+
+    now = [100.0]
+    mirror = MirrorTcpRobot("localhost", clock=lambda: now[0], reconnect_seconds=5)
+    mirror._connected = True
+    attempts = []
+    monkeypatch.setattr(mirror._client, "connect", lambda: attempts.append(now[0]))
+
+    def fail(_):
+        raise ConnectionError("disconnected")
+
+    monkeypatch.setattr(mirror._client, "_send_bytes", fail)
+    mirror.send(RobotCommand.stop())
+    now[0] = 104.9
+    mirror.send(RobotCommand.stop())
+    assert not attempts
+    now[0] = 105.0
+    mirror.send(RobotCommand.stop())
+    assert attempts == [105.0]
+    mirror.close()
+
+
 def test_parse_endpoint_forms() -> None:
     from hcirobot.robot import parse_endpoint
 
@@ -542,6 +634,38 @@ def test_fanout_broadcasts_to_primary_and_mirrors() -> None:
     assert primary.commands == mirror.commands
     assert primary.actions == mirror.actions == ["right_grip"]
     assert primary.raw_payloads == mirror.raw_payloads
+
+
+def test_fanout_connects_primary_without_eagerly_connecting_mirrors() -> None:
+    from hcirobot.robot import FanoutRobot
+
+    class ConnectableRobot(RecordingRobot):
+        def __init__(self) -> None:
+            super().__init__()
+            self.connect_count = 0
+
+        def connect(self) -> None:
+            self.connect_count += 1
+
+    primary = ConnectableRobot()
+    mirror = ConnectableRobot()
+    fanout = FanoutRobot(primary, (mirror,))
+
+    fanout.connect()
+
+    assert primary.connect_count == 1
+    assert mirror.connect_count == 0
+
+
+def test_tcp_connect_failure_identifies_endpoint(monkeypatch) -> None:
+    client = TcpRobotClient("192.0.2.10", 5075)
+
+    def refuse_connection():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(client, "_connect_cancellable", refuse_connection)
+    with pytest.raises(ConnectionError, match=r"192\.0\.2\.10:5075.*connection refused"):
+        client.connect()
 
 
 def test_fanout_survives_broken_mirror_and_uses_primary_telemetry() -> None:

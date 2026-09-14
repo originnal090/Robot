@@ -303,61 +303,84 @@ class RetryingSource:
     """Reopen the underlying video source on EOF/error instead of ending the session.
 
     Built for live MJPEG over flaky WiFi: the control session stays up while
-    the source quietly reconnects (bounded backoff).  Safety is preserved
+    the source reconnects with a finite retry budget and bounded backoff. Safety is preserved
     upstream: an armed session still stops safely through run_loop's frame
     timeout, and the GUI opts preview sessions out of preview-timeout via
-    ``video_retry`` so only user stop ends them.
+    ``video_retry``. Exhausting retries ends the session with a visible fault.
     """
 
     _INITIAL_BACKOFF_S = 0.2
     _MAX_BACKOFF_S = 3.0
 
-    def __init__(self, factory, *, on_event=None):
+    def __init__(self, factory, *, on_event=None, max_retries: int = 5):
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
         self._factory = factory
         self._on_event = on_event
         self._source = None
         self._closed = False
         self._failures = 0
+        self._max_retries = max_retries
+        self._lock = threading.Lock()
 
     def __iter__(self) -> Iterator[Frame]:
         backoff = self._INITIAL_BACKOFF_S
+        retries = 0
         while not self._closed:
-            if self._source is None:
-                try:
-                    self._source = self._factory()
-                except Exception as exc:  # noqa: BLE001 - open failures retry too.
-                    self._note(f"打开视频源失败（{type(exc).__name__}: {exc}）")
-                    if not self._sleep(backoff):
-                        return
-                    backoff = min(backoff * 2, self._MAX_BACKOFF_S)
-                    continue
+            source = None
+            first_frame_at = None
             try:
-                for frame in self._source:
+                source = self._factory()
+                with self._lock:
                     if self._closed:
                         return
+                    self._source = source
+                for frame in source:
+                    if self._closed:
+                        return
+                    now = time.monotonic()
+                    if first_frame_at is None:
+                        first_frame_at = now
+                    # A single frame from a flapping stream must not replenish
+                    # the budget. Require five seconds of successful streaming.
+                    if now - first_frame_at >= 5.0:
+                        retries = 0
+                        backoff = self._INITIAL_BACKOFF_S
                     if self._failures:
                         count = self._failures
                         self._failures = 0
                         self._emit(f"视频已恢复（此前中断 {count} 次）")
-                    backoff = self._INITIAL_BACKOFF_S
                     yield frame
-                self._source = None  # clean EOF: the server rotated the stream
-                self._note("视频流结束")
-                if not self._sleep(backoff):
-                    return
-                backoff = min(backoff * 2, self._MAX_BACKOFF_S)
+                message = "视频流结束"
+            except (ValueError, TypeError):
+                raise  # invalid configuration cannot recover through reconnects
             except Exception as exc:  # noqa: BLE001 - stream break: reconnect.
-                with contextlib.suppress(Exception):
-                    self._source.close()
-                self._source = None
-                self._note(f"视频中断（{type(exc).__name__}: {exc}）")
-                if not self._sleep(backoff):
-                    return
-                backoff = min(backoff * 2, self._MAX_BACKOFF_S)
+                message = f"视频中断（{type(exc).__name__}: {exc}）"
+            finally:
+                with self._lock:
+                    if self._source is source:
+                        self._source = None
+                if source is not None:
+                    with contextlib.suppress(Exception):
+                        source.close()
+            if self._closed:
+                return
+            if retries >= self._max_retries:
+                self.close()
+                raise RuntimeError(
+                    f"{message}；视频重连已达上限（{self._max_retries} 次），"
+                    "已停止重连，请检查视频源后手动开始预览"
+                )
+            retries += 1
+            self._note(message)
+            if not self._sleep(backoff):
+                return
+            backoff = min(backoff * 2, self._MAX_BACKOFF_S)
 
     def close(self) -> None:
-        self._closed = True
-        source, self._source = self._source, None
+        with self._lock:
+            self._closed = True
+            source, self._source = self._source, None
         if source is not None:
             with contextlib.suppress(Exception):
                 source.close()

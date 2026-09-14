@@ -277,8 +277,8 @@ def test_teleop_ignores_toggle_without_live_session() -> None:
         session = SessionControl()
         logs: list[str] = []
         press(backend, frozenset({TOGGLE_BUTTON}))
-        deadline = time.monotonic() + 1.0
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + 0.25
+        while time.monotonic() < deadline and not logs:
             assert (
                 teleop.poll(
                     session, armed=False, live=False, can_arm=True, can_manual=True, log=logs.append
@@ -286,6 +286,7 @@ def test_teleop_ignores_toggle_without_live_session() -> None:
                 == "idle"
             )
             time.sleep(0.005)
+        assert any("当前没有运行中的会话" in message for message in logs)
         assert not session.consume_arm()
         assert not session.consume_disarm()
         assert not monitor.consume_toggle()  # the stale press must not leak later
@@ -390,7 +391,7 @@ def test_manual_pulse_rejects_unknown_source() -> None:
 
 def build_runtime(robot: RecordingRobot, session: SessionControl, sink, **kwargs):
     return run_loop(
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         robot,
@@ -701,7 +702,7 @@ def _run_arrival_session(robot: RecordingRobot, controller: VisualApproachContro
             return self.value
 
     return run_loop(
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
         controller,
         robot,
@@ -713,7 +714,9 @@ def _run_arrival_session(robot: RecordingRobot, controller: VisualApproachContro
 
 def test_arrived_session_fires_arrival_action_once() -> None:
     robot = RecordingRobot()
-    result = _run_arrival_session(robot, VisualApproachController(ControllerConfig(approach_mode="slow_realtime")))
+    result = _run_arrival_session(
+        robot, VisualApproachController(ControllerConfig(approach_mode="slow_realtime"))
+    )
     assert result.termination == "arrived"
     assert robot.actions.count("right_grip") == 1
     assert robot.commands[-1] == RobotCommand.stop()

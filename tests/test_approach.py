@@ -10,7 +10,7 @@ from hcirobot.controller import (
     VisualApproachController,
 )
 from hcirobot.detector import DetectorConfig, RedBallDetector
-from hcirobot.model import ControlState
+from hcirobot.model import ControlState, RobotCommand
 from hcirobot.robot import RecordingRobot
 from hcirobot.video import SyntheticBallSource, SyntheticConfig
 
@@ -73,6 +73,66 @@ def test_gate_hold_settle_aborts_walk() -> None:
     assert gate.advance(None) == "settle"
 
 
+def test_turn_duration_is_fixed_per_discrete_gait_tier() -> None:
+    config = gate_config()
+    for steer in [0.25, -0.35, 0.45]:
+        assert ApproachGate.turn_duration(RobotCommand(steer=steer), config) == 0.18
+    for steer in [-0.5, 0.6]:
+        assert ApproachGate.turn_duration(RobotCommand(steer=steer), config) == 0.45
+    clock = FakeClock()
+    gate = ApproachGate(lambda: config, clock)
+    command = RobotCommand(steer=0.25)
+    gate.advance(0.02, command)
+    clock.now = 0.7
+    assert gate.advance(0.02, command) == "walk"
+    clock.now = 0.9
+    assert gate.advance(0.02, command) == "settle"
+
+
+def test_reversal_does_not_shorten_the_same_action_group_window() -> None:
+    config = gate_config()
+    clock = FakeClock()
+    gate = ApproachGate(lambda: config, clock)
+    right = RobotCommand(steer=0.5)
+    left = RobotCommand(steer=-0.5)
+    gate.advance(0.02, right)
+    clock.now = 0.7
+    assert gate.advance(0.02, right) == "walk"
+    clock.now = 1.0
+    assert gate.advance(0.02, right) == "walk"
+    clock.now = 1.2
+    assert gate.advance(0.02, right) == "settle"
+    clock.now = 1.7
+    assert gate.advance(0.02, left) == "sense"
+    clock.now = 2.5
+    assert gate.advance(0.02, left) == "walk"
+    clock.now = 2.7
+    assert gate.advance(0.02, left) == "walk"
+    clock.now = 2.8
+    assert gate.advance(0.02, left) == "walk"
+    clock.now = 3.0
+    assert gate.advance(0.02, left) == "settle"
+
+
+def test_pending_stop_keeps_sensing_instead_of_replaying_a_blind_burst() -> None:
+    clock = FakeClock()
+    gate = ApproachGate(lambda: gate_config(), clock)
+    for moment in [0.0, 0.7, 2.0, 4.0]:
+        clock.now = moment
+        assert gate.advance(0.08, RobotCommand.stop()) == "sense"
+
+
+def test_lateral_correction_uses_short_pulse_too() -> None:
+    clock = FakeClock()
+    gate = ApproachGate(lambda: gate_config(), clock)
+    command = RobotCommand(lateral=-0.3)
+    gate.advance(0.12, command)
+    clock.now = 0.7
+    assert gate.advance(0.12, command) == "walk"
+    clock.now = 1.0
+    assert gate.advance(0.12, command) == "settle"
+
+
 def test_approach_speed_templates_per_mode() -> None:
     cases = {
         # radius far below slow -> far speed; at arrival edge -> 0
@@ -123,7 +183,7 @@ def test_gated_run_loop_reaches_arrival_with_burst_pattern() -> None:
         sense_seconds=0.2,
     )
     result = run_loop(
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(config),
         robot,
@@ -145,6 +205,11 @@ def test_gated_run_loop_reaches_arrival_with_burst_pattern() -> None:
         if event.kind == "frame" and event.output_source == "walk_burst"
     ]
     assert velocities and any(v == pytest.approx(0.60) for v in velocities)
+    # Every detection must be taken while holding still, even when its planned
+    # command is nonzero. Sensing must never extend a turn or forward burst.
+    sensed = [event for event in events if event.kind == "frame" and event.decision]
+    assert any(event.decision.command != RobotCommand.stop() for event in sensed)
+    assert all(event.output_v == event.output_steer == 0 for event in sensed)
 
 
 def test_slow_realtime_mode_has_no_gating() -> None:
@@ -152,7 +217,7 @@ def test_slow_realtime_mode_has_no_gating() -> None:
     events: list = []
     config = ControllerConfig(approach_mode="slow_realtime")
     result = run_loop(
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(config),
         robot,

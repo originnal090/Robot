@@ -140,7 +140,7 @@ def test_synthetic_closed_loop_reaches_target() -> None:
     result = run_loop(
         # Realtime pacing keeps the sampled synthetic sequence deterministic
         # under latest-wins frame dropping.
-        SyntheticBallSource(SyntheticConfig(realtime=True)),
+        SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
         VisualApproachController(ControllerConfig(approach_mode="slow_realtime")),
         robot,
