@@ -4,6 +4,7 @@ MIN_IOS ?= 15.0
 SHELL := /var/jb/usr/bin/sh
 APP_BUILD_DIR := build/iPhoneCamera.app
 APP_TARGET := $(APP_BUILD_DIR)/iPhoneCamera
+APP_INFO := $(APP_BUILD_DIR)/Info.plist
 IPA_TARGET := build/iPhoneCamera.ipa
 
 CFLAGS ?= -O2
@@ -24,14 +25,17 @@ sign: $(TARGET)
 	fi
 	ldid -S../entitlements.plist $(TARGET)
 
-app: $(APP_TARGET)
+app: $(APP_TARGET) $(APP_INFO)
 
-$(APP_TARGET): camera.m camera.h camera_app.m Info.plist
+$(APP_TARGET): camera.m camera.h camera_app.m
 	mkdir -p $(APP_BUILD_DIR)
 	$(CC) $(CFLAGS) -DIPMJ_APP camera.m camera_app.m -o $@ $(FRAMEWORKS) -framework UIKit
+
+$(APP_INFO): Info.plist
+	mkdir -p $(APP_BUILD_DIR)
 	cp Info.plist $(APP_BUILD_DIR)/Info.plist
 
-app-sign: $(APP_TARGET)
+app-sign: app
 	@if ! command -v ldid >/dev/null 2>&1; then \
 		echo "ldid not found; install/provide ldid before signing" >&2; exit 1; \
 	fi
