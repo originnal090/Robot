@@ -300,9 +300,16 @@ class MJPEGServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], frames: FrameStore, stream_fps: int = 15) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        frames: FrameStore,
+        stream_fps: int = 120,
+        send_buffer_bytes: int = 32 * 1024,
+    ) -> None:
         self.frames = frames
         self.stream_fps = stream_fps
+        self.send_buffer_bytes = send_buffer_bytes
         super().__init__(address, MJPEGHandler)
 
 
@@ -357,9 +364,11 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         self.send_header("Pragma", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
-        # Keep the kernel queue below one typical JPEG. A large send buffer can
-        # hide several stale frames when Wi-Fi is slower than the capture rate.
-        self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8 * 1024)
+        # Keep the kernel queue small and bounded, but large enough to hold a
+        # typical JPEG so TCP acknowledgements do not throttle every frame.
+        self.connection.setsockopt(
+            socket.SOL_SOCKET, socket.SO_SNDBUF, self.server.send_buffer_bytes
+        )
         self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         LOG.info(
             "MJPEG client connected: %s (send_buffer=%d)",
@@ -441,7 +450,9 @@ def main() -> int:
     supervisor = None if args.no_native else NativeSupervisor(args.native, args.socket, config, frames)
     if supervisor:
         supervisor.start()
-    server = MJPEGServer((config.host, config.port), frames, config.stream_fps)
+    server = MJPEGServer(
+        (config.host, config.port), frames, config.stream_fps, config.send_buffer_bytes
+    )
     stopping = threading.Event()
 
     def request_stop(signal_number: int, current_frame: object) -> None:
