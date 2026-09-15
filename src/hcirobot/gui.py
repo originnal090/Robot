@@ -53,6 +53,48 @@ DUPLICATE_FRAME_LIMIT = 5
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 _DEFAULT_EDGE_MODEL = Path("artifacts/edge-model-20260914/red_ball_svm.npz")
 
+_DETECTOR_LAB = "LAB 默认（稳定）"
+_DETECTOR_ROUTE_BALANCED = "路线均衡 Hybrid（推荐）"
+_DETECTOR_ROUTE_AUGMENTED = "路线增强 Hybrid"
+_DETECTOR_HYBRID_V1 = "Hybrid v1 Fast（稳妥对照）"
+_DETECTOR_HYBRID_GEOMETRY = "Hybrid v1 Geometry（近距/贴底实验）"
+_DETECTOR_HYBRID_HARD_NEGATIVE = "Hybrid HN v1（困难负样本实验）"
+_DETECTOR_SVM_V1 = "SVM v1（全图基线）"
+_DETECTOR_FEATURE_V2 = "SVM Feature v2（回退对照）"
+_DETECTOR_CUSTOM = "自定义模型文件…"
+
+# Curated runtime-compatible presets. CNN .pt files stay out of this list until
+# the runtime can load them; every non-LAB preset is accepted by load_detector.
+_DETECTOR_PRESETS: dict[str, tuple[Path | None, str]] = {
+    _DETECTOR_LAB: (None, "颜色与轮廓基线；当前默认，速度最快"),
+    _DETECTOR_ROUTE_BALANCED: (
+        Path("artifacts/edge-route-20260914/route-balanced-v1/profile.json"),
+        "当前路线测试最好；Hybrid ROI + 均衡困难负样本，需现场验证",
+    ),
+    _DETECTOR_ROUTE_AUGMENTED: (
+        Path("artifacts/edge-route-20260914/route-aug-v1/profile.json"),
+        "加入贴底、模糊增强；训练收敛，适合与路线均衡版对照",
+    ),
+    _DETECTOR_HYBRID_V1: (
+        Path("artifacts/edge-versions-20260914/profiles/hybrid-v1-fast.json"),
+        "原 v1 权重 + ROI/恢复/批量特征；稳妥实验基准",
+    ),
+    _DETECTOR_HYBRID_GEOMETRY: (
+        Path("artifacts/edge-versions-20260914/profiles/hybrid-v1-geometry.json"),
+        "放宽近距离大球和底边球候选；距离半径需单独核对",
+    ),
+    _DETECTOR_HYBRID_HARD_NEGATIVE: (
+        Path("artifacts/edge-versions-20260914/profiles/hybrid-hn-v1-fast.json"),
+        "压制困难背景误框；已知可能漏掉底边球帽",
+    ),
+    _DETECTOR_SVM_V1: (_DEFAULT_EDGE_MODEL, "全图候选分类基线；比 Hybrid 路径慢"),
+    _DETECTOR_FEATURE_V2: (
+        Path("artifacts/edge-versions-20260914/profiles/svm-feature-v2.json"),
+        "删除颜色分位数的旧实验；已知召回回退，仅用于复现",
+    ),
+    _DETECTOR_CUSTOM: (None, "手动选择运行时支持的 .json 配置或 .npz 权重"),
+}
+
 
 def _default_approach_mode() -> str:
     try:
@@ -409,31 +451,46 @@ class RobotControlApp:
         panel.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(7, 0))
         panel.columnconfigure(1, weight=1)
         self.edge_model_var = tk.BooleanVar(value=False)
-        default_path = str(_DEFAULT_EDGE_MODEL.resolve()) if _DEFAULT_EDGE_MODEL.is_file() else ""
-        self.edge_model_path_var = tk.StringVar(value=default_path)
-        self.edge_model_checkbutton = ttk.Checkbutton(
+        self._custom_edge_model_path = ""
+        self.edge_model_path_var = tk.StringVar(value="")
+        self.detector_preset_var = tk.StringVar(value=_DETECTOR_LAB)
+        self.edge_model_path_var.trace_add("write", self._remember_custom_edge_model_path)
+        ttk.Label(panel, text="识别配置", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        self.detector_preset_combo = ttk.Combobox(
             panel,
-            text="使用端侧模型 / 实验版本",
-            variable=self.edge_model_var,
-            command=self._refresh_detector_selector,
-            style="Panel.TCheckbutton",
+            textvariable=self.detector_preset_var,
+            values=tuple(_DETECTOR_PRESETS),
+            state="readonly",
         )
-        self.edge_model_checkbutton.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.detector_preset_combo.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0))
+        self.detector_preset_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._select_detector_preset()
+        )
+        self.detector_preset_status = ttk.Label(
+            panel,
+            text="",
+            style="PanelMuted.TLabel",
+            wraplength=300,
+        )
+        self.detector_preset_status.grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(3, 0)
+        )
         ttk.Label(panel, text="模型文件", style="Panel.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(4, 0)
+            row=2, column=0, sticky="w", pady=(4, 0)
         )
         self.edge_model_entry = ttk.Entry(panel, textvariable=self.edge_model_path_var)
-        self.edge_model_entry.grid(row=1, column=1, sticky="ew", padx=(8, 5), pady=(4, 0))
+        self.edge_model_entry.grid(row=2, column=1, sticky="ew", padx=(8, 5), pady=(4, 0))
         self.edge_model_browse_button = ttk.Button(
             panel, text="选择", command=self._browse_edge_model
         )
-        self.edge_model_browse_button.grid(row=1, column=2, pady=(4, 0))
+        self.edge_model_browse_button.grid(row=2, column=2, pady=(4, 0))
         ttk.Label(
             panel,
-            text="关闭时使用 LAB；JSON 版本含固定检测参数，NPZ 使用当前参数；下次启动生效",
+            text="选中后自动切换；JSON 含固定检测参数，NPZ 使用当前参数；下次启动生效",
             style="PanelMuted.TLabel",
             wraplength=300,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(3, 0))
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(3, 0))
+        self._select_detector_preset()
         self._refresh_detector_selector()
 
     def _build_tuning_panel(self, sidebar: ttk.Frame, row: int) -> None:
@@ -736,14 +793,43 @@ class RobotControlApp:
             filetypes=(("实验版本", "*.json"), ("NumPy 模型", "*.npz"), ("全部", "*.*")),
         )
         if selected:
+            self.detector_preset_var.set(_DETECTOR_CUSTOM)
+            self.edge_model_var.set(True)
             self.edge_model_path_var.set(selected)
+            self._refresh_detector_selector()
+
+    def _select_detector_preset(self) -> None:
+        """Apply one curated detector choice without a separate enable/path step."""
+        name = self.detector_preset_var.get()
+        path, _description = _DETECTOR_PRESETS.get(name, (None, "未知识别配置"))
+        if name == _DETECTOR_LAB:
+            self.edge_model_var.set(False)
+            self.edge_model_path_var.set("")
+        elif name == _DETECTOR_CUSTOM:
+            self.edge_model_var.set(True)
+            self.edge_model_path_var.set(self._custom_edge_model_path)
+        elif path is not None:
+            self.edge_model_var.set(True)
+            self.edge_model_path_var.set(str(path.resolve()))
+        self._refresh_detector_selector()
+
+    def _remember_custom_edge_model_path(self, *_args: object) -> None:
+        if self.detector_preset_var.get() == _DETECTOR_CUSTOM:
+            self._custom_edge_model_path = self.edge_model_path_var.get()
 
     def _refresh_detector_selector(self) -> None:
         editable = self.model.can_start and not self.control_only_var.get()
-        self.edge_model_checkbutton.configure(state="normal" if editable else "disabled")
-        path_state = "normal" if editable and self.edge_model_var.get() else "disabled"
+        self.detector_preset_combo.configure(state="readonly" if editable else "disabled")
+        custom = self.detector_preset_var.get() == _DETECTOR_CUSTOM
+        path_state = "normal" if editable and custom else "disabled"
         self.edge_model_entry.configure(state=path_state)
         self.edge_model_browse_button.configure(state=path_state)
+        path, description = _DETECTOR_PRESETS.get(
+            self.detector_preset_var.get(), (None, "未知识别配置")
+        )
+        if path is not None:
+            description += "；" + ("文件已就绪" if path.is_file() else "本机文件缺失")
+        self.detector_preset_status.configure(text=description)
 
     def _refresh_control_mode(self) -> None:
         """Reflect options that do not apply when no video source is opened."""

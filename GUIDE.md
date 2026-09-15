@@ -228,10 +228,11 @@ MJPEG 流使用项目自带的纯 Python 解析器（不再经过 OpenCV/FFmpeg 
 
 #### 识别器选择
 
-右侧勾选“使用端侧模型”并选择 `.npz` 权重后，下次会话使用轻量 SVM；关闭时使用
-默认 LAB 检测。选项和路径在会话运行期间锁定，模型会在视频或机器人资源打开前校验。
-训练得到的默认权重位于 `artifacts/edge-model-20260914/red_ball_svm.npz`；详细评估和
-OrangePi 板端基准命令见 `docs/edge-recognition.md`。
+右侧“识别配置”下拉框可一键切换默认 LAB、路线均衡/增强 Hybrid、v1 系列实验版和
+全图 SVM；选“自定义模型文件”时可浏览 `.json` 配置或 `.npz` 权重。下拉框会显示
+该版本用途及本机文件状态，选项和路径在会话运行期间锁定，并在视频或机器人资源打开前
+校验。训练得到的默认权重位于 `artifacts/edge-model-20260914/red_ball_svm.npz`；
+详细评估和 OrangePi 板端基准命令见 `docs/edge-recognition.md`。
 
 #### 参数调优面板
 

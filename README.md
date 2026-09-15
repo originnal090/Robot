@@ -232,7 +232,8 @@ uv run python tools/preflight_orangepi.py --config deploy/config/config.orangepi
 
 ## 参数调优
 
-- 识别器：GUI 可勾选“使用端侧模型”并选择 `.npz` 权重；关闭时使用 LAB，
+- 识别器：GUI 的“识别配置”下拉框可一键切换 LAB、路线均衡/增强 Hybrid、
+  v1/几何/困难负样本实验版和全图 SVM；选“自定义模型文件”时可浏览 `.json`/`.npz`，
   选项在下次会话启动时生效；
 - 运行中：GUI“参数调优”面板（LAB 阈值、面积、圆度、确认帧数、对准/到达
   阈值），点“应用参数”立即生效；

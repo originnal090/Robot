@@ -12,7 +12,12 @@ import pytest
 
 from hcirobot.edge_detector import FEATURE_VERSION, EdgeBallDetector, FeatureExtractor
 from hcirobot.gamepad import GamepadReading
-from hcirobot.gui import RobotControlApp
+from hcirobot.gui import (
+    _DETECTOR_CUSTOM,
+    _DETECTOR_LAB,
+    _DETECTOR_ROUTE_BALANCED,
+    RobotControlApp,
+)
 from hcirobot.gui_model import ZERO_COMMAND, SessionState
 from hcirobot.mock_server import MockRobotServer
 from hcirobot.video import SyntheticBallSource, SyntheticConfig
@@ -94,12 +99,27 @@ def test_tk_window_constructs_and_defaults_to_disarmed() -> None:
         assert all(str(button["state"]) == "disabled" for button in app.manual_buttons)
         assert str(app.apply_params_button["state"]) == "disabled"
         assert not app.edge_model_var.get()
-        assert app.edge_model_checkbutton.instate(["!disabled"])
+        assert app.detector_preset_var.get() == _DETECTOR_LAB
+        assert app.detector_preset_combo.instate(["!disabled"])
         assert app.edge_model_entry.instate(["disabled"])
-        app.edge_model_var.set(True)
-        app._refresh_detector_selector()
+        app.detector_preset_var.set(_DETECTOR_ROUTE_BALANCED)
+        app._select_detector_preset()
+        assert app.edge_model_var.get()
+        selected_profile = Path(app.edge_model_path_var.get())
+        assert selected_profile.name == "profile.json"
+        assert selected_profile.parent.name == "route-balanced-v1"
+        assert app.edge_model_entry.instate(["disabled"])
+        app.detector_preset_var.set(_DETECTOR_CUSTOM)
+        app._select_detector_preset()
         assert app.edge_model_entry.instate(["!disabled"])
         assert app.edge_model_browse_button.instate(["!disabled"])
+        app.edge_model_path_var.set("remember-me.npz")
+        app.detector_preset_var.set(_DETECTOR_LAB)
+        app._select_detector_preset()
+        assert app.edge_model_path_var.get() == ""
+        app.detector_preset_var.set(_DETECTOR_CUSTOM)
+        app._select_detector_preset()
+        assert app.edge_model_path_var.get() == "remember-me.npz"
         # The top-bar gamepad cell must reflect the probed state (name, 未检测到
         # or 未装 pygame) instead of the initial placeholder.
         deadline = time.monotonic() + 2.0
@@ -205,7 +225,7 @@ def test_control_only_session_never_opens_video_and_allows_manual(monkeypatch) -
         assert not app.model.can_arm
         assert app.active_detector is None
         assert app.active_controller is None
-        assert app.edge_model_checkbutton.instate(["disabled"])
+        assert app.detector_preset_combo.instate(["disabled"])
         assert app.obstacle_checkbutton.instate(["disabled"])
         assert str(app.capture_button["state"]) == "disabled"
 
@@ -310,7 +330,8 @@ def test_gui_selects_edge_model_and_locks_choice_during_session(tmp_path: Path,
         threshold=np.float32(0),
         feature_version=np.int32(FEATURE_VERSION),
     )
-    app.edge_model_var.set(True)
+    app.detector_preset_var.set(_DETECTOR_CUSTOM)
+    app._select_detector_preset()
     if use_profile:
         import hashlib
         import json
@@ -342,14 +363,14 @@ def test_gui_selects_edge_model_and_locks_choice_during_session(tmp_path: Path,
             assert app.active_detector.config.confirmation_frames == 4
             assert app.active_detector.fast_backend
             assert app.tuning_vars['confirmation_frames'].get() == '4'
-        assert app.edge_model_checkbutton.instate(["disabled"])
+        assert app.detector_preset_combo.instate(["disabled"])
         assert app.edge_model_entry.instate(["disabled"])
         assert any("识别器：端侧模型" in line for line in app.model.logs)
         app._stop()
         while time.monotonic() < deadline and app.model.session_state is not SessionState.STOPPED:
             root.update()
             time.sleep(0.01)
-        assert app.edge_model_checkbutton.instate(["!disabled"])
+        assert app.detector_preset_combo.instate(["!disabled"])
         assert app.edge_model_entry.instate(["!disabled"])
     finally:
         app._closing = True
@@ -368,7 +389,8 @@ def test_gui_rejects_empty_edge_model_path_without_starting() -> None:
     root.withdraw()
     app = RobotControlApp(root)
     try:
-        app.edge_model_var.set(True)
+        app.detector_preset_var.set(_DETECTOR_CUSTOM)
+        app._select_detector_preset()
         app.edge_model_path_var.set("")
         app._start_session()
         assert app.session_thread is None
@@ -416,7 +438,8 @@ def test_gui_rejects_missing_edge_model_before_opening_video(tmp_path: Path, mon
         raise AssertionError("video must not open before model validation")
 
     monkeypatch.setattr("hcirobot.gui.build_source", unexpected_video_open)
-    app.edge_model_var.set(True)
+    app.detector_preset_var.set(_DETECTOR_CUSTOM)
+    app._select_detector_preset()
     app.edge_model_path_var.set(str(tmp_path / "missing.npz"))
     app.source_var.set("synthetic")
     app.backend_var.set("recording")
