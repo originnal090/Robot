@@ -420,11 +420,18 @@ def _parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
+    args = _parse_arguments()
+    log_handlers: list[logging.Handler] = [logging.StreamHandler()]
+    log_file = os.environ.get("IPHONE_MJPEG_LOG_FILE")
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handlers.append(logging.FileHandler(log_path))
     logging.basicConfig(
         level=os.environ.get("IPHONE_MJPEG_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(threadName)s %(message)s",
+        handlers=log_handlers,
     )
-    args = _parse_arguments()
     config = Config()
     config.validate()
     frames = FrameStore(config.stale_after_seconds)

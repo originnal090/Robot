@@ -1,0 +1,9 @@
+{
+  "id": "iphone-mjpeg",
+  "name": "iPhone MJPEG Camera",
+  "description": "AVFoundation camera stream on port 8088",
+  "session": "iphone-mjpeg",
+  "command": "/var/mobile/iphone-mjpeg/scripts/nekoview_service.sh",
+  "cwd": "/var/mobile/iphone-mjpeg",
+  "data_directory": "/var/mobile/iphone-mjpeg"
+}

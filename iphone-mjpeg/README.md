@@ -159,6 +159,42 @@ not force-kill an unrecognized or stuck process. Stop/uninstall the app itself
 from TrollStore; `scripts/uninstall_app.sh` intentionally does not delete app
 container paths.
 
+## NekoView service control
+
+The tested phone already runs NekoView from `/var/jb/var/mobile/neko-api`.
+Install this project's service definition without modifying the existing
+OpenList or PocketBase entries:
+
+```sh
+cd /var/mobile/iphone-mjpeg
+./scripts/install_nekoview.sh
+```
+
+The installer validates `services.json`, creates a timestamped adjacent backup,
+atomically appends only the `iphone-mjpeg` entry, and restarts the NekoView
+dashboard so it reloads the JSON. NekoView then controls the tmux session named
+`iphone-mjpeg`; use its Start, Stop, Restart, Status, and Logs controls.
+
+NekoView runs `scripts/nekoview_service.sh`, a foreground ownership wrapper.
+The wrapper starts the Python HTTP process, opens the camera app, remains alive
+for the lifetime of the server, and stops only that verified child when the
+NekoView session ends. This is intentionally different from `start.sh`, which
+daemonizes and therefore cannot be tracked correctly by NekoView. Python logs
+are available both in NekoView and at `logs/camera.log`.
+
+Environment variables can be added to the NekoView command if mounting changes:
+`IPHONE_MJPEG_WIDTH`, `IPHONE_MJPEG_HEIGHT`, `IPHONE_MJPEG_FPS`,
+`IPHONE_MJPEG_JPEG_QUALITY`, `IPHONE_MJPEG_ROTATION`, and
+`IPHONE_MJPEG_BRIDGE_PORT`. Defaults are 640x480, requested 30 FPS, JPEG quality
+60, rotation 0, and loopback bridge port 18088.
+
+To remove only this service entry (leaving NekoView and all other services in
+place):
+
+```sh
+./scripts/uninstall_nekoview.sh
+```
+
 ## HTTP API
 
 Replace `IPHONE_IP` with the LAN address or Tailnet hostname (for this device,
