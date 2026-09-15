@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/var/jb/usr/bin/sh
 # Read-only deployment preflight for a jailbroken iOS device.
 set -u
 

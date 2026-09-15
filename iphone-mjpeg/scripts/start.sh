@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/var/jb/usr/bin/sh
 set -eu
 
 . "$(dirname -- "$0")/common.sh"
@@ -24,15 +24,12 @@ capture_mode=${IPHONE_MJPEG_CAPTURE_MODE:-app}
 server_arguments=
 case "$capture_mode" in
     app)
-        if [ ! -x /var/mobile/Applications/iPhoneCamera.app/iPhoneCamera ]; then
-            echo "Foreground camera app is not installed; run scripts/install_app.sh" >&2
-            exit 1
-        fi
         command -v uiopen >/dev/null 2>&1 || {
             echo "uiopen is required for foreground app capture" >&2
             exit 1
         }
-        server_arguments=--no-native
+        bridge_port=${IPHONE_MJPEG_BRIDGE_PORT:-18088}
+        server_arguments="--no-native --tcp-port $bridge_port"
         ;;
     cli)
         if [ ! -x "$PROJECT_DIR/native/iphone-camera" ]; then
@@ -61,9 +58,11 @@ fi
 
 echo "Started iPhone MJPEG service (pid $pid)"
 if [ "$capture_mode" = app ]; then
-    control_url="iphonecamera://start?width=${IPHONE_MJPEG_WIDTH:-1280}&height=${IPHONE_MJPEG_HEIGHT:-720}&fps=${IPHONE_MJPEG_FPS:-30}&quality=${IPHONE_MJPEG_JPEG_QUALITY:-75}&rotation=${IPHONE_MJPEG_ROTATION:-0}"
-    if ! uiopen "$control_url" >>"$LOG_FILE" 2>&1; then
-        echo "HTTP server started, but the foreground camera app could not be opened" >&2
+    : >"$LOG_DIR/app.log"
+    control_url="iphonecamera://start?width=${IPHONE_MJPEG_WIDTH:-640}&height=${IPHONE_MJPEG_HEIGHT:-480}&fps=${IPHONE_MJPEG_FPS:-30}&quality=${IPHONE_MJPEG_JPEG_QUALITY:-60}&rotation=${IPHONE_MJPEG_ROTATION:-0}&bridgePort=${IPHONE_MJPEG_BRIDGE_PORT:-18088}"
+    if ! uiopen --url "$control_url" >>"$LOG_FILE" 2>&1; then
+        echo "HTTP server started, but the foreground camera app could not be opened." >&2
+        echo "Install native/build/iPhoneCamera.ipa with TrollStore and retry." >&2
     fi
 fi
 "$PROJECT_DIR/scripts/status.sh"

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/var/jb/usr/bin/sh
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 RUN_DIR="$PROJECT_DIR/run"
@@ -29,6 +29,26 @@ port_8088_report() {
         output=$(netstat -an 2>/dev/null | grep '[.:]8088[[:space:]]' || true)
         if [ -n "$output" ]; then
             printf '%s\n' "$output"
+            found=0
+        fi
+    fi
+    if [ "$found" -ne 0 ] && python_bin=$(find_python 2>/dev/null); then
+        if ! "$python_bin" -c 'import socket
+probe = socket.socket()
+probe.settimeout(0.25)
+try:
+    if probe.connect_ex(("127.0.0.1", 8088)) == 0:
+        raise SystemExit(1)
+finally:
+    probe.close()
+s = socket.socket()
+try:
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", 8088))
+    s.listen(1)
+finally:
+    s.close()' 2>/dev/null; then
+            echo "TCP port 8088 is occupied (owner unavailable: lsof/netstat not installed)."
             found=0
         fi
     fi

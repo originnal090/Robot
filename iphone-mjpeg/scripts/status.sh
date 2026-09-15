@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/var/jb/usr/bin/sh
 set -eu
 
 . "$(dirname -- "$0")/common.sh"

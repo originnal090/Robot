@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/var/jb/usr/bin/sh
 set -eu
 
 . "$(dirname -- "$0")/common.sh"
@@ -14,7 +14,7 @@ if ! is_project_process "$pid"; then
 fi
 
 if command -v uiopen >/dev/null 2>&1; then
-    uiopen iphonecamera://stop >/dev/null 2>&1 || true
+    uiopen --url iphonecamera://stop >/dev/null 2>&1 || true
 fi
 kill -TERM "$pid"
 count=0
