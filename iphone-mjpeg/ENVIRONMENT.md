@@ -15,6 +15,11 @@ Read-only inspection performed on 2026-09-15 before deployment.
 | Theos / xcrun | Not installed; not required for the direct build |
 | Media packages | No dpkg-installed OpenCV, FFmpeg, or libjpeg package |
 | Free space | About 33 GiB on both relevant APFS views |
+| Installed app | TrollStore app v6, bundle id `com.local.iphonecamera` |
+| Camera permission | TCC authorized (`kTCCServiceCamera`, auth value 2) |
+| App sandbox | TrollStore container-required app sandbox; no `no-sandbox` entitlement |
+| Internal bridge | TCP `127.0.0.1:18088` (not exposed to LAN) |
+| HTTP service | `0.0.0.0:8088` |
 
 The SDK contains framework headers and Clang automatically supplies it as the
 sysroot. The live OS provides AVFoundation, CoreMedia, CoreVideo, CoreGraphics,
@@ -28,3 +33,11 @@ not inspected, bound, stopped, or modified.
 
 The existing `build-essential`, Python, and `ldid` packages are sufficient for
 the first deployment attempt. No package installation is currently needed.
+
+The bare native helper and a TrollStore app signed with `no-sandbox` both
+created a running preview session but did not provide usable data-output
+frames. The command-line session was also interrupted when backgrounded.
+Installing the app as a normal TrollStore container sandbox immediately
+restored `AVCaptureVideoDataOutput` callbacks while preserving TCC permission;
+the sandboxed app therefore sends its in-memory JPEG frames to CPython over the
+loopback-only bridge.

@@ -4,19 +4,21 @@ This project exposes the rear iPhone camera as a low-latency MJPEG stream on
 port **8088**. It does not inspect, stop, or reconfigure the service on port
 8080.
 
-The data path is:
+The tested data path is:
 
 ```text
 AVCaptureVideoDataOutput (BGRA, late frames discarded)
   -> ImageIO JPEG encoder
   -> single latest-frame slot
-  -> Unix domain stream socket
+  -> loopback TCP frame bridge (127.0.0.1:18088)
   -> CPython ThreadingHTTPServer
   -> /video, /snapshot.jpg, /health
 ```
 
-The native capture callback and socket sender are separate. If the socket or a
-client is slow, the pending JPEG is replaced by the newest JPEG instead of
+Camera capture runs inside the foreground `iPhone Camera` app so iOS grants a
+normal TCC camera session. The native capture callback and socket sender are
+separate. If the socket or a client is slow, the pending JPEG is replaced by
+the newest JPEG instead of
 building a frame queue. Every HTTP stream runs in its own thread.
 
 ## Device environment
@@ -41,37 +43,52 @@ The scripts look for Python in this order:
 
 No particular rootless or rootful layout is assumed.
 
-## Build and sign the native helper
+The checked-in shell shebang is `/var/jb/usr/bin/sh`, matching this tested
+rootless phone. On a rootful device, change it to that device's actual shell
+path after preflight.
+
+## Build, sign, and install the camera app
 
 On a device that has Clang plus the iOS framework headers:
 
 ```sh
-cd /var/mobile/iphone-mjpeg/native
-make
-make sign
-ldid -e ./iphone-camera
+cd /var/mobile/iphone-mjpeg
+./scripts/install_app.sh
 ```
+
+This creates:
+
+```text
+/var/mobile/iphone-mjpeg/native/build/iPhoneCamera.ipa
+```
+
+Install that IPA with TrollStore, open **iPhone Camera**, and allow Camera
+access. Keep the app visible while streaming; iOS 15 interrupts this camera
+session when the app enters the background. Do not manually copy the bundle
+into `/var/mobile/Applications`: that does not provide a reliable registered
+app identity for TCC.
 
 The direct build links Foundation, AVFoundation, CoreMedia, CoreVideo,
-CoreGraphics, and ImageIO; Theos is not required when the installed Clang
-toolchain already has usable iOS headers. `make sign` runs:
+CoreGraphics, ImageIO, and UIKit. Theos is not required because the installed
+Clang toolchain already has usable iOS headers. `make app-package` signs the
+executable with:
 
 ```sh
-ldid -S../entitlements.plist iphone-camera
+ldid -S../app-entitlements.plist build/iPhoneCamera.app/iPhoneCamera
 ```
 
-The supplied entitlement requests platform/no-container execution and the
-private TCC camera allowance used by jailbreak daemons. Whether a jailbreak
-accepts that entitlement is device-specific and must be tested. The helper
-checks `authorizationStatusForMediaType:` before constructing the session. It
-does not attempt to show a TCC prompt from a bare command-line process, because
-Apple requires a camera usage string in an app `Info.plist` for prompting.
+TrollStore supplies the installed app identity. `Info.plist` contains
+`NSCameraUsageDescription`; the app calls
+`requestAccessForMediaType:completionHandler:` and reports denial in its UI.
+No TCC database is edited. The separately buildable `native/iphone-camera`
+binary remains useful for diagnostics, but on this iOS build its camera session
+is interrupted in a background command-line context and is not the normal
+service path.
 
-If the entitlement is not honored, do not edit `TCC.db` blindly. Use an app
-bundle/context with `NSCameraUsageDescription`, grant Camera access once in the
-UI, then run the signed helper under the identity accepted by that jailbreak.
-The exact fallback must be selected from the device's observed iOS and
-jailbreak environment.
+The installed v6 app was verified with the TrollStore-added entitlement
+`com.apple.private.security.container-required=com.local.iphonecamera`. Do not
+add `com.apple.private.security.no-sandbox`: on this iPhone it allowed the
+preview layer to render but prevented video/photo sample callbacks.
 
 References:
 
@@ -87,41 +104,65 @@ overridden with environment variables:
 ```sh
 export IPHONE_MJPEG_HOST=0.0.0.0
 export IPHONE_MJPEG_PORT=8088
-export IPHONE_MJPEG_WIDTH=1280
-export IPHONE_MJPEG_HEIGHT=720
+export IPHONE_MJPEG_BRIDGE_PORT=18088
+export IPHONE_MJPEG_WIDTH=640
+export IPHONE_MJPEG_HEIGHT=480
 export IPHONE_MJPEG_FPS=30
-export IPHONE_MJPEG_JPEG_QUALITY=75
+export IPHONE_MJPEG_STREAM_FPS=15
+export IPHONE_MJPEG_JPEG_QUALITY=60
 export IPHONE_MJPEG_ROTATION=0
 ```
+
+Port 18088 is an internal app-to-Python frame bridge bound only to
+`127.0.0.1`; it is not exposed to the LAN. Port 8088 remains the public HTTP
+service port.
 
 `IPHONE_MJPEG_ROTATION` accepts `0`, `90`, `180`, or `270`. Rotation uses the
 AVFoundation video connection, and mirroring is disabled. The default `0`
 means landscape-right. If the mounted phone is sideways or inverted, change
-this one value and restart. Common lower-bandwidth settings are `640x480@30`
-and quality `70`; requested dimensions are matched to the closest rear-camera
-format supporting the requested FPS.
+this one value and restart. The tested defaults capture at `640x480@30` and
+serve each client at up to 15 FPS with JPEG quality 60. This keeps two clients
+below the measured Tailnet/Wi-Fi throughput without queuing stale frames.
+`1280x720@30`, quality 75 remains available through the environment variables
+when the LAN has enough bandwidth.
 
 ## Start, inspect, and stop
 
-The start script first runs both available port checks. If any process owns
-8088, it prints the process/socket information and exits without killing it.
+The start script first runs `lsof` and `netstat` when available, followed by a
+real bind probe. If any process owns 8088, it prints the process/socket
+information and exits without killing it. On the tested phone neither
+inspection tool is installed, so the fallback reports the conflict but cannot
+name its owner; install neither tool merely for this service.
 
 ```sh
 cd /var/mobile/iphone-mjpeg
-chmod +x scripts/*.sh native/iphone-camera
+chmod +x scripts/*.sh
 ./scripts/start.sh
 ./scripts/status.sh
 tail -f logs/camera.log
 ./scripts/stop.sh
 ```
 
-`stop.sh` only sends SIGTERM to the PID in this project's PID file after
+The native app log lives inside its sandbox. Locate it without assuming the
+container UUID:
+
+```sh
+find /private/var/mobile/Containers/Data/Application \
+  -path '*/Library/Logs/iPhoneCamera/app.log' -print
+```
+
+`start.sh` launches the Python HTTP process and opens the installed foreground
+camera app through its `iphonecamera://` control URL. `stop.sh` only sends
+SIGTERM to the PID in this project's PID file after
 verifying that its command line is this project's `python/server.py`. It does
-not force-kill an unrecognized or stuck process.
+not force-kill an unrecognized or stuck process. Stop/uninstall the app itself
+from TrollStore; `scripts/uninstall_app.sh` intentionally does not delete app
+container paths.
 
 ## HTTP API
 
-Replace `IPHONE_IP` with the LAN address or Tailnet hostname:
+Replace `IPHONE_IP` with the LAN address or Tailnet hostname (for this device,
+the Tailnet hostname is `yhiphone7`):
 
 | URL | Result |
 | --- | --- |
@@ -147,8 +188,19 @@ curl -fsS http://IPHONE_IP:8088/health
 The health response is similar to:
 
 ```json
-{"ok":true,"camera":true,"fps":29.7,"width":1280,"height":720,"frame_age_ms":18.2,"sequence":540}
+{"ok":true,"camera":true,"fps":24.9,"width":640,"height":480,"frame_age_ms":18.2,"sequence":540}
 ```
+
+Validated on 2026-09-15 with app v6:
+
+- iPhone local and PC LAN health returned `ok:true` at roughly 24–25 capture FPS.
+- `snapshot.jpg` decoded as a 640×480, three-channel JPEG.
+- OpenCV read 640×480 BGR frames, disconnected, and reconnected successfully.
+- One stream over the current Wi-Fi measured p50 103 ms and p95 198 ms over
+  120 frames. With a concurrent OpenCV client, p50 was 171 ms; transient Wi-Fi
+  spikes occurred but latency returned to the newest frame instead of growing.
+- The current Wi-Fi address was `10.208.88.250`; it is DHCP-assigned and may
+  change. The Tailnet hostname is `yhiphone7`.
 
 ## OpenCV / TonyPi
 
@@ -180,8 +232,9 @@ No TonyPi source or configuration is changed by this project.
 
 ## Latency and queue checks
 
-Each MJPEG part includes `X-Capture-Timestamp-Ns`. With synchronized iPhone and
-client clocks, measure native-callback-to-client latency with:
+Each MJPEG part includes `X-Capture-Timestamp-Ns`. The probe estimates the
+iPhone/client clock offset with several `/health` round trips, then measures
+native-callback-to-client latency with:
 
 ```sh
 python tests/latency_probe.py IPHONE_IP --frames 300
@@ -200,35 +253,43 @@ their handler thread and do not terminate capture or the server.
 
 ## launchd
 
-Install a per-user LaunchAgent only after manual startup and camera access have
-passed:
+On iOS, `launchctl help` confirms there is no per-user or GUI domain. Install a
+system-domain LaunchDaemon only after manual startup and camera access have
+passed (sudo prompts for the mobile user's password):
 
 ```sh
-./scripts/install_launchd.sh
+sudo ./scripts/install_launchd.sh
 ```
 
-The installer substitutes the current project directory into the template,
-refuses to overwrite an existing plist, and loads
-`~/Library/LaunchAgents/com.local.iphonecamera.plist`.
+The installer detects rootless `/var/jb/Library/LaunchDaemons` versus rootful
+`/Library/LaunchDaemons`, substitutes the actual project and shell paths,
+refuses to overwrite an existing plist, and bootstraps it in the iOS system
+domain while running the job as `mobile`.
+
+The LaunchDaemon starts the HTTP component and asks SpringBoard to open the
+camera app. It cannot bypass the iOS foreground-camera or locked-device rules;
+after a reboot/unlock, confirm that **iPhone Camera** is visible before relying
+on the stream.
 
 Uninstall only this project's LaunchAgent:
 
 ```sh
-./scripts/uninstall_launchd.sh
+sudo ./scripts/uninstall_launchd.sh
 ```
 
-Some jailbreaks require `launchctl bootstrap gui/501 ...` instead of legacy
-`launchctl load`. Confirm the available launchctl interface during device
-preflight before changing the script.
+The files and privilege checks were validated as `mobile`; installation was
+not performed because the SSH session is uid 501 and non-interactive sudo is
+disabled. The manual service is left running. This avoids silently installing
+a system LaunchDaemon without an authenticated root session.
 
 ## Failure behavior
 
 - Native camera initialization failures are logged and supervised restarts use
   a two-second delay.
-- `/health` reports `camera:false` if the native socket disconnects or the last
+- `/health` reports `camera:false` and `fps:0.0` if the native producer disconnects or the last
   frame is older than two seconds.
-- A stale socket path is removed only if it is actually a Unix socket; a normal
-  file or symlink is never overwritten.
+- App mode binds its internal bridge only to `127.0.0.1`; CLI diagnostic mode
+  retains the guarded Unix-socket transport.
 - The frame protocol rejects invalid magic, dimensions, incomplete JPEGs, and
   payloads over 8 MiB.
 - Port 8088 conflicts are reported; no occupying process is killed.
