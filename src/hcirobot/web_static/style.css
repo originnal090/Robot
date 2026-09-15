@@ -1,0 +1,136 @@
+:root {
+  --bg:#101417; --panel:#181e22; --line:#303b42; --text:#e8edef;
+  --muted:#96a5ae; --yellow:#f2c94c; --green:#53c994;
+  font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif; font-size:13px;
+  color:var(--text); background:var(--bg);
+}
+* {box-sizing:border-box}
+body {margin:0; height:100dvh; overflow:hidden; display:flex; flex-direction:column}
+button,input,select {font:inherit}
+button {cursor:pointer; border:1px solid #3e4b54; background:#252e34; color:var(--text); border-radius:6px; min-height:34px; padding:7px 12px; font-weight:600}
+button:hover:enabled {background:#354149; border-color:#667780}
+button:disabled {opacity:.38; cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible {outline:2px solid var(--yellow); outline-offset:2px}
+.primary {background:var(--yellow); color:#181c1e; border-color:var(--yellow)}
+.primary:hover:enabled {background:#ffe084}
+.danger {background:#422424; border-color:#a84d4a; color:#ff9d97; min-width:90px}
+.danger:hover:enabled {background:#783630}
+.quiet {background:transparent}
+.muted,.hint {color:var(--muted)}
+.topbar {height:60px; flex:none; padding:0 22px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--line); background:#141a1e}
+.brand {display:flex; align-items:center; gap:10px; color:var(--text); text-decoration:none; font-size:22px; font-weight:750; letter-spacing:-.7px}
+.brand-mark {display:grid; place-items:center; width:32px; height:36px; background:var(--yellow); color:#161c1f; clip-path:polygon(0 0,100% 0,100% 78%,78% 100%,0 100%)}
+.brand small {display:block; font-size:8px; letter-spacing:1.1px; font-weight:500; color:var(--muted); margin-top:2px}
+.connection {margin-left:auto; display:flex; align-items:center; gap:7px; font-size:11px; margin-right:8px}
+.dot {display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--muted)}
+.dot.green {background:var(--green)}
+main {flex:1; min-height:0; display:flex; flex-direction:column; padding:0 22px 12px; gap:10px}
+.page-heading {height:42px; flex:none; display:flex; align-items:center; justify-content:space-between}
+h1 {font-size:17px; font-weight:600; margin:0}
+h1 .eyebrow {margin-left:12px}
+.eyebrow {font-size:9px; font-weight:500; letter-spacing:1.5px; color:var(--muted)}
+h2 {font-size:12px; font-weight:600; margin:0}
+h3 {font-size:16px; font-weight:500}
+.badge {padding:5px 10px; border:1px solid var(--line); border-radius:5px; background:#20292e; font-size:11px}
+.layout {flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:14px}
+.main-column {min-width:0; min-height:0; display:flex; flex-direction:column; gap:12px}
+.panel {background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden}
+.panel-heading {display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:9px 14px; border-bottom:1px solid var(--line); gap:10px; flex:none}
+.panel-heading .muted {font-size:10px; font-weight:400}
+.panel-heading h2 .muted {margin-left:10px}
+.panel-heading h2 .dot {margin-right:5px}
+.viewer-panel {flex:1; min-height:0; display:flex; flex-direction:column}
+.viewport {position:relative; flex:1; min-height:100px; width:100%; background:#0c1114; display:flex; align-items:center; justify-content:center; overflow:hidden}
+.viewport img {position:absolute; inset:0; height:100%; width:100%; object-fit:contain}
+#video-empty {text-align:center; color:var(--muted); padding:16px}
+#video-empty p {font-size:11px; margin-bottom:16px}
+.crosshair {margin:auto; width:44px; height:44px; border:1px solid #354249; color:#677a85; display:grid; place-items:center; font:28px monospace; border-radius:10px}
+.video-caption {position:absolute; bottom:0; left:0; right:0; display:flex; justify-content:space-between; padding:7px 12px; background:#0b1113cf; color:#8ea0a8; font:9px monospace; letter-spacing:1px; pointer-events:none}
+.metrics {display:grid; grid-template-columns:repeat(4,1fr); padding:11px 0; border-top:1px solid var(--line); flex:none}
+.metrics>div {padding:0 15px; border-right:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:8px}
+.metrics>div:last-child {border:0}
+.metrics span {color:var(--muted); font-size:10px; white-space:nowrap}
+.metrics strong {font-size:15px; font-weight:500; font-family:Consolas,"Microsoft YaHei",monospace}
+.session-actions {display:flex; gap:10px; align-items:center; flex:none; height:44px}
+.session-actions button {min-width:112px; height:38px}
+.command-hint {margin-left:auto; color:var(--muted); font-size:10px}
+.manual-panel {flex:none}
+.manual-panel code {font:10px Consolas,monospace; color:var(--muted)}
+.manual-workspace {display:grid; grid-template-columns:100px 104px 1fr; align-items:center; gap:16px; padding:10px 16px}
+.dpad {display:grid; grid-template-columns:repeat(3,30px); grid-template-rows:repeat(3,28px); gap:3px}
+.dpad button {min-height:0; padding:0; font-size:18px; font-weight:400}
+.forward {grid-area:1/2}.left {grid-area:2/1}.center {grid-area:2/2}.right {grid-area:2/3}.back {grid-area:3/2}
+.drive {touch-action:none; user-select:none}
+.drive.active {border-color:var(--yellow); background:#635832}
+.drive-info {display:grid; gap:6px}
+.drive-info button {font-size:11px; padding:5px 8px; min-height:28px}
+.drive-info span {font-size:9px; text-align:center}
+.action-grid {display:grid; grid-template-columns:repeat(4,1fr); gap:7px}
+.action-grid button {font-size:11px; padding:7px 4px; min-height:32px}
+.gamepad-line {border-top:1px solid var(--line); padding:8px 14px; display:flex; align-items:center; gap:12px; min-width:0}
+.gamepad-line .checkbox {margin:0; white-space:nowrap}
+#pad-status {font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0}
+.gamepad-line small {font-size:9px; white-space:nowrap}
+.inspector {min-height:0; display:flex; flex-direction:column}
+.inspector-tabs {display:flex; flex:none; border-bottom:1px solid var(--line); padding:0 6px; gap:2px}
+.inspector-tabs button {flex:1; border:0; border-radius:0; background:transparent; min-height:40px; font-size:12px; color:var(--muted); border-bottom:2px solid transparent}
+.inspector-tabs button[aria-selected=true] {color:var(--yellow); border-bottom-color:var(--yellow)}
+.inspector-body {min-height:0; flex:1; overflow:auto; scrollbar-width:thin; scrollbar-color:#46545e transparent}
+.tab-panel .panel-heading {border-bottom:0; min-height:36px}
+.settings fieldset {border:0; padding:0 14px 12px; margin:0}
+label {display:block; color:var(--muted); font-size:10px; margin:9px 0 5px}
+label:first-child {margin-top:0}
+input:not([type=checkbox]),select {width:100%; background:#11181c; border:1px solid #34434c; border-radius:5px; color:var(--text); height:30px; padding:5px 8px; font-size:11px; min-width:0}
+input:disabled,select:disabled {opacity:.5}
+.host-row {display:grid; grid-template-columns:1fr 72px; gap:9px; margin-top:9px}
+.checkbox {display:flex; align-items:center; gap:7px; line-height:1.4; font-size:10px}
+.checkbox input {accent-color:var(--yellow); width:13px; height:13px; margin:0}
+.session-options {display:grid; gap:8px; margin:12px 0 10px}
+.session-options label {margin:0}
+fieldset small {font-size:9px; line-height:1.5; display:block}
+.telemetry-panel dl {padding:0 14px; margin:0 0 18px}
+.telemetry-panel dl>div {display:flex; justify-content:space-between; gap:10px; padding:14px 0; border-bottom:1px solid #283239; font-size:12px}
+.telemetry-panel dt {color:var(--muted); white-space:nowrap}
+.telemetry-panel dd {margin:0; text-align:right; overflow-wrap:anywhere; max-width:65%}
+.hint {font-size:10px; line-height:1.7}
+.telemetry-panel>.hint {margin:10px 14px}
+#tuning-form {padding:0 14px 14px}
+#tuning-fields {display:grid; grid-template-columns:1fr 1fr; gap:7px 10px}
+#tuning-fields>label,#tuning-fields>.tuning-fields-row {grid-column:1/-1}
+#tuning-fields>label {margin:0 0 -3px}
+.tuning-fields-row {display:grid; grid-template-columns:repeat(3,1fr); gap:7px}
+#tuning-fields label {font-size:10px; margin:0 0 4px}
+#tuning-fields .tuning-fields-row label {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.pair {display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px}
+.pair button {font-size:11px; padding:7px 5px}
+.capture-content {padding:0 14px}
+.capture-content p {font-size:11px; line-height:1.8}
+.wide {width:100%}
+.path {overflow-wrap:anywhere; color:var(--muted); font-size:10px}
+.login {position:fixed; z-index:40; width:min(480px,calc(100% - 30px)); left:50%; top:18%; transform:translateX(-50%); padding:24px; box-shadow:0 15px 80px #0009}
+.login form {display:grid; gap:8px}
+.login p {font-size:12px}
+#notice {position:fixed; z-index:50; top:68px; left:50%; transform:translateX(-50%); width:max-content; max-width:calc(100% - 30px); border:1px solid #79623c; border-radius:6px; padding:10px 16px; font-size:12px; background:#342b1e; color:#f4d6a0; overflow-wrap:anywhere; box-shadow:0 5px 30px #0007}
+#logs-dialog {background:var(--panel); border:1px solid var(--line); border-radius:9px; color:var(--text); width:min(840px,90vw); padding:0}
+#logs-dialog::backdrop {background:#0009}
+#logs {margin:0; padding:16px; height:min(55dvh,500px); overflow:auto; font:11px/1.9 Consolas,"Microsoft YaHei",monospace; color:#acbac1; white-space:pre-wrap; overflow-wrap:anywhere}
+.mobile-nav {display:none}
+[hidden] {display:none!important}
+@media(min-width:1600px) {.layout{grid-template-columns:minmax(0,1fr) 370px}.manual-workspace{padding:14px 20px;gap:24px}.dpad{grid-template-columns:repeat(3,34px);grid-template-rows:repeat(3,30px)}.gamepad-line{padding:10px 18px}}
+@media(max-width:1150px) {.layout{grid-template-columns:minmax(0,1fr) 304px}.metrics>div{flex-direction:column;align-items:flex-start;gap:3px;padding:0 12px}.manual-workspace{gap:10px;padding:10px;grid-template-columns:96px 82px 1fr}.action-grid{gap:5px}.action-grid button{font-size:10px}.gamepad-line small{display:none}.command-hint{font-size:9px}}
+@media(max-height:730px) and (min-width:761px) {.topbar{height:52px}main{gap:8px}.page-heading{height:34px}.panel-heading{min-height:30px;padding:7px 12px}.manual-workspace{padding:7px 12px}.gamepad-line{padding:6px 12px}.inspector-tabs button{min-height:34px}.settings label{margin-top:7px}.settings label:first-child{margin-top:0}.session-options{gap:6px;margin:9px 0}.session-options label{margin:0}.metrics{padding:8px 0}.viewport{min-height:80px}}
+@media(max-width:760px) {
+  .topbar{height:56px;padding:0 12px;gap:7px}.brand{font-size:19px;gap:7px}.brand-mark{width:28px;height:32px}.brand small{font-size:6px;letter-spacing:.4px}.connection{margin-right:0}.connection #connection{display:none}.topbar button{font-size:11px;padding:6px 8px;min-height:32px}.danger{min-width:58px}
+  main{padding:0 12px 10px;gap:8px}.page-heading{height:34px}h1{font-size:15px}h1 .eyebrow{display:none}
+  .mobile-nav{display:flex;gap:6px;flex:none}.mobile-nav button{flex:1;font-size:12px;background:transparent;min-height:32px}.mobile-nav button[aria-pressed=true]{color:var(--yellow);border-color:#847238;background:#312e20}
+  .layout{display:flex;gap:0}.main-column,.inspector{width:100%;height:100%}.main-column{gap:0}.viewer-panel{height:100%}.metrics>div{padding:0 9px}.metrics strong{font-size:14px}
+  .manual-panel{height:100%;display:flex;flex-direction:column}.manual-panel .panel-heading{min-height:42px}.manual-workspace{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:22px;align-content:center}
+  .dpad{grid-template-columns:repeat(3,40px);grid-template-rows:repeat(3,38px);gap:4px;justify-content:center}.drive-info{gap:9px}.drive-info button{min-height:42px;font-size:13px}.drive-info span{font-size:10px}
+  .action-grid{grid-column:1/-1;gap:9px}.action-grid button{min-height:40px;font-size:12px}.gamepad-line{min-height:54px;flex-wrap:wrap}.gamepad-line .checkbox{font-size:11px}.gamepad-line small{display:none}
+  .session-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;height:42px}.session-actions button{font-size:11px;min-width:0;padding:7px 3px}.command-hint{display:none}
+  body[data-mobile-view=video] .manual-panel,body[data-mobile-view=video] .inspector{display:none}
+  body[data-mobile-view=manual] .viewer-panel,body[data-mobile-view=manual] .inspector{display:none}
+  body[data-mobile-view=settings] .main-column{display:none}
+  .inspector-tabs button{min-height:36px}.telemetry-panel dl>div{padding:13px 0}.settings fieldset{padding-bottom:12px}
+  #video-empty p{font-size:10px}.viewport{min-height:80px}.inspector-body{overscroll-behavior:contain}
+}

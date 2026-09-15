@@ -361,9 +361,6 @@ def run_manual_loop(
         emit("manual", "manual control ready")
         while True:
             poll_action_receipts()
-            action = session.consume_action()
-            if action is not None:
-                send_action(action)
             if session.consume_estop():
                 termination = "estop"
                 final_state = ControlState.LOST_SAFE
@@ -375,6 +372,9 @@ def run_manual_loop(
                 send_stop("shutdown")
                 emit("stopping", "stop requested")
                 break
+            action = session.consume_action()
+            if action is not None:
+                send_action(action)
             session.consume_disarm()
             if session.consume_arm():
                 emit("warning", "仅手柄控制模式已忽略自治武装请求")
@@ -639,11 +639,6 @@ def run_loop(
     try:
         while True:
             poll_action_receipts()
-            action = session.consume_action()
-            if action is not None:
-                if step_id is not None:
-                    step_interrupted = True
-                send_action(action)
             if session.consume_estop():
                 controller.estop("operator_estop")
                 is_armed = False
@@ -660,6 +655,11 @@ def run_loop(
             if max_frames > 0 and frame_count >= max_frames:
                 termination = "max_frames"
                 break
+            action = session.consume_action()
+            if action is not None:
+                if step_id is not None:
+                    step_interrupted = True
+                send_action(action)
             # consume_disarm() runs first so a stray request is cleared even
             # when the session is already disarmed.
             disarm_requested = session.consume_disarm()

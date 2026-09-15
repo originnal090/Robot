@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>HCIRobot · 机器人控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body data-mobile-view="video">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="HCIRobot 首页"><span class="brand-mark">H</span><span>HCI<span class="muted">Robot</span><small>机器人控制台 / WEB CONSOLE</small></span></a>
+    <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">正在连接</span></div>
+    <button id="log-toggle" class="quiet">日志</button>
+    <button id="claim" disabled>取得控制权</button>
+    <button id="estop" class="danger" disabled>■ 急停</button>
+  </header>
+  <main>
+    <div class="page-heading"><h1>视觉与运动控制 <span class="eyebrow">CONTROL CENTER</span></h1><span id="session-badge" class="badge">已停止</span></div>
+    <section id="login-panel" class="panel login" hidden>
+      <h2>连接控制服务</h2><p class="muted">输入香橙派上配置的访问令牌。</p>
+      <form id="login-form"><label for="token">访问令牌</label><input id="token" type="password" autocomplete="current-password" required><button class="primary">连接</button></form>
+    </section>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <nav class="mobile-nav" aria-label="工作区">
+      <button data-mobile-view="video" aria-pressed="true">画面</button>
+      <button data-mobile-view="manual" aria-pressed="false">遥控</button>
+      <button data-mobile-view="settings" aria-pressed="false">状态 / 设置</button>
+    </nav>
+    <div class="layout">
+      <div class="main-column">
+        <section class="panel viewer-panel">
+          <div class="panel-heading"><h2><span class="dot green"></span> 视觉监测</h2><span id="video-status" class="muted">等待会话</span></div>
+          <div class="viewport">
+            <img id="video" alt="机器人实时画面与目标识别标注" hidden>
+            <div id="video-empty"><div class="crosshair">＋</div><h3>准备好后，开始预览</h3><p>识别画面和机器人状态将在这里实时更新</p><span class="badge">默认未武装</span></div>
+            <div class="video-caption"><span id="source-caption">CAMERA / STANDBY</span><span id="frame-count">0 FRAMES</span></div>
+          </div>
+          <div class="metrics">
+            <div><span>自治状态</span><strong id="control-state">IDLE</strong></div>
+            <div><span>目标确认</span><strong id="target">未确认</strong></div>
+            <div><span>横向误差</span><strong id="error">--</strong></div>
+            <div><span>半径比例</span><strong id="radius">--</strong></div>
+          </div>
+        </section>
+        <section class="panel manual-panel">
+          <div class="panel-heading"><h2>手动控制 <span id="manual-mode" class="muted">等待会话</span></h2><code id="output">v 0.00 · 转向 0.00</code></div>
+          <div class="manual-workspace">
+            <div class="dpad">
+              <button class="drive forward" data-v="0.35" data-s="0" data-l="0" aria-label="按住前进">↑</button>
+              <button class="drive left" data-v="0" data-s="0" data-l="-0.35" aria-label="按住左移">←</button>
+              <button id="hold" class="center" aria-label="停止点动">■</button>
+              <button class="drive right" data-v="0" data-s="0" data-l="0.35" aria-label="按住右移">→</button>
+              <button class="drive back" data-v="-0.35" data-s="0" data-l="0" aria-label="按住后退">↓</button>
+            </div>
+            <div class="drive-info"><button class="drive" data-v="0" data-s="-0.35" data-l="0">↶ 左转</button><button class="drive" data-v="0" data-s="0.35" data-l="0">右转 ↷</button><span class="muted">按住移动 · 松开停</span></div>
+            <div class="action-grid">
+              <button data-action="head_down">低头</button><button data-action="head_center">回正</button><button data-action="head_up">抬头</button><button data-action="nod">点头</button>
+              <button data-action="shake">摇头</button><button data-action="left_trigger">前爬起</button><button data-action="right_trigger">后爬起</button><button data-action="right_grip">蹲下灭火</button>
+            </div>
+          </div>
+          <div class="gamepad-line"><label class="checkbox"><input id="browser-gamepad" type="checkbox"> 浏览器手柄</label><span id="pad-status" class="muted">等待连接手柄</span><small class="muted">B 抢断/恢复 · LS 移动 · RS 转向</small></div>
+        </section>
+      </div>
+      <aside class="panel inspector">
+        <nav class="inspector-tabs" aria-label="侧栏面板" role="tablist">
+          <button id="tab-status" data-tab="status" role="tab" aria-controls="pane-status" aria-selected="false">状态</button>
+          <button id="tab-connection" data-tab="connection" role="tab" aria-controls="pane-connection" aria-selected="true">连接</button>
+          <button id="tab-tuning" data-tab="tuning" role="tab" aria-controls="pane-tuning" aria-selected="false">调参</button>
+          <button id="tab-capture" data-tab="capture" role="tab" aria-controls="pane-capture" aria-selected="false">采集</button>
+        </nav>
+        <div class="inspector-body">
+          <section id="pane-status" class="tab-panel telemetry-panel" role="tabpanel" aria-labelledby="tab-status" hidden>
+            <div class="panel-heading"><h2>运行状态</h2><span class="eyebrow">LIVE</span></div>
+            <dl><div><dt>机器人连接</dt><dd id="robot-status">未连接</dd></div><div><dt>控制权</dt><dd id="owner-status">未分配</dd></div><div><dt>前方距离</dt><dd id="distance">-- mm</dd></div><div><dt>避障状态</dt><dd id="obstacle-state">无数据</dd></div><div><dt>避障次数</dt><dd id="avoid-count">0</dd></div><div><dt>输出来源</dt><dd id="output-source">--</dd></div><div><dt>本机手柄</dt><dd id="local-pad">未启用</dd></div></dl>
+            <p class="hint">浏览器控制时，关闭页面或心跳中断会停止会话。</p>
+            <p class="hint">软件急停不能替代物理断电。</p>
+          </section>
+          <section id="pane-connection" class="tab-panel settings" role="tabpanel" aria-labelledby="tab-connection">
+            <div class="panel-heading"><h2>连接与模式</h2><span class="eyebrow">SETUP</span></div>
+            <fieldset id="settings" disabled>
+              <label for="source">视频源</label><input id="source" value="synthetic" placeholder="synthetic / 摄像头索引 / MJPEG URL">
+              <label for="backend">机器人后端</label><select id="backend"><option value="recording">模拟记录 · 无硬件</option><option value="tcp">TonyPi / Unity · TCP</option></select>
+              <div class="host-row"><div><label for="host">机器人地址</label><input id="host" value="127.0.0.1"></div><div><label for="port">端口</label><input id="port" type="number" min="1" max="65535" value="5075"></div></div>
+              <label for="mirror">Unity 镜像地址（可选）</label><input id="mirror" placeholder="IP:5075">
+              <label for="approach">接近模式</label><select id="approach"><option value="normal_then_slow">正常 → 慢速接近</option><option value="normal">正常节拍</option><option value="slow_realtime">慢速实时</option></select>
+              <label for="detector">识别器</label><select id="detector"><option value="lab">LAB 颜色与轮廓</option><option value="custom">端侧 SVM / Hybrid 模型</option></select>
+              <div id="model-field" hidden><label for="model-path">服务端模型路径</label><input id="model-path" placeholder="artifacts/…/profile.json"><small class="muted">支持 .json 配置和 .npz 权重</small></div>
+              <div class="session-options"><label class="checkbox"><input id="obstacle" type="checkbox"> 启用局部避障</label><label class="checkbox"><input id="control-only" type="checkbox"> 仅手动控制，不连接图传</label><label class="checkbox"><input id="local-gamepad" type="checkbox"> 控制权交给香橙派手柄</label></div>
+              <small class="muted">本机手柄模式下使用 B 键武装，网页可监看、停止和急停。</small>
+            </fieldset>
+          </section>
+          <section id="pane-tuning" class="tab-panel tuning-panel" role="tabpanel" aria-labelledby="tab-tuning" hidden>
+            <div class="panel-heading"><h2>参数调优</h2><span class="muted">运行中可调整</span></div>
+            <form id="tuning-form"><div id="tuning-fields"></div><div class="pair"><button id="apply-tuning" class="primary" disabled>应用参数</button><button id="restore-tuning" type="button">恢复配置值</button></div></form>
+          </section>
+          <section id="pane-capture" class="tab-panel capture-panel" role="tabpanel" aria-labelledby="tab-capture" hidden>
+            <div class="panel-heading"><h2>原始帧采集</h2><span class="eyebrow">CAPTURE</span></div>
+            <div class="capture-content"><p class="muted">保存未叠加标注的相机帧，用于训练与复查。</p><button id="capture" class="wide" disabled>开始采集</button><p id="capture-count" class="hint">已保存 0 帧 · 丢弃 0 帧</p><p id="capture-path" class="path"></p></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+    <div class="session-actions"><button id="start" class="primary" disabled>▶ 开始预览</button><button id="arm" disabled>武装自治</button><button id="stop" disabled>停止会话</button><button id="reset" disabled>复位故障</button><span class="command-hint">默认未武装 · 手动指令松开即停</span></div>
+  </main>
+  <dialog id="logs-dialog" aria-labelledby="logs-title"><div class="panel-heading"><h2 id="logs-title">会话日志 <span id="log-count" class="muted">0 条</span></h2><button id="log-close" class="quiet" aria-label="关闭日志">关闭 ×</button></div><pre id="logs" tabindex="0" aria-label="会话日志">等待连接控制服务…</pre></dialog>
+</body>
+</html>

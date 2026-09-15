@@ -13,14 +13,17 @@ dependencies = [
 [project.scripts]
 hcirobot = "hcirobot.cli:main"
 hcirobot-gui = "hcirobot.gui:main"
+hcirobot-web = "hcirobot.web:main"
 
 [project.optional-dependencies]
 gamepad = ["pygame>=2.5"]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "websockets>=13,<17"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "ruff>=0.12",
+    "httpx>=0.27,<1",
 ]
 
 [build-system]

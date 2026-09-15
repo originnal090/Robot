@@ -1,0 +1,25 @@
+[Unit]
+Description=HCIRobot web console (%i)
+After=network-online.target
+Wants=network-online.target
+Conflicts=hcirobot@%i.service
+
+[Service]
+Type=simple
+User=hcirobot
+Group=hcirobot
+WorkingDirectory=/opt/hcirobot
+EnvironmentFile=/etc/hcirobot/web.env
+ExecStartPre=/opt/hcirobot/.venv/bin/python -m hcirobot --config /etc/hcirobot/%i.toml --check-config
+ExecStart=/opt/hcirobot/.venv/bin/python -m hcirobot.web --config /etc/hcirobot/%i.toml --host 0.0.0.0 --port 8090
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=40
+UMask=0077
+
+# A restart only serves the console; sessions and arming always require an operator.
+# For a server-attached pad add --gamepad and the actual input-device group in a drop-in.
+
+[Install]
+WantedBy=multi-user.target

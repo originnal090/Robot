@@ -52,8 +52,9 @@ class StubGamepadMonitor:
 def isolate_gui_from_slow_realtime_devices(monkeypatch):
     """Use fast fakes; native gamepad and 10 FPS pacing have dedicated tests."""
     import hcirobot.gui as gui_module
+    import hcirobot.session_runtime as runtime_module
 
-    real_build_source = gui_module.build_source
+    real_build_source = runtime_module.build_source
 
     def fast_build_source(value: str, video: dict, realtime: bool):
         if value == "synthetic":
@@ -68,7 +69,7 @@ def isolate_gui_from_slow_realtime_devices(monkeypatch):
         return real_build_source(value, video, realtime)
 
     monkeypatch.setattr(gui_module, "GamepadMonitor", StubGamepadMonitor)
-    monkeypatch.setattr(gui_module, "build_source", fast_build_source)
+    monkeypatch.setattr(runtime_module, "build_source", fast_build_source)
 
 
 def drain_non_gamepad_events(app: RobotControlApp) -> list:
@@ -207,7 +208,7 @@ def test_control_only_session_never_opens_video_and_allows_manual(monkeypatch) -
     def fail_if_video_opens(*_args, **_kwargs):
         raise AssertionError("control-only session opened a video source")
 
-    monkeypatch.setattr("hcirobot.gui.build_source", fail_if_video_opens)
+    monkeypatch.setattr("hcirobot.session_runtime.build_source", fail_if_video_opens)
     app.control_only_var.set(True)
     app.backend_var.set("recording")
     app.source_var.set("this-source-must-not-be-opened")
@@ -437,7 +438,7 @@ def test_gui_rejects_missing_edge_model_before_opening_video(tmp_path: Path, mon
         video_opened = True
         raise AssertionError("video must not open before model validation")
 
-    monkeypatch.setattr("hcirobot.gui.build_source", unexpected_video_open)
+    monkeypatch.setattr("hcirobot.session_runtime.build_source", unexpected_video_open)
     app.detector_preset_var.set(_DETECTOR_CUSTOM)
     app._select_detector_preset()
     app.edge_model_path_var.set(str(tmp_path / "missing.npz"))

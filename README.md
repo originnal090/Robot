@@ -1,5 +1,9 @@
 # hcirobot · TonyPi/Unity“搜寻—对准—接近”控制台
 
+Web 控制台：`uv sync --extra web --extra gamepad` 后运行 `uv run hcirobot-web`，
+打开 [本机页面](http://127.0.0.1:8090)。支持实时画面、遥测、手动/手柄控制、
+参数调优和原始帧采集；香橙派部署与 HTTPS 手柄说明见 [Web UI 指南](docs/web-ui.md)。
+
 TonyPi 人形机器人闭环基线：机器人或 Unity 虚拟摄像头画面 → 红球检测 →
 有限状态机决策 → 兼容课程协议的 TCP 命令 → 实体或虚拟机器人动作，并配套
 反应式避障、桌面操作台、真机帧调参和 Unity 客观试验工具。

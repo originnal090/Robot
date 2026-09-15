@@ -1,5 +1,11 @@
 # Orange Pi + TonyPi deployment checklist
 
+For the browser console use `systemd/hcirobot-web@.service` with the `web` extra.
+See [Web UI deployment](../docs/web-ui.md) for the access token, gamepad and TLS setup.
+The web service replaces the CLI controller service for the same robot and never auto-arms.
+For a foreground Orange Pi launch, copy `env/hcirobot-web.env.example` to
+`/etc/hcirobot/web.env`, set the token, then run `./deploy/start_webui.sh`.
+
 These files are templates, not universal image-specific installers. Replace users, paths, IP addresses, Python paths and action-group directories for the actual boards.
 
 ## Support baseline
