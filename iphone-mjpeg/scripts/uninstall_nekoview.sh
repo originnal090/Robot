@@ -59,4 +59,13 @@ case "$result" in
 esac
 
 /var/jb/usr/bin/sh "$MANAGER" restart
+count=0
+until "$python_bin" -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8765/api/services", timeout=1).read()' >/dev/null 2>&1; do
+    count=$((count + 1))
+    if [ "$count" -ge 15 ]; then
+        echo "NekoView did not become ready on 127.0.0.1:8765 after restart" >&2
+        exit 1
+    fi
+    sleep 1
+done
 echo "NekoView reloaded"
