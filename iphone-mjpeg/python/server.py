@@ -8,6 +8,7 @@ import collections
 import json
 import logging
 import os
+import select
 import signal
 import socket
 import stat
@@ -143,7 +144,7 @@ class NativeFrameReceiver:
         server.bind(str(self.socket_path))
         os.chmod(self.socket_path, 0o600)
         server.listen(1)
-        server.settimeout(1.0)
+        server.setblocking(False)
         self._server_socket = server
         self._thread = threading.Thread(target=self._run, name="native-frame-receiver", daemon=True)
         self._thread.start()
@@ -164,9 +165,10 @@ class NativeFrameReceiver:
         assert self._server_socket is not None
         while not self._stopping.is_set():
             try:
+                readable, _, _ = select.select([self._server_socket], [], [], 1.0)
+                if not readable:
+                    continue
                 connection, _ = self._server_socket.accept()
-            except TimeoutError:
-                continue
             except OSError:
                 if not self._stopping.is_set():
                     LOG.exception("Native frame accept failed")
