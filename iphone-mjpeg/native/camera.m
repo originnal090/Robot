@@ -22,6 +22,19 @@ static const NSUInteger kFrameHeaderSize = 24;
 static volatile sig_atomic_t gShouldStop = 0;
 static NSString *gIPMJLogPath = nil;
 
+static AVCaptureVideoOrientation IPMJVideoOrientationForRotation(NSInteger rotation) {
+    switch (((rotation % 360) + 360) % 360) {
+        case 90:
+            return AVCaptureVideoOrientationPortrait;
+        case 180:
+            return AVCaptureVideoOrientationLandscapeLeft;
+        case 270:
+            return AVCaptureVideoOrientationPortraitUpsideDown;
+        default:
+            return AVCaptureVideoOrientationLandscapeRight;
+    }
+}
+
 #if !defined(IPMJ_APP)
 static void IPMJSignalHandler(int signalNumber) {
     (void)signalNumber;
@@ -109,6 +122,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 @property(nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
 @property(nonatomic, strong) dispatch_queue_t sessionQueue;
 @property(nonatomic, strong) dispatch_queue_t captureQueue;
+@property(nonatomic, strong) dispatch_queue_t datasetQueue;
 @property(nonatomic, strong) NSCondition *frameCondition;
 @property(nonatomic, strong, nullable) NSData *latestJPEG;
 @property(nonatomic) uint32_t latestWidth;
@@ -119,12 +133,21 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 @property(nonatomic) uint64_t jpegFailureCount;
 @property(nonatomic) uint64_t droppedFrameCount;
 @property(nonatomic) BOOL running;
+@property(nonatomic, readwrite, getter=isDatasetRecording) BOOL datasetRecording;
+@property(nonatomic, readwrite) NSUInteger datasetSavedCount;
+@property(nonatomic, copy, readwrite, nullable) NSString *datasetDirectory;
+@property(nonatomic) NSUInteger datasetEveryNFrames;
+@property(nonatomic) BOOL datasetWritePending;
 @end
 
 @implementation IPMJCameraProducer
 
 - (AVCaptureSession *)captureSession {
     return self.session;
+}
+
+- (AVCaptureVideoOrientation)videoOrientation {
+    return IPMJVideoOrientationForRotation(self.rotation);
 }
 
 - (instancetype)initWithSocketPath:(NSString *)socketPath
@@ -143,6 +166,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         _rotation = ((rotation % 360) + 360) % 360;
         _sessionQueue = dispatch_queue_create("local.iphonecamera.session", DISPATCH_QUEUE_SERIAL);
         _captureQueue = dispatch_queue_create("local.iphonecamera.capture", DISPATCH_QUEUE_SERIAL);
+        _datasetQueue = dispatch_queue_create("local.iphonecamera.dataset", DISPATCH_QUEUE_SERIAL);
         _frameCondition = [[NSCondition alloc] init];
     }
     return self;
@@ -328,20 +352,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 
     AVCaptureConnection *connection = [output connectionWithMediaType:AVMediaTypeVideo];
     if (connection.isVideoOrientationSupported) {
-        switch (self.rotation) {
-            case 90:
-                connection.videoOrientation = AVCaptureVideoOrientationPortrait;
-                break;
-            case 180:
-                connection.videoOrientation = AVCaptureVideoOrientationLandscapeLeft;
-                break;
-            case 270:
-                connection.videoOrientation = AVCaptureVideoOrientationPortraitUpsideDown;
-                break;
-            default:
-                connection.videoOrientation = AVCaptureVideoOrientationLandscapeRight;
-                break;
-        }
+        connection.videoOrientation = self.videoOrientation;
     }
     if (connection.isVideoMirroringSupported) {
         connection.videoMirrored = NO;
@@ -399,6 +410,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 }
 
 - (void)stop {
+    [self stopDatasetRecording];
     self.running = NO;
     [self.frameCondition lock];
     [self.frameCondition broadcast];
@@ -408,6 +420,135 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         [self.session stopRunning];
     });
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (BOOL)startDatasetRecordingInRootDirectory:(NSString *)rootDirectory
+                                   targetFPS:(NSInteger)targetFPS
+                                       error:(NSError **)error {
+    if (rootDirectory.length == 0 || targetFPS <= 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"local.iphonecamera"
+                                         code:20
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    @"Dataset directory and FPS must be valid"}];
+        }
+        return NO;
+    }
+
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyyMMdd-HHmmss";
+    NSString *suffix = [[[NSUUID UUID] UUIDString] substringToIndex:6];
+    NSString *sessionName = [NSString stringWithFormat:@"session-%@-%@",
+                                                       [formatter stringFromDate:[NSDate date]], suffix];
+    NSString *directory = [rootDirectory stringByAppendingPathComponent:sessionName];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSError *directoryError = nil;
+    if (![manager createDirectoryAtPath:directory
+            withIntermediateDirectories:YES
+                             attributes:nil
+                                  error:&directoryError]) {
+        if (error) {
+            *error = directoryError;
+        }
+        return NO;
+    }
+
+    NSInteger boundedFPS = MAX(1, MIN(targetFPS, self.requestedFPS));
+    NSUInteger everyNFrames = MAX(1, (NSUInteger)llround((double)self.requestedFPS / boundedFPS));
+    NSDictionary *metadata = @{
+        @"schema_version": @1,
+        @"created_at": @([[NSDate date] timeIntervalSince1970]),
+        @"camera": @"rear-wide",
+        @"format": @"jpeg",
+        @"requested_width": @(self.requestedWidth),
+        @"requested_height": @(self.requestedHeight),
+        @"requested_camera_fps": @(self.requestedFPS),
+        @"target_dataset_fps": @(boundedFPS),
+        @"jpeg_quality": @((NSInteger)llround(self.jpegQuality * 100.0)),
+        @"rotation": @(self.rotation)
+    };
+    NSData *metadataData = [NSJSONSerialization dataWithJSONObject:metadata
+                                                           options:NSJSONWritingPrettyPrinted
+                                                             error:error];
+    if (!metadataData || ![metadataData writeToFile:[directory stringByAppendingPathComponent:@"metadata.json"]
+                                            options:NSDataWritingAtomic
+                                              error:error]) {
+        return NO;
+    }
+    [[NSData data] writeToFile:[directory stringByAppendingPathComponent:@"frames.jsonl"]
+                       options:NSDataWritingAtomic
+                         error:nil];
+
+    @synchronized(self) {
+        self.datasetDirectory = directory;
+        self.datasetEveryNFrames = everyNFrames;
+        self.datasetSavedCount = 0;
+        self.datasetWritePending = NO;
+        self.datasetRecording = YES;
+    }
+    IPMJLog(@"Dataset recording started: %@ (target=%ld FPS, every=%lu frames)",
+            directory, (long)boundedFPS, (unsigned long)everyNFrames);
+    return YES;
+}
+
+- (void)stopDatasetRecording {
+    NSString *directory = nil;
+    NSUInteger count = 0;
+    @synchronized(self) {
+        if (!self.datasetRecording) {
+            return;
+        }
+        self.datasetRecording = NO;
+        directory = self.datasetDirectory;
+        count = self.datasetSavedCount;
+    }
+    dispatch_sync(self.datasetQueue, ^{});
+    IPMJLog(@"Dataset recording stopped: %@ (%lu frames)", directory,
+            (unsigned long)count);
+}
+
+- (void)saveDatasetJPEG:(NSData *)jpeg
+               sequence:(uint64_t)sequence
+             timestampNs:(uint64_t)timestampNs
+                  width:(uint32_t)width
+                 height:(uint32_t)height
+              directory:(NSString *)directory {
+    NSString *filename = [NSString stringWithFormat:@"frame-%020llu-%010llu.jpg",
+                                                     timestampNs, sequence];
+    NSString *path = [directory stringByAppendingPathComponent:filename];
+    NSError *writeError = nil;
+    BOOL written = [jpeg writeToFile:path options:NSDataWritingAtomic error:&writeError];
+    if (written) {
+        NSDictionary *record = @{
+            @"file": filename,
+            @"timestamp_ns": @(timestampNs),
+            @"sequence": @(sequence),
+            @"width": @(width),
+            @"height": @(height)
+        };
+        NSData *json = [NSJSONSerialization dataWithJSONObject:record options:0 error:&writeError];
+        NSMutableData *line = json ? [json mutableCopy] : nil;
+        [line appendBytes:"\n" length:1];
+        NSFileHandle *manifest = [NSFileHandle fileHandleForWritingAtPath:
+            [directory stringByAppendingPathComponent:@"frames.jsonl"]];
+        if (manifest && line) {
+            [manifest seekToEndOfFile];
+            [manifest writeData:line];
+            [manifest closeFile];
+        } else {
+            written = NO;
+        }
+    }
+    @synchronized(self) {
+        if (written) {
+            self.datasetSavedCount += 1;
+        }
+        self.datasetWritePending = NO;
+    }
+    if (!written) {
+        IPMJLog(@"Dataset frame write failed: %@", writeError.localizedDescription ?: @"unknown");
+    }
 }
 
 - (NSData *)jpegFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
@@ -508,6 +649,25 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
             self.latestSequence += 1;
             [self.frameCondition signal];
             [self.frameCondition unlock];
+
+            __block BOOL shouldSave = NO;
+            __block NSString *datasetDirectory = nil;
+            @synchronized(self) {
+                if (self.datasetRecording && !self.datasetWritePending &&
+                    self.datasetEveryNFrames > 0 &&
+                    self.latestSequence % self.datasetEveryNFrames == 0) {
+                    self.datasetWritePending = YES;
+                    shouldSave = YES;
+                    datasetDirectory = self.datasetDirectory;
+                }
+            }
+            if (shouldSave && datasetDirectory.length > 0) {
+                uint64_t sequence = self.latestSequence;
+                dispatch_async(self.datasetQueue, ^{
+                    [self saveDatasetJPEG:jpeg sequence:sequence timestampNs:timestampNs
+                                     width:width height:height directory:datasetDirectory];
+                });
+            }
         }
     }
 }

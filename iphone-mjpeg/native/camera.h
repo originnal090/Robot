@@ -9,6 +9,10 @@ FOUNDATION_EXPORT void IPMJLogMessage(NSString *message);
 @interface IPMJCameraProducer : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 
 @property(nonatomic, strong, readonly, nullable) AVCaptureSession *captureSession;
+@property(nonatomic, readonly) AVCaptureVideoOrientation videoOrientation;
+@property(nonatomic, readonly, getter=isDatasetRecording) BOOL datasetRecording;
+@property(nonatomic, readonly) NSUInteger datasetSavedCount;
+@property(nonatomic, copy, readonly, nullable) NSString *datasetDirectory;
 
 - (instancetype)initWithSocketPath:(NSString *)socketPath
                               width:(NSInteger)width
@@ -28,6 +32,10 @@ FOUNDATION_EXPORT void IPMJLogMessage(NSString *message);
 - (instancetype)init NS_UNAVAILABLE;
 - (BOOL)start:(NSError **)error;
 - (void)stop;
+- (BOOL)startDatasetRecordingInRootDirectory:(NSString *)rootDirectory
+                                   targetFPS:(NSInteger)targetFPS
+                                       error:(NSError **)error;
+- (void)stopDatasetRecording;
 
 @end
 

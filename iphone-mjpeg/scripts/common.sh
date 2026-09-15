@@ -16,6 +16,27 @@ find_python() {
     command -v python3 2>/dev/null || return 1
 }
 
+camera_control_url() {
+    bridge_port=${IPHONE_MJPEG_BRIDGE_PORT:-18088}
+    control_url="iphonecamera://start?bridgePort=$bridge_port"
+    if [ "${IPHONE_MJPEG_WIDTH+x}" = x ]; then
+        control_url="$control_url&width=$IPHONE_MJPEG_WIDTH"
+    fi
+    if [ "${IPHONE_MJPEG_HEIGHT+x}" = x ]; then
+        control_url="$control_url&height=$IPHONE_MJPEG_HEIGHT"
+    fi
+    if [ "${IPHONE_MJPEG_FPS+x}" = x ]; then
+        control_url="$control_url&fps=$IPHONE_MJPEG_FPS"
+    fi
+    if [ "${IPHONE_MJPEG_JPEG_QUALITY+x}" = x ]; then
+        control_url="$control_url&quality=$IPHONE_MJPEG_JPEG_QUALITY"
+    fi
+    if [ "${IPHONE_MJPEG_ROTATION+x}" = x ]; then
+        control_url="$control_url&rotation=$IPHONE_MJPEG_ROTATION"
+    fi
+    printf '%s\n' "$control_url"
+}
+
 port_8088_report() {
     found=1
     if command -v lsof >/dev/null 2>&1; then

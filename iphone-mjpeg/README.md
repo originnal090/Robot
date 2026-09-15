@@ -126,6 +126,15 @@ below the measured Tailnet/Wi-Fi throughput without queuing stale frames.
 `1280x720@30`, quality 75 remains available through the environment variables
 when the LAN has enough bandwidth.
 
+App build 7 adds an on-device **Config** panel. It persists resolution
+(640x480 or 1280x720), requested camera FPS (15/24/30), JPEG quality (40–90),
+and output rotation (0/90/180/270) in the app container. Tap **Apply & save**;
+the capture session restarts while the Python/NekoView service stays up. The
+preview uses the same orientation as the encoded output and fills the landscape
+screen. NekoView opens the app with only the loopback bridge port by default,
+so it does not overwrite saved settings. Explicit `IPHONE_MJPEG_*` environment
+variables still override the corresponding saved values.
+
 ## Start, inspect, and stop
 
 The start script first runs `lsof` and `netstat` when available, followed by a
@@ -265,6 +274,37 @@ python tests/opencv_client.py IPHONE_IP
 ```
 
 No TonyPi source or configuration is changed by this project.
+
+## Training-data capture
+
+App build 7 can save training frames without routing raw buffers through
+Python. Open **Config**, choose 1, 2, or 5 capture FPS, and tap **Start capture**.
+Tap **Stop capture** before copying the dataset. Each run creates a unique
+`Documents/Datasets/session-...` directory containing JPEG files,
+`metadata.json`, and a timestamped `frames.jsonl` manifest. Image writes run on
+a separate serial queue with at most one pending frame, so slow storage causes
+sampling skips rather than camera-pipeline backlog. Existing sessions are never
+overwritten.
+
+`UIFileSharingEnabled` and in-place document access are enabled, so datasets
+can be copied from Files/Finder under **iPhone Camera → Datasets**. On the
+jailbroken phone, locate (do not assume) the current container with:
+
+```sh
+find /private/var/mobile/Containers/Data/Application \
+  -path '*/Documents/Datasets' -type d -print
+```
+
+Alternatively, collect directly on a PC or TonyPi without OpenCV or Pillow:
+
+```sh
+python tests/collect_dataset.py IPHONE_IP --output data/iphone-camera --fps 2 --seconds 600
+```
+
+This reads `/video`, samples current frames without building a stale queue, and
+writes the same JPEG-plus-JSONL session layout. It captures images and timing
+metadata only; annotations/labels should be added as a separate training-data
+step.
 
 ## Latency and queue checks
 

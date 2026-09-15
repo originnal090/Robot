@@ -55,7 +55,7 @@ if ! is_project_process "$server_pid"; then
     exit 1
 fi
 
-control_url="iphonecamera://start?width=${IPHONE_MJPEG_WIDTH:-640}&height=${IPHONE_MJPEG_HEIGHT:-480}&fps=${IPHONE_MJPEG_FPS:-30}&quality=${IPHONE_MJPEG_JPEG_QUALITY:-60}&rotation=${IPHONE_MJPEG_ROTATION:-0}&bridgePort=$bridge_port"
+control_url=$(camera_control_url)
 if ! uiopen --url "$control_url"; then
     echo "HTTP server started, but the foreground camera app could not be opened." >&2
     echo "Install native/build/iPhoneCamera.ipa with TrollStore and retry." >&2
