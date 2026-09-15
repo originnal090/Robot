@@ -21,6 +21,9 @@ building a frame queue. Every HTTP stream runs in its own thread.
 
 ## Device environment
 
+The inspected iPhone 7 environment and exact paths are recorded in
+[`ENVIRONMENT.md`](ENVIRONMENT.md).
+
 Run the read-only preflight before building:
 
 ```sh
@@ -29,9 +32,7 @@ chmod +x scripts/*.sh
 ./scripts/inspect_device.sh | tee logs/preflight.log
 ```
 
-The deployment must record the actual iOS/jailbreak layout, Python path,
-compiler, SDK, `ldid`, and current port-8088 owner from this output. The scripts
-look for Python in this order:
+The scripts look for Python in this order:
 
 1. `/usr/bin/python3`
 2. `/var/jb/usr/bin/python3`
