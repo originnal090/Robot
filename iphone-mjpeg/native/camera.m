@@ -65,6 +65,9 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 @property(nonatomic) uint32_t latestHeight;
 @property(nonatomic) uint64_t latestTimestampNs;
 @property(nonatomic) uint64_t latestSequence;
+@property(nonatomic) uint64_t sampleCount;
+@property(nonatomic) uint64_t jpegFailureCount;
+@property(nonatomic) uint64_t droppedFrameCount;
 @property(nonatomic) BOOL running;
 @end
 
@@ -109,10 +112,14 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 }
 
 - (AVCaptureDevice *)rearCamera {
-    for (AVCaptureDevice *device in [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo]) {
-        if (device.position == AVCaptureDevicePositionBack) {
-            return device;
-        }
+    AVCaptureDeviceDiscoverySession *discovery =
+        [AVCaptureDeviceDiscoverySession
+            discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera]
+                                  mediaType:AVMediaTypeVideo
+                                   position:AVCaptureDevicePositionBack];
+    AVCaptureDevice *device = discovery.devices.firstObject;
+    if (device) {
+        return device;
     }
     return [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
 }
@@ -150,7 +157,30 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     CMTime frameDuration = CMTimeMake(1, (int32_t)self.requestedFPS);
     device.activeVideoMinFrameDuration = frameDuration;
     device.activeVideoMaxFrameDuration = frameDuration;
+    CMVideoDimensions activeDimensions =
+        CMVideoFormatDescriptionGetDimensions(bestFormat.formatDescription);
+    NSLog(@"Selected camera format: %dx%d at requested %ld FPS",
+          activeDimensions.width, activeDimensions.height, (long)self.requestedFPS);
     [device unlockForConfiguration];
+}
+
+- (void)sessionDidStartRunning:(NSNotification *)notification {
+    (void)notification;
+    NSLog(@"AVCaptureSession did start running (running=%@)", self.session.isRunning ? @"YES" : @"NO");
+}
+
+- (void)sessionRuntimeError:(NSNotification *)notification {
+    NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
+    NSLog(@"AVCaptureSession runtime error: %@", error ?: @"unknown");
+}
+
+- (void)sessionWasInterrupted:(NSNotification *)notification {
+    NSLog(@"AVCaptureSession was interrupted: %@", notification.userInfo ?: @{});
+}
+
+- (void)sessionInterruptionEnded:(NSNotification *)notification {
+    (void)notification;
+    NSLog(@"AVCaptureSession interruption ended");
 }
 
 - (BOOL)start:(NSError **)error {
@@ -235,6 +265,15 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     [session commitConfiguration];
 
     self.session = session;
+    NSNotificationCenter *notifications = [NSNotificationCenter defaultCenter];
+    [notifications addObserver:self selector:@selector(sessionDidStartRunning:)
+                          name:AVCaptureSessionDidStartRunningNotification object:session];
+    [notifications addObserver:self selector:@selector(sessionRuntimeError:)
+                          name:AVCaptureSessionRuntimeErrorNotification object:session];
+    [notifications addObserver:self selector:@selector(sessionWasInterrupted:)
+                          name:AVCaptureSessionWasInterruptedNotification object:session];
+    [notifications addObserver:self selector:@selector(sessionInterruptionEnded:)
+                          name:AVCaptureSessionInterruptionEndedNotification object:session];
     self.running = YES;
     [NSThread detachNewThreadSelector:@selector(senderMain) toTarget:self withObject:nil];
     [session startRunning];
@@ -250,6 +289,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     [self.frameCondition broadcast];
     [self.frameCondition unlock];
     [self.session stopRunning];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (NSData *)jpegFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
@@ -322,12 +362,24 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     if (!pixelBuffer) {
         return;
     }
+    self.sampleCount += 1;
+    if (self.sampleCount == 1) {
+        NSLog(@"Received first camera sample buffer");
+    }
     uint64_t timestampNs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000000000.0);
     uint32_t width = 0;
     uint32_t height = 0;
     NSData *jpeg = [self jpegFromPixelBuffer:pixelBuffer width:&width height:&height];
     if (!jpeg) {
+        self.jpegFailureCount += 1;
+        if (self.jpegFailureCount == 1 || self.jpegFailureCount % 60 == 0) {
+            NSLog(@"JPEG encoding failed (count=%llu)", self.jpegFailureCount);
+        }
         return;
+    }
+    if (self.latestSequence == 0) {
+        NSLog(@"Encoded first JPEG: %u x %u, %lu bytes", width, height,
+              (unsigned long)jpeg.length);
     }
     [self.frameCondition lock];
     self.latestJPEG = jpeg;
@@ -337,6 +389,18 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     self.latestSequence += 1;
     [self.frameCondition signal];
     [self.frameCondition unlock];
+}
+
+- (void)captureOutput:(AVCaptureOutput *)output
+ didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer
+        fromConnection:(AVCaptureConnection *)connection {
+    (void)output;
+    (void)sampleBuffer;
+    (void)connection;
+    self.droppedFrameCount += 1;
+    if (self.droppedFrameCount == 1 || self.droppedFrameCount % 300 == 0) {
+        NSLog(@"AVFoundation dropped late frame (count=%llu)", self.droppedFrameCount);
+    }
 }
 
 - (int)connectFrameSocket {
