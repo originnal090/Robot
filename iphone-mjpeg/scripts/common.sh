@@ -1,0 +1,55 @@
+#!/bin/sh
+
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+RUN_DIR="$PROJECT_DIR/run"
+LOG_DIR="$PROJECT_DIR/logs"
+PID_FILE="$RUN_DIR/server.pid"
+LOG_FILE="$LOG_DIR/camera.log"
+
+find_python() {
+    for candidate in /usr/bin/python3 /var/jb/usr/bin/python3 /usr/local/bin/python3; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    command -v python3 2>/dev/null || return 1
+}
+
+port_8088_report() {
+    found=1
+    if command -v lsof >/dev/null 2>&1; then
+        output=$(lsof -nP -iTCP:8088 2>/dev/null || true)
+        if [ -n "$output" ]; then
+            printf '%s\n' "$output"
+            found=0
+        fi
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        output=$(netstat -an 2>/dev/null | grep '[.:]8088[[:space:]]' || true)
+        if [ -n "$output" ]; then
+            printf '%s\n' "$output"
+            found=0
+        fi
+    fi
+    return "$found"
+}
+
+read_project_pid() {
+    [ -f "$PID_FILE" ] || return 1
+    pid=$(sed -n '1p' "$PID_FILE" 2>/dev/null)
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$pid"
+}
+
+is_project_process() {
+    pid=$1
+    kill -0 "$pid" 2>/dev/null || return 1
+    command_line=$(ps -p "$pid" -o command= 2>/dev/null || ps ax 2>/dev/null | awk -v wanted="$pid" '$1 == wanted {$1=""; print; exit}')
+    case "$command_line" in
+        *"$PROJECT_DIR/python/server.py"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
