@@ -6,8 +6,18 @@ set -eu
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 if pid=$(read_project_pid 2>/dev/null) && is_project_process "$pid"; then
-    echo "Already running outside this NekoView session (pid $pid)" >&2
-    exit 1
+    # NekoView starts the replacement session immediately after killing the old
+    # one. Give that verified project child a short grace period to finish its
+    # SIGTERM cleanup instead of turning Restart into a transient conflict.
+    count=0
+    while is_project_process "$pid" && [ "$count" -lt 6 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    if is_project_process "$pid"; then
+        echo "Already running outside this NekoView session (pid $pid)" >&2
+        exit 1
+    fi
 fi
 
 if port_8088_report; then
