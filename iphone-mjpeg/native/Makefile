@@ -2,13 +2,15 @@ CC ?= clang
 TARGET ?= iphone-camera
 MIN_IOS ?= 10.0
 SHELL := /var/jb/usr/bin/sh
+APP_BUILD_DIR := build/iPhoneCamera.app
+APP_TARGET := $(APP_BUILD_DIR)/iPhoneCamera
 
 CFLAGS ?= -O2
 CFLAGS += -Wall -Wextra -fobjc-arc -fblocks -miphoneos-version-min=$(MIN_IOS)
 FRAMEWORKS = -framework Foundation -framework AVFoundation -framework CoreMedia \
 	-framework CoreVideo -framework CoreGraphics -framework ImageIO
 
-.PHONY: all clean sign
+.PHONY: all app app-sign clean sign
 
 all: $(TARGET)
 
@@ -21,5 +23,19 @@ sign: $(TARGET)
 	fi
 	ldid -S../entitlements.plist $(TARGET)
 
+app: $(APP_TARGET)
+
+$(APP_TARGET): camera.m camera.h camera_app.m Info.plist
+	mkdir -p $(APP_BUILD_DIR)
+	$(CC) $(CFLAGS) -DIPMJ_APP camera.m camera_app.m -o $@ $(FRAMEWORKS) -framework UIKit
+	cp Info.plist $(APP_BUILD_DIR)/Info.plist
+
+app-sign: $(APP_TARGET)
+	@if ! command -v ldid >/dev/null 2>&1; then \
+		echo "ldid not found; install/provide ldid before signing" >&2; exit 1; \
+	fi
+	ldid -S../app-entitlements.plist $(APP_TARGET)
+
 clean:
 	rm -f $(TARGET)
+	rm -rf build

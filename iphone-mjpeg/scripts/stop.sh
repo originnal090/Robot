@@ -13,6 +13,9 @@ if ! is_project_process "$pid"; then
     exit 1
 fi
 
+if command -v uiopen >/dev/null 2>&1; then
+    uiopen iphonecamera://stop >/dev/null 2>&1 || true
+fi
 kill -TERM "$pid"
 count=0
 while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 10 ]; do

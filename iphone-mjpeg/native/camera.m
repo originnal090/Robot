@@ -493,6 +493,7 @@ static NSInteger IPMJIntegerArgument(NSDictionary<NSString *, NSString *> *argum
     return value ? value.integerValue : fallback;
 }
 
+#if !defined(IPMJ_APP)
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSMutableDictionary<NSString *, NSString *> *arguments = [NSMutableDictionary dictionary];
@@ -539,3 +540,4 @@ int main(int argc, const char *argv[]) {
         return 0;
     }
 }
+#endif
