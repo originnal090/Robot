@@ -164,7 +164,9 @@ class AscendYoloDetector:
         try:
             self._model = AclLiteModel(str(model_path))
         except BaseException:
-            self._resource.destroy()
+            destroy_resource = getattr(self._resource, "destroy", None)
+            if destroy_resource is not None:
+                destroy_resource()
             raise
 
     def update_config(self, config: DetectorConfig) -> None:
@@ -240,6 +242,8 @@ class AscendYoloDetector:
             model, resource = self._model, self._resource
             self._model = self._resource = None
         model.destroy()
-        resource.destroy()
+        destroy_resource = getattr(resource, "destroy", None)
+        if destroy_resource is not None:
+            destroy_resource()
+        del model, resource
         gc.collect()
-

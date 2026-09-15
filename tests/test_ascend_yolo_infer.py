@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from hcirobot.ascend_yolo import AscendYoloDetector
 
 SCRIPT = Path(__file__).parents[1] / "tools" / "ascend_yolo_infer.py"
 SPEC = importlib.util.spec_from_file_location("ascend_yolo_infer", SCRIPT)
@@ -41,3 +44,23 @@ def test_decode_and_nms_restore_original_coordinates() -> None:
             "class_name": "red_ball",
         }
     ]
+
+
+def test_detector_close_accepts_acllite_resource_without_public_destroy() -> None:
+    class Model:
+        destroyed = 0
+
+        def destroy(self):
+            self.destroyed += 1
+
+    detector = object.__new__(AscendYoloDetector)
+    detector._lock = threading.Lock()
+    detector._closed = False
+    detector._model = Model()
+    detector._resource = object()
+    model = detector._model
+
+    detector.close()
+    detector.close()
+
+    assert model.destroyed == 1
