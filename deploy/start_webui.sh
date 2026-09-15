@@ -30,7 +30,9 @@ if [ ! -x "$PYTHON_BIN" ]; then
 fi
 if [ -r "$ASCEND_ENV" ]; then
     # shellcheck disable=SC1090 -- CANN installation location is configurable.
+    set +u
     . "$ASCEND_ENV"
+    set -u
 fi
 PYTHONPATH="$PROJECT_DIR/src:$WEB_DEPS:$ACLLITE_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONPATH
