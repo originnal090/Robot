@@ -108,7 +108,7 @@ export IPHONE_MJPEG_BRIDGE_PORT=18088
 export IPHONE_MJPEG_WIDTH=640
 export IPHONE_MJPEG_HEIGHT=480
 export IPHONE_MJPEG_FPS=30
-export IPHONE_MJPEG_STREAM_FPS=60
+export IPHONE_MJPEG_STREAM_FPS=120
 export IPHONE_MJPEG_JPEG_QUALITY=60
 export IPHONE_MJPEG_ROTATION=0
 ```
@@ -121,7 +121,7 @@ service port.
 AVFoundation video connection, and mirroring is disabled. The default `0`
 means landscape-right. If the mounted phone is sideways or inverted, change
 this one value and restart. The defaults capture at `640x480@30`; the HTTP
-server allows up to 60 FPS so it no longer limits a faster camera producer.
+server allows up to 120 FPS so its pacing overhead does not limit a 60 FPS producer.
 The actual rate remains bounded by AVFoundation capture, JPEG encoding, and
 network throughput, while latest-frame delivery prevents stale-frame queues.
 `1280x720@30`, quality 75 remains available through the environment variables
