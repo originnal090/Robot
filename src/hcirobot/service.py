@@ -34,6 +34,7 @@ ACTIONS = frozenset(
 )
 MANUAL_SECONDS = 0.30
 LEASE_SECONDS = 0.80
+STARTUP_LEASE_SECONDS = 15.0
 
 
 class ControlConflict(ValueError):
@@ -180,6 +181,11 @@ class SessionService(SessionRuntime):
             values["use_edge_model"] = bool(values["edge_model_path"])
             if values["control_only"]:
                 values["obstacle"] = False
+            # Ascend ACL model initialization may briefly hold the interpreter,
+            # preventing the WebSocket heartbeat task from running. A session
+            # always starts unarmed; the first heartbeat restores the normal
+            # sub-second lease before any operator can arm autonomy.
+            self._expires = max(self._expires, self._clock() + STARTUP_LEASE_SECONDS)
             self.model.begin_start(
                 obstacle_enabled=values["obstacle"],
                 control_only=values["control_only"],

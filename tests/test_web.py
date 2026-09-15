@@ -196,6 +196,34 @@ def test_expired_lease_cannot_be_revived_and_old_manual_packet_rejected(service)
     assert service.session_control.current_manual().velocity == 0.4
 
 
+def test_session_start_has_model_initialization_lease_grace(service):
+    now = [0.0]
+    service._clock = lambda: now[0]
+    service._run_session = lambda _values, _control: None
+    client_id = service.connect()
+    lease = service.claim(client_id)
+    service.start_session(
+        client_id,
+        lease,
+        {
+            "source": "synthetic",
+            "backend": "recording",
+            "host": "127.0.0.1",
+            "port": 5075,
+            "mirror": None,
+            "control_only": False,
+            "local_gamepad": False,
+            "obstacle": False,
+            "approach_mode": "normal_then_slow",
+            "edge_model_path": "",
+        },
+    )
+    assert service._expires == 15.0
+    now[0] = 1.0
+    service.heartbeat(client_id, lease)
+    assert service._expires == 1.8
+
+
 def test_invalid_axes_do_not_reach_session(service):
     with (
         TestClient(create_app(service=service)) as client,
