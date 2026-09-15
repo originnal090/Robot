@@ -1,6 +1,7 @@
 # 小型 CNN 检测器可行性实验（2026-09-15）
 
-本轮只在 PC 上训练和评估，没有替换运行时检测器，也没有针对 Orange Pi 做转换或量化。
+模型在 PC 上训练和评估；随后把 YOLO11n 转换并部署到 Orange Pi AI Pro 20T 做了
+独立烟雾测试。现有机器人运行时检测器和服务仍未替换。
 
 ## 数据划分
 
@@ -43,3 +44,25 @@ YOLO11n 的两个失败样本都在 `capture-20260914-213403`：`frame-00058.png
 - 同步记录分辨率、帧率、头部档位、动作命令和 ACK 时刻，便于之后分析低头策略与图传延迟。
 
 训练入口是 `tools/train_yolo_detector.py` 和 `tools/train_cnn_detector.py`。Torch、TorchVision 与 Ultralytics 是 PC 实验依赖，目前没有写入机器人运行依赖。
+
+## Orange Pi AI Pro 20T 实测
+
+板卡实际使用 Ascend 310B1，而不是 RK3588/RKNN。`model.pt` 先导出为固定输入
+`1x3x640x640`、opset 11 的 ONNX，再由板载 CANN 8.0 ATC 转为 6.3 MB 的 OM：
+
+```bash
+atc --model=model.onnx --framework=5 --output=yolo11n_640 \
+  --input_format=NCHW --input_shape="images:1,3,640,640" \
+  --soc_version=Ascend310B1
+```
+
+正样本 `capture-20260914-093059/frame-00001.png` 的板端输出框为
+`[359.0, 166.375, 384.0, 191.625]`、置信度 `0.953125`，与 PC 模型输出及真值
+`[362, 164, 384, 190]` 一致。预热后 10 次纯 NPU 推理平均 8.58 ms，范围
+8.384–8.772 ms。负样本 `capture-20260914-091540/frame-00429.png` 未产生检测，3 次
+平均 8.70 ms。
+
+可复用入口为 `tools/ascend_yolo_infer.py`，板端隔离部署说明见
+`deploy/ascend/README.md`。依赖解包在 `~/hcirobot-ascend/pydeps`，没有安装系统包、
+改动服务或替换现有运行时。板卡 `npu-smi` 当前仍报告 LPM 电流读取告警
+`80E3A203`，但本次模型加载与推理均成功；未尝试重启驱动或服务。

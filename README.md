@@ -211,9 +211,11 @@ TCP 断开、DIST 过期；窄通道、U 型障碍和死胡同作为当前能力
 
 ## Orange Pi / TonyPi 部署准备
 
-两次 2026-09-14 采集的 LAB 调参、2.35 KB 实验 SVM、训练复现和板端离线基准，
-见 [端侧红球识别说明](docs/edge-recognition.md)。CLI 可用 `--edge-model PATH`
-选择学习模型；默认仍走 LAB。OrangePi 实板性能尚未测量。
+2026-09-14/15 采集的 LAB 调参、2.35 KB 实验 SVM、训练复现和板端离线基准，
+见 [端侧红球识别说明](docs/edge-recognition.md)及
+[新增采集优化报告](docs/edge-capture-update-20260915.md)。GUI 的“路线均衡 Hybrid（推荐）”
+已指向 A146 + 新增模糊/背景样本的 v2；CLI 可用 `--edge-model PATH` 显式选择。
+默认仍走 LAB，OrangePi 实板性能尚未测量。
 
 仓库提供了可替换路径和用户名的模板：
 

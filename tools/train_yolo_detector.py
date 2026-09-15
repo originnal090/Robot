@@ -11,6 +11,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
@@ -111,18 +112,195 @@ def best_epoch(csv_path: Path) -> tuple[int, dict]:
     }
 
 
+def enable_ascend_npu_compatibility() -> None:
+    """Enable the experimental Ascend 310B1 YOLO training probe.
+
+    Ascend 310B1 lacks a few operators used by Ultralytics' no-grad target
+    preparation and task-aligned assigner.  These tensors describe targets;
+    they are not part of autograd, so doing only this small bookkeeping step on
+    CPU preserves their intended values. CANN 8.0 on the tested board still
+    lacks the classification-loss backward path, so this is diagnostic support,
+    not a production-ready training backend.
+    """
+    import torch
+    import torch.nn.functional as torch_functional
+    import torch_npu
+    import ultralytics.engine.trainer as trainer_module
+    import ultralytics.utils.loss as loss_module
+    from ultralytics.utils.loss import DFLoss, v8DetectionLoss
+    from ultralytics.utils.ops import xywh2xyxy
+    from ultralytics.utils.tal import TaskAlignedAssigner
+
+    # Ultralytics' generic AMP probe uses an FP32 MaxPool path unsupported by
+    # 310B1 even though the actual FP16 training path is supported.
+    trainer_module.check_amp = lambda model: True
+
+    class StaticGradScaler:
+        """AMP-compatible scaler that avoids unsupported NPU overflow-status ops."""
+
+        def __init__(self, *args, **kwargs):
+            self._enabled = bool(kwargs.get("enabled", True))
+
+        def scale(self, value):
+            return value
+
+        def unscale_(self, optimizer):
+            return None
+
+        def step(self, optimizer, *args, **kwargs):
+            return optimizer.step(*args, **kwargs)
+
+        def update(self, new_scale=None):
+            return None
+
+        def state_dict(self):
+            return {"enabled": self._enabled, "static_scale": 1.0}
+
+        def load_state_dict(self, state_dict):
+            return None
+
+        def get_scale(self):
+            return 1.0
+
+        def is_enabled(self):
+            return self._enabled
+
+    # The 310B1 runtime cannot compile NPUClearFloatStatusV2, which the
+    # dynamic GradScaler uses for overflow tracking. Autocast remains enabled;
+    # this replaces only dynamic loss scaling for this process.
+    torch_npu.npu.amp.GradScaler = StaticGradScaler
+
+    def cpu_preprocess(self, targets, batch_size, scale_tensor):
+        target_device = self.device
+        targets_cpu = targets.detach().cpu()
+        nl, ne = targets_cpu.shape
+        if nl == 0:
+            return torch.zeros(batch_size, 0, ne - 1, device=target_device)
+
+        batch_idx = targets_cpu[:, 0].long()
+        _, counts = batch_idx.unique(return_counts=True)
+        out = torch.zeros(batch_size, int(counts.max()), ne - 1)
+        offsets = torch.zeros(batch_size + 1, dtype=torch.long)
+        offsets.scatter_add_(0, batch_idx + 1, torch.ones_like(batch_idx))
+        offsets = offsets.cumsum(0)
+        within_idx = torch.arange(nl) - offsets[batch_idx]
+        out[batch_idx, within_idx] = targets_cpu[:, 1:]
+        out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor.detach().cpu()))
+        return out.to(target_device)
+
+    original_assign = TaskAlignedAssigner.forward
+
+    def cpu_assign(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
+        target_device = pd_scores.device
+        result = original_assign(
+            self,
+            pd_scores.detach().float().cpu(),
+            pd_bboxes.detach().float().cpu(),
+            anc_points.detach().float().cpu(),
+            gt_labels.detach().cpu(),
+            gt_bboxes.detach().float().cpu(),
+            mask_gt.detach().cpu(),
+        )
+        target_labels, target_bboxes, target_scores, fg_mask, target_gt_idx = result
+        return (
+            target_labels.to(target_device),
+            target_bboxes.to(device=target_device, dtype=pd_bboxes.dtype),
+            target_scores.to(device=target_device, dtype=pd_scores.dtype),
+            fg_mask.to(target_device),
+            target_gt_idx.to(target_device),
+        )
+
+    def npu_dfl_loss(self, pred_dist, target):
+        """Equivalent DFL without the 310B1-incompatible GatherElements kernel."""
+        target_cpu = target.detach().float().cpu().clamp_(0, self.reg_max - 1 - 0.01)
+        target_left = target_cpu.long()
+        target_right = target_left + 1
+        weight_left = (target_right - target_cpu).to(device=pred_dist.device, dtype=pred_dist.dtype)
+        weight_right = 1 - weight_left
+        left_mask = torch_functional.one_hot(
+            target_left.reshape(-1), num_classes=self.reg_max
+        ).to(device=pred_dist.device, dtype=pred_dist.dtype)
+        right_mask = torch_functional.one_hot(
+            target_right.reshape(-1), num_classes=self.reg_max
+        ).to(device=pred_dist.device, dtype=pred_dist.dtype)
+        log_probabilities = torch_functional.log_softmax(pred_dist, dim=1)
+        left_logp = (log_probabilities * left_mask).sum(1).view(target_left.shape)
+        right_logp = (log_probabilities * right_mask).sum(1).view(target_left.shape)
+        return -(left_logp * weight_left + right_logp * weight_right).mean(-1, keepdim=True)
+
+    def npu_bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7):
+        """Ultralytics bbox IoU without Minimum/Maximum backward SelectV2."""
+
+        def minimum(left, right):
+            return (left + right - (left - right).abs()) * 0.5
+
+        def maximum(left, right):
+            return (left + right + (left - right).abs()) * 0.5
+
+        if xywh:
+            (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+            w1_half, h1_half, w2_half, h2_half = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+            b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_half, x1 + w1_half, y1 - h1_half, y1 + h1_half
+            b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_half, x2 + w2_half, y2 - h2_half, y2 + h2_half
+        else:
+            b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+            b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+            w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+            w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+        inter_width = torch_functional.relu(minimum(b1_x2, b2_x2) - maximum(b1_x1, b2_x1))
+        inter_height = torch_functional.relu(minimum(b1_y2, b2_y2) - maximum(b1_y1, b2_y1))
+        intersection = inter_width * inter_height
+        union = w1 * h1 + w2 * h2 - intersection + eps
+        iou = intersection / union
+        if not (CIoU or DIoU or GIoU):
+            return iou
+
+        convex_width = maximum(b1_x2, b2_x2) - minimum(b1_x1, b2_x1)
+        convex_height = maximum(b1_y2, b2_y2) - minimum(b1_y1, b2_y1)
+        if CIoU or DIoU:
+            convex_diagonal = convex_width.pow(2) + convex_height.pow(2) + eps
+            center_distance = (
+                (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2)
+                + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)
+            ) / 4
+            if CIoU:
+                aspect = (4 / math.pi**2) * ((w2 / h2).atan() - (w1 / h1).atan()).pow(2)
+                with torch.no_grad():
+                    alpha = aspect / (1 - iou + aspect + eps)
+                return iou - (center_distance / convex_diagonal + aspect * alpha)
+            return iou - center_distance / convex_diagonal
+        convex_area = convex_width * convex_height + eps
+        return iou - (convex_area - union) / convex_area
+
+    v8DetectionLoss.preprocess = cpu_preprocess
+    TaskAlignedAssigner.forward = cpu_assign
+    DFLoss.__call__ = npu_dfl_loss
+    loss_module.bbox_iou = npu_bbox_iou
+
+
 def train(
     model_path: str | Path, data: Path, project: Path, name: str, args, epochs: int, validate: bool
 ):
     from ultralytics import YOLO
 
+    if args.device == "npu":
+        import torch
+        import torch_npu  # noqa: F401  # registers the private-use NPU backend
+
+        torch.npu.set_device(0)
+        torch.npu.set_compile_mode(jit_compile=False)
+        enable_ascend_npu_compatibility()
+        device = "npu:0"
+    else:
+        device = 0 if args.device == "cuda" else args.device
     model = YOLO(model_path)
     model.train(
         data=str(data),
         epochs=epochs,
         imgsz=args.imgsz,
         batch=args.batch_size,
-        device=0 if args.device == "cuda" else args.device,
+        device=device,
         workers=0,
         optimizer="AdamW",
         lr0=args.lr,
@@ -147,6 +325,7 @@ def train(
         deterministic=True,
         single_cls=True,
         amp=True,
+        freeze=args.freeze_layers or None,
         val=validate,
         plots=False,
         save=True,
@@ -166,6 +345,13 @@ def main() -> None:
         type=Path,
         default=Path("data/red-ball-route-20260914/annotations-balanced.json"),
     )
+    parser.add_argument(
+        "--extra-annotations",
+        type=Path,
+        action="append",
+        default=[],
+        help="additional training annotations to merge before split validation",
+    )
     parser.add_argument("--captures-root", type=Path, default=Path("artifacts/captures"))
     parser.add_argument(
         "--output", type=Path, default=Path("artifacts/cnn-route-20260915/yolo11n-640-v1")
@@ -179,13 +365,32 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--seed", type=int, default=20260915)
-    parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--device", choices=("cuda", "cpu", "npu"), default="cuda")
+    parser.add_argument(
+        "--freeze-layers",
+        type=int,
+        default=0,
+        help="freeze the first N model layers; use 11 on Ascend 310B1 to avoid C2PSA backward",
+    )
+    parser.add_argument("--run-id", default="yolo11n-640-red-ball-v1")
     args = parser.parse_args()
     if args.output.exists() and any(args.output.iterdir()):
         parser.error("output is not empty; choose a new directory")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    rows = load_rows(args.annotations, args.captures_root)
+    annotation_paths = [args.annotations, *args.extra_annotations]
+    if args.extra_annotations:
+        merged_rows = []
+        for annotation_path in annotation_paths:
+            values = json.loads(annotation_path.read_text(encoding="utf-8"))
+            if not isinstance(values, list):
+                raise TypeError(f"annotations must be a list: {annotation_path}")
+            merged_rows.extend(values)
+        merged_annotations = args.output / "annotations-merged.json"
+        merged_annotations.write_text(json.dumps(merged_rows, indent=2), encoding="utf-8")
+        rows = load_rows(merged_annotations, args.captures_root)
+    else:
+        rows = load_rows(args.annotations, args.captures_root)
     selection_train, val_rows = split_selection_rows(rows, args.val_capture)
     official_train = [row for row in rows if row["split"] == "train"]
     test_rows = [row for row in rows if row["split"] == "test"]
@@ -222,15 +427,18 @@ def main() -> None:
     shutil.copy2(final_weights, final_path)
     parameters = sum(parameter.numel() for parameter in final_model.model.parameters())
     report = {
-        "id": "yolo11n-640-red-ball-v1",
+        "id": args.run_id,
         "purpose": "offline PC feasibility experiment; runtime detector unchanged",
         "architecture": "Ultralytics YOLO11n",
         "initialization": args.base_model,
         "parameters": parameters,
         "model_bytes": final_path.stat().st_size,
         "model_sha256": hashlib.sha256(final_path.read_bytes()).hexdigest(),
-        "annotations": str(args.annotations),
-        "annotations_sha256": hashlib.sha256(args.annotations.read_bytes()).hexdigest(),
+        "annotations": [str(path) for path in annotation_paths],
+        "annotations_sha256": {
+            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in annotation_paths
+        },
         "counts": {
             "selection_train": len(selection_train),
             "validation": len(val_rows),
@@ -247,6 +455,7 @@ def main() -> None:
         "hyperparameters": vars(args)
         | {
             "annotations": str(args.annotations),
+            "extra_annotations": [str(path) for path in args.extra_annotations],
             "captures_root": str(args.captures_root),
             "output": str(args.output),
         },
@@ -270,7 +479,7 @@ def main() -> None:
         },
         "elapsed_minutes": (time.time() - started) / 60,
         "limitations": [
-            "Only 138 sparse labels from one room and two recording periods.",
+            f"Only {len(rows)} sparse labels from one room and a few recording periods.",
             "Validation includes one capture also used for separate official-test background frames.",
             "PC CUDA latency does not predict Ascend NPU latency.",
             "Ultralytics is an experiment dependency and is not added to the robot runtime.",

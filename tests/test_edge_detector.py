@@ -122,6 +122,17 @@ def test_linear_svm_fits_known_separable_data_and_exports_signed_margin(
     assert report["feature_version"] == version
 
 
+def test_linear_svm_rejects_non_positive_epoch_limit(tmp_path: Path) -> None:
+    functions = runpy.run_path(str(Path(__file__).parents[1] / "tools/train_edge_detector.py"))
+    with pytest.raises(ValueError, match="max_epochs must be positive"):
+        functions["fit_model"](
+            np.asarray([[-1], [1]], np.float32),
+            np.asarray([-1, 1], np.int32),
+            tmp_path / "trained.npz",
+            max_epochs=0,
+        )
+
+
 def test_training_rejects_identical_images_across_splits(tmp_path: Path) -> None:
     import json
 

@@ -28,8 +28,8 @@ from hcirobot.edge_detector import (
 )
 
 
-def load_samples(path: Path, root: Path) -> list[dict]:
-    rows = json.loads(path.read_text(encoding="utf-8"))
+def load_sample_rows(rows: list[dict], root: Path) -> list[dict]:
+    """Load and validate already-decoded annotation rows."""
     samples = []
     for row in rows:
         if row["split"] not in ("train", "test"):
@@ -56,6 +56,10 @@ def load_samples(path: Path, root: Path) -> list[dict]:
     if train_hashes & test_hashes:
         raise ValueError("identical image content appears in both train and test splits")
     return samples
+
+
+def load_samples(path: Path, root: Path) -> list[dict]:
+    return load_sample_rows(json.loads(path.read_text(encoding="utf-8")), root)
 
 
 def training_data(samples: list[dict], feature_version: int = FEATURE_VERSION
@@ -101,9 +105,11 @@ def training_data(samples: list[dict], feature_version: int = FEATURE_VERSION
 
 
 def fit_model(x: np.ndarray, y: np.ndarray, path: Path,
-              feature_version: int = FEATURE_VERSION) -> dict:
+              feature_version: int = FEATURE_VERSION, max_epochs: int = 1000) -> dict:
     if path.exists():
         raise FileExistsError(f'refusing to overwrite model version: {path}')
+    if max_epochs < 1:
+        raise ValueError("max_epochs must be positive")
     FeatureExtractor(version=feature_version)  # reject unsupported export versions before fitting
     # OpenCV 5's minimal wheels can omit cv2.ml as well as HOGDescriptor.
     # Dual coordinate descent for L2-regularized squared-hinge linear SVM:
@@ -115,7 +121,7 @@ def fit_model(x: np.ndarray, y: np.ndarray, path: Path,
     solution = np.zeros(extended.shape[1])
     rng = np.random.default_rng(20260914)
     max_gradient = float("inf")
-    for epoch in range(1000):
+    for epoch in range(max_epochs):
         max_gradient = 0.0
         for i in rng.permutation(len(y)):
             gradient = y[i] * np.dot(solution, extended[i]) - 1 + alpha[i]/(2*costs[i])
@@ -189,6 +195,8 @@ def main() -> None:
     parser.add_argument("--feature-version", type=int, choices=SUPPORTED_FEATURE_VERSIONS,
                         default=FEATURE_VERSION,
                         help="1: original 406 features; 2: remove 18 quantiles, keep 388 features")
+    parser.add_argument("--max-epochs", type=int, default=1000,
+                        help="maximum dual-coordinate-descent passes (default: 1000)")
     args = parser.parse_args()
     cv2.setNumThreads(1)
     cv2.setRNGSeed(20260914)
@@ -198,7 +206,8 @@ def main() -> None:
     samples = load_samples(args.annotations, args.captures_root)
     x, y, crop_counts = training_data(samples, feature_version=args.feature_version)
     path = args.output / "red_ball_svm.npz"
-    fitting = fit_model(x, y, path, feature_version=args.feature_version)
+    fitting = fit_model(x, y, path, feature_version=args.feature_version,
+                        max_epochs=args.max_epochs)
     detector = EdgeBallDetector(path, DetectorConfig())
     detector.process(samples[0]["image"])  # warm up; evaluate bypasses temporal state
     train_hashes = {row["sha256"] for row in samples if row["split"] == "train"}

@@ -68,8 +68,8 @@ _DETECTOR_CUSTOM = "自定义模型文件…"
 _DETECTOR_PRESETS: dict[str, tuple[Path | None, str]] = {
     _DETECTOR_LAB: (None, "颜色与轮廓基线；当前默认，速度最快"),
     _DETECTOR_ROUTE_BALANCED: (
-        Path("artifacts/edge-route-20260914/route-balanced-v1/profile.json"),
-        "当前路线测试最好；Hybrid ROI + 均衡困难负样本，需现场验证",
+        Path("artifacts/edge-route-20260915/route-balanced-a146-v2/profile.json"),
+        "新采集优化版；A146 + 新增模糊/背景样本，旧版可回退",
     ),
     _DETECTOR_ROUTE_AUGMENTED: (
         Path("artifacts/edge-route-20260914/route-aug-v1/profile.json"),

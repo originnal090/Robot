@@ -107,7 +107,7 @@ def test_tk_window_constructs_and_defaults_to_disarmed() -> None:
         assert app.edge_model_var.get()
         selected_profile = Path(app.edge_model_path_var.get())
         assert selected_profile.name == "profile.json"
-        assert selected_profile.parent.name == "route-balanced-v1"
+        assert selected_profile.parent.name == "route-balanced-a146-v2"
         assert app.edge_model_entry.instate(["disabled"])
         app.detector_preset_var.set(_DETECTOR_CUSTOM)
         app._select_detector_preset()
