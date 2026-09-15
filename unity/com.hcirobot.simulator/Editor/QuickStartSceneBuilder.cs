@@ -7,6 +7,8 @@ namespace HciRobot.Simulator.Editor
 {
     public static class QuickStartSceneBuilder
     {
+        private const string BindCameraMenu = "HCIRobot/Bind Selected Camera (No Target)";
+
         [MenuItem("HCIRobot/Build Quick Start Scene")]
         public static void BuildQuickStartScene()
         {
@@ -39,6 +41,177 @@ namespace HciRobot.Simulator.Editor
             Selection.activeGameObject = robot;
             EditorSceneManager.MarkSceneDirty(scene);
             Debug.Log("HCIRobot quick-start scene created. Save it before entering Play mode.");
+        }
+
+        [MenuItem(BindCameraMenu)]
+        public static void BindSelectedCameraWithoutTarget()
+        {
+            Camera camera = FindCameraInSelection();
+            if (!BindExistingCamera(camera, out string error))
+            {
+                EditorUtility.DisplayDialog("HCIRobot camera binding", error, "OK");
+                return;
+            }
+
+            Selection.activeGameObject = camera.GetComponentInParent<Rigidbody>().gameObject;
+            Debug.Log(
+                $"HCIRobot bound to existing camera '{camera.name}'. The current scene was preserved and no target ball was created.",
+                camera);
+        }
+
+        [MenuItem(BindCameraMenu, true)]
+        private static bool ValidateBindSelectedCameraWithoutTarget()
+        {
+            return FindCameraInSelection() != null;
+        }
+
+        /// <summary>
+        /// Adds the HCIRobot protocol, video, distance and status components around an
+        /// existing scene camera. The nearest parent Rigidbody is treated as the moving
+        /// character root. This method never creates a target or replaces the scene.
+        /// </summary>
+        public static bool BindExistingCamera(Camera camera, out string error)
+        {
+            if (camera == null)
+            {
+                error = "Select the firefighter Camera (or its parent) in the Hierarchy first.";
+                return false;
+            }
+
+            Rigidbody body = camera.GetComponentInParent<Rigidbody>();
+            if (body == null)
+            {
+                error = "The selected Camera needs a Rigidbody somewhere in its parent hierarchy. Add one to the firefighter root, then try again.";
+                return false;
+            }
+
+            GameObject robot = body.gameObject;
+            VirtualRobotTcpServer otherTcp = FindOtherComponent<VirtualRobotTcpServer>(robot);
+            if (otherTcp != null)
+            {
+                error = $"Another VirtualRobotTcpServer already exists on '{otherTcp.gameObject.name}'. Remove or disable that binding before binding this firefighter.";
+                return false;
+            }
+
+            MjpegCameraServer otherMjpeg = FindOtherComponent<MjpegCameraServer>(camera.gameObject);
+            if (otherMjpeg != null)
+            {
+                error = $"Another MjpegCameraServer already exists on '{otherMjpeg.gameObject.name}'. Remove or disable that binding before binding this Camera.";
+                return false;
+            }
+
+            TonyPiMotionDriver driver = GetOrAddComponent<TonyPiMotionDriver>(robot, out bool driverAdded);
+            AssignObject(driver, "body", body);
+            AssignObject(driver, "headPitchTransform", camera.transform);
+            if (driverAdded)
+            {
+                SetSerializedBool(driver, "continuousMotion", true);
+                SetSerializedFloat(driver, "maximumTurnDegreesPerSecond", 30f);
+                SetSerializedFloat(driver, "maximumForwardSpeed", 0.8f);
+                SetSerializedFloat(driver, "deadzone", 0.05f);
+
+                float centerPitch = Mathf.DeltaAngle(0f, camera.transform.localEulerAngles.x);
+                SetSerializedFloat(driver, "headCenterPitchDegrees", centerPitch);
+                SetSerializedFloat(driver, "headDownPitchDegrees", centerPitch + 20f);
+                SetSerializedFloat(driver, "headUpPitchDegrees", centerPitch - 20f);
+            }
+
+            VirtualRobotTcpServer tcp = GetOrAddComponent<VirtualRobotTcpServer>(robot, out bool tcpAdded);
+            AssignObject(tcp, "motionDriver", driver);
+            if (tcpAdded)
+            {
+                SetSerializedBool(tcp, "continuousMotion", true);
+                SetSerializedFloat(tcp, "deadzone", 0.05f);
+            }
+
+            MjpegCameraServer mjpeg = GetOrAddComponent<MjpegCameraServer>(camera.gameObject, out bool mjpegAdded);
+            AssignObject(mjpeg, "sourceCamera", camera);
+            if (mjpegAdded)
+            {
+                SetSerializedInt(mjpeg, "framesPerSecond", 25);
+            }
+
+            ForwardDistanceSensor distance = robot.GetComponentInChildren<ForwardDistanceSensor>(true);
+            if (distance == null)
+            {
+                GameObject sensor = new GameObject("HCIRobot Forward Distance Sensor");
+                Undo.RegisterCreatedObjectUndo(sensor, "Bind HCIRobot camera");
+                sensor.transform.SetParent(robot.transform, true);
+                sensor.transform.position = camera.transform.position;
+                // Obstacle ranging follows body heading and is not tilted when the
+                // camera looks down at a nearby ball.
+                sensor.transform.rotation = robot.transform.rotation;
+                distance = Undo.AddComponent<ForwardDistanceSensor>(sensor);
+            }
+            AssignObject(distance, "tcpServer", tcp);
+
+            ConfigureSceneServices(driver);
+
+            EditorSceneManager.MarkSceneDirty(camera.gameObject.scene);
+            error = null;
+            return true;
+        }
+
+        private static Camera FindCameraInSelection()
+        {
+            GameObject selected = Selection.activeGameObject;
+            if (selected == null)
+            {
+                return null;
+            }
+            return selected.GetComponent<Camera>() ?? selected.GetComponentInChildren<Camera>(true);
+        }
+
+        private static T FindOtherComponent<T>(GameObject expectedOwner) where T : Component
+        {
+            T[] components = Object.FindObjectsOfType<T>(true);
+            foreach (T component in components)
+            {
+                if (component.gameObject != expectedOwner)
+                {
+                    return component;
+                }
+            }
+            return null;
+        }
+
+        private static T GetOrAddComponent<T>(GameObject owner, out bool added) where T : Component
+        {
+            T component = owner.GetComponent<T>();
+            added = component == null;
+            return component ?? Undo.AddComponent<T>(owner);
+        }
+
+        private static void ConfigureSceneServices(TonyPiMotionDriver driver)
+        {
+            AutonomyStatusUdpReceiver status = Object.FindObjectOfType<AutonomyStatusUdpReceiver>(true);
+            AutonomyStatusHud hud = Object.FindObjectOfType<AutonomyStatusHud>(true);
+            KeepRunningInBackground keepRunning = Object.FindObjectOfType<KeepRunningInBackground>(true);
+
+            GameObject services = status != null ? status.gameObject
+                : hud != null ? hud.gameObject
+                : keepRunning != null ? keepRunning.gameObject
+                : null;
+            if (services == null)
+            {
+                services = new GameObject("HCIRobot Services");
+                Undo.RegisterCreatedObjectUndo(services, "Bind HCIRobot camera");
+            }
+
+            if (keepRunning == null)
+            {
+                keepRunning = Undo.AddComponent<KeepRunningInBackground>(services);
+            }
+            if (status == null)
+            {
+                status = Undo.AddComponent<AutonomyStatusUdpReceiver>(services);
+            }
+            if (hud == null)
+            {
+                hud = Undo.AddComponent<AutonomyStatusHud>(services);
+            }
+            AssignObject(hud, "statusReceiver", status);
+            AssignObject(hud, "motionDriver", driver);
         }
 
         private static GameObject CreateRobot()
@@ -195,12 +368,13 @@ namespace HciRobot.Simulator.Editor
 
         private static void AssignObject(Object target, string propertyName, Object value)
         {
+            Undo.RecordObject(target, "Configure HCIRobot component");
             var serialized = new SerializedObject(target);
             SerializedProperty property = serialized.FindProperty(propertyName);
             if (property != null)
             {
                 property.objectReferenceValue = value;
-                serialized.ApplyModifiedPropertiesWithoutUndo();
+                serialized.ApplyModifiedProperties();
             }
         }
 

@@ -31,6 +31,19 @@
 
 Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全局看机器人追球）、右上角画中画的机器人第一视角相机（MJPEG 同源，捕获时临时切到 RenderTexture，不影响画面）、左上角 `AutonomyStatusHud` 状态面板。
 
+## 绑定现有消防员 Camera（不生成红球）
+
+`Build Quick Start Scene` 会清空当前场景并生成一套完整演示物体，其中包含红球。已有消防员场景不要执行它：
+
+1. 确认消防员运动根节点带有 `Rigidbody`，Camera 位于这个节点的子层级中。
+2. 在 Hierarchy 选中消防员的 Camera，或选中包含该 Camera 的父节点。
+3. 执行 `HCIRobot > Bind Selected Camera (No Target)`。
+4. 保存场景并进入 Play Mode。
+
+该命令保留当前场景，不创建红球、地面、障碍、灯光或观察相机，也不添加依赖目标球的 `SimulationTrialRecorder`。它在 Camera 最近的父级 `Rigidbody` 上添加/复用 `TonyPiMotionDriver` 和 `VirtualRobotTcpServer`，把抬头/回正/低头绑定到所选 Camera；在 Camera 上添加/复用 `MjpegCameraServer`；在 Camera 高度建立一个保持水平朝前的测距点；并添加状态 UDP、HUD 和后台运行服务。首次添加运动组件时，Camera 当前局部俯仰角会作为“回正”，上下各偏移 20 度。
+
+如果场景中已有另一套 TCP 或 MJPEG 服务，绑定命令会提示先处理端口冲突，而不会创建第二套监听器。组件已存在时可重复执行绑定，命令会复用组件，并保留已有速度参数。
+
 ## 组件
 
 | 组件 | 用途 | 默认值/行为 |
@@ -69,7 +82,7 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 - `session_id` 内严格递增 seq 与新 session 切换；
 - HUD 文本格式化：状态/目标/输出/动作/障碍行、STALE、estop/fault/termination。
 
-该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 51 项 EditMode 测试。
+该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 52 项 EditMode 测试。
 
 ## 安全与限制
 

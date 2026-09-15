@@ -2,7 +2,8 @@
   "name": "HciRobot.Simulator.EditorTests",
   "rootNamespace": "HciRobot.Simulator.Tests",
   "references": [
-    "HciRobot.Simulator.Runtime"
+    "HciRobot.Simulator.Runtime",
+    "HciRobot.Simulator.Editor"
   ],
   "includePlatforms": [
     "Editor"
