@@ -305,7 +305,7 @@ class MJPEGServer(ThreadingHTTPServer):
         address: tuple[str, int],
         frames: FrameStore,
         stream_fps: int = 120,
-        send_buffer_bytes: int = 32 * 1024,
+        send_buffer_bytes: int = 64 * 1024,
     ) -> None:
         self.frames = frames
         self.stream_fps = stream_fps

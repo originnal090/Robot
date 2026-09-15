@@ -21,7 +21,7 @@ class Config:
     height: int = _integer("IPHONE_MJPEG_HEIGHT", 480)
     fps: int = _integer("IPHONE_MJPEG_FPS", 30)
     stream_fps: int = _integer("IPHONE_MJPEG_STREAM_FPS", 120)
-    send_buffer_bytes: int = _integer("IPHONE_MJPEG_SEND_BUFFER", 32 * 1024)
+    send_buffer_bytes: int = _integer("IPHONE_MJPEG_SEND_BUFFER", 64 * 1024)
     jpeg_quality: int = _integer("IPHONE_MJPEG_JPEG_QUALITY", 60)
     rotation: int = _integer("IPHONE_MJPEG_ROTATION", 0)
     stale_after_seconds: float = float(os.environ.get("IPHONE_MJPEG_STALE_AFTER", "2.0"))
