@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import socket
+import struct
 import sys
 import threading
 import time
@@ -19,6 +21,7 @@ SPEC.loader.exec_module(server_module)
 
 FrameStore = server_module.FrameStore
 MJPEGServer = server_module.MJPEGServer
+NativeFrameReceiver = server_module.NativeFrameReceiver
 
 JPEG_ONE = b"\xff\xd8one\xff\xd9"
 JPEG_TWO = b"\xff\xd8two\xff\xd9"
@@ -76,6 +79,20 @@ def test_frame_store_keeps_only_latest_frame():
     assert second.sequence == first.sequence + 1
     assert frames.latest() == second
     assert frames.wait_for_new(first.sequence, 0.01) == second
+
+
+def test_native_receiver_accepts_framed_jpeg(tmp_path):
+    frames = FrameStore()
+    socket_path = tmp_path / "frames.sock"
+    receiver = NativeFrameReceiver(socket_path, frames)
+    packet = struct.pack("!4sIIIQ", b"MJP1", len(JPEG_ONE), 1280, 720, 987654321)
+    receiver._consume(io.BytesIO(packet + JPEG_ONE))
+    received = frames.wait_for_new(0, 1.0)
+    assert received is not None
+    assert received.jpeg == JPEG_ONE
+    assert received.width == 1280
+    assert received.height == 720
+    assert received.capture_timestamp_ns == 987654321
 
 
 def test_mjpeg_multipart_headers_and_disconnect_do_not_stop_server():
