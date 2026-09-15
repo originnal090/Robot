@@ -56,6 +56,9 @@ class FrameStore:
 
     def set_native_connected(self, connected: bool, error: str | None = None) -> None:
         with self._condition:
+            if connected and not self._native_connected:
+                self._arrival_times.clear()
+                self._frame = None
             self._native_connected = connected
             if error is not None:
                 self._last_error = error
@@ -99,14 +102,18 @@ class FrameStore:
                 duration = self._arrival_times[-1] - self._arrival_times[0]
                 if duration > 0:
                     fps = (len(self._arrival_times) - 1) / duration
+            if not camera_ok:
+                fps = 0.0
             result: dict[str, object] = {
                 "ok": camera_ok,
                 "camera": camera_ok,
+                "server_time_ns": time.time_ns(),
                 "fps": round(fps, 1),
                 "width": frame.width if frame else 0,
                 "height": frame.height if frame else 0,
                 "frame_age_ms": round(age * 1000, 1) if age is not None else None,
                 "sequence": frame.sequence if frame else 0,
+                "capture_timestamp_ns": frame.capture_timestamp_ns if frame else None,
             }
             if self._last_error:
                 result["error"] = self._last_error
@@ -126,23 +133,34 @@ def _read_exact(stream: BinaryIO, length: int) -> bytes | None:
 
 
 class NativeFrameReceiver:
-    def __init__(self, socket_path: Path, frames: FrameStore) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        frames: FrameStore,
+        tcp_address: tuple[str, int] | None = None,
+    ) -> None:
         self.socket_path = socket_path
         self.frames = frames
+        self.tcp_address = tcp_address
         self._stopping = threading.Event()
         self._server_socket: socket.socket | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.socket_path.exists() or self.socket_path.is_symlink():
-            mode = self.socket_path.lstat().st_mode
-            if not stat.S_ISSOCK(mode):
-                raise RuntimeError(f"refusing to replace non-socket path: {self.socket_path}")
-            self.socket_path.unlink()
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(self.socket_path))
-        os.chmod(self.socket_path, 0o600)
+        if self.tcp_address is None:
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.socket_path.exists() or self.socket_path.is_symlink():
+                mode = self.socket_path.lstat().st_mode
+                if not stat.S_ISSOCK(mode):
+                    raise RuntimeError(f"refusing to replace non-socket path: {self.socket_path}")
+                self.socket_path.unlink()
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(self.socket_path))
+            os.chmod(self.socket_path, 0o600)
+        else:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(self.tcp_address)
         server.listen(1)
         server.setblocking(False)
         self._server_socket = server
@@ -156,7 +174,11 @@ class NativeFrameReceiver:
         if self._thread:
             self._thread.join(timeout=3.0)
         try:
-            if self.socket_path.exists() and stat.S_ISSOCK(self.socket_path.lstat().st_mode):
+            if (
+                self.tcp_address is None
+                and self.socket_path.exists()
+                and stat.S_ISSOCK(self.socket_path.lstat().st_mode)
+            ):
                 self.socket_path.unlink()
         except FileNotFoundError:
             pass
@@ -173,7 +195,7 @@ class NativeFrameReceiver:
                 if not self._stopping.is_set():
                     LOG.exception("Native frame accept failed")
                 break
-            LOG.info("Native camera helper connected")
+            LOG.info("Native camera producer connected")
             self.frames.set_native_connected(True)
             try:
                 connection.settimeout(3.0)
@@ -183,7 +205,7 @@ class NativeFrameReceiver:
                 if not self._stopping.is_set():
                     LOG.warning("Native camera connection ended: %s", exc)
             finally:
-                self.frames.set_native_connected(False, "native camera helper disconnected")
+                self.frames.set_native_connected(False, "native camera producer disconnected")
 
     def _consume(self, stream: BinaryIO) -> None:
         while not self._stopping.is_set():
@@ -278,8 +300,9 @@ class MJPEGServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], frames: FrameStore) -> None:
+    def __init__(self, address: tuple[str, int], frames: FrameStore, stream_fps: int = 15) -> None:
         self.frames = frames
+        self.stream_fps = stream_fps
         super().__init__(address, MJPEGHandler)
 
 
@@ -334,26 +357,46 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         self.send_header("Pragma", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
+        # Keep the kernel queue below one typical JPEG. A large send buffer can
+        # hide several stale frames when Wi-Fi is slower than the capture rate.
+        self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8 * 1024)
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        LOG.info(
+            "MJPEG client connected: %s (send_buffer=%d)",
+            self.client_address[0],
+            self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF),
+        )
         self.connection.settimeout(5.0)
         sequence = 0
+        last_sent = 0.0
+        frame_period = 1.0 / self.server.stream_fps
         try:
             while True:
                 frame = self.server.frames.wait_for_new(sequence, timeout=2.0)
                 if frame is None:
                     continue
+                delay = last_sent + frame_period - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                    newest = self.server.frames.latest()
+                    if newest is not None:
+                        frame = newest
                 sequence = frame.sequence
+                server_send_ns = time.time_ns()
                 header = (
                     f"--{BOUNDARY}\r\n"
                     "Content-Type: image/jpeg\r\n"
                     f"Content-Length: {len(frame.jpeg)}\r\n"
                     f"X-Sequence: {frame.sequence}\r\n"
                     f"X-Capture-Timestamp-Ns: {frame.capture_timestamp_ns}\r\n"
+                    f"X-Server-Send-Timestamp-Ns: {server_send_ns}\r\n"
                     "\r\n"
                 ).encode("ascii")
                 self.wfile.write(header)
                 self.wfile.write(frame.jpeg)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
+                last_sent = time.monotonic()
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
             LOG.info("MJPEG client disconnected: %s", self.client_address[0])
 
@@ -363,7 +406,16 @@ def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native", type=Path, default=project_dir / "native" / "iphone-camera")
     parser.add_argument("--socket", type=Path, default=project_dir / "run" / "frames.sock")
-    parser.add_argument("--no-native", action="store_true", help="serve without spawning the helper (tests only)")
+    parser.add_argument(
+        "--no-native",
+        action="store_true",
+        help="serve without spawning the command-line helper (foreground app mode)",
+    )
+    parser.add_argument(
+        "--tcp-port",
+        type=int,
+        help="receive app frames on 127.0.0.1:PORT instead of a Unix socket",
+    )
     return parser.parse_args()
 
 
@@ -376,12 +428,13 @@ def main() -> int:
     config = Config()
     config.validate()
     frames = FrameStore(config.stale_after_seconds)
-    receiver = NativeFrameReceiver(args.socket, frames)
+    tcp_address = ("127.0.0.1", args.tcp_port) if args.tcp_port else None
+    receiver = NativeFrameReceiver(args.socket, frames, tcp_address)
     receiver.start()
     supervisor = None if args.no_native else NativeSupervisor(args.native, args.socket, config, frames)
     if supervisor:
         supervisor.start()
-    server = MJPEGServer((config.host, config.port), frames)
+    server = MJPEGServer((config.host, config.port), frames, config.stream_fps)
     stopping = threading.Event()
 
     def request_stop(signal_number: int, current_frame: object) -> None:

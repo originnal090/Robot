@@ -14,10 +14,12 @@ def main() -> int:
     parser.add_argument("host", help="iPhone IP address or Tailnet hostname")
     parser.add_argument("--port", type=int, default=8088)
     parser.add_argument("--no-window", action="store_true")
+    parser.add_argument("--frames", type=int, default=0, help="stop after N frames (0 runs until Escape)")
     args = parser.parse_args()
     url = f"http://{args.host}:{args.port}/video"
     cap = cv2.VideoCapture(url)
     previous = time.monotonic()
+    frames_read = 0
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -27,6 +29,9 @@ def main() -> int:
         now = time.monotonic()
         print(f"shape={frame.shape} inter_frame_ms={(now - previous) * 1000:.1f}")
         previous = now
+        frames_read += 1
+        if args.frames and frames_read >= args.frames:
+            break
         if not args.no_window:
             cv2.imshow("iphone", frame)
             if cv2.waitKey(1) == 27:

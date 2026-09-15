@@ -68,6 +68,11 @@ def test_health_and_snapshot_lifecycle():
             assert b'"camera":true' in body
             assert b'"width":1280' in body
             assert b'"height":720' in body
+        frames.set_native_connected(False, "test disconnect")
+        with request(server, "/health") as response:
+            body = response.read()
+            assert b'"camera":false' in body
+            assert b'"fps":0.0' in body
     finally:
         stop_server(server, thread)
 
@@ -93,6 +98,29 @@ def test_native_receiver_accepts_framed_jpeg(tmp_path):
     assert received.width == 1280
     assert received.height == 720
     assert received.capture_timestamp_ns == 987654321
+
+
+def test_native_receiver_accepts_loopback_tcp_frame(tmp_path):
+    frames = FrameStore()
+    receiver = NativeFrameReceiver(
+        tmp_path / "unused.sock",
+        frames,
+        ("127.0.0.1", 0),
+    )
+    receiver.start()
+    try:
+        assert receiver._server_socket is not None
+        address = receiver._server_socket.getsockname()
+        packet = struct.pack("!4sIIIQ", b"MJP1", len(JPEG_TWO), 640, 480, 456)
+        with socket.create_connection(address, timeout=2) as client:
+            client.sendall(packet + JPEG_TWO)
+        received = frames.wait_for_new(0, 1.0)
+        assert received is not None
+        assert received.jpeg == JPEG_TWO
+        assert received.width == 640
+        assert received.height == 480
+    finally:
+        receiver.stop()
 
 
 def test_mjpeg_multipart_headers_and_disconnect_do_not_stop_server():
