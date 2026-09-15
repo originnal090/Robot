@@ -16,6 +16,14 @@ namespace HciRobot.Simulator
         [SerializeField, Range(0f, 1f)] private float deadzone = 0.20f;
         [SerializeField] private bool continuousMotion;
 
+        [Header("Measured TonyPi forward tiers")]
+        [SerializeField] private bool useMeasuredForwardTiers = true;
+        [SerializeField, Min(0f)] private float baselineForwardSpeed = 0.0375f;
+        [SerializeField, Min(0f)] private float oneStepSpeedMultiplier = 0.40f;
+        [SerializeField, Min(0f)] private float fastSpeedMultiplier = 2.0f;
+        [SerializeField, Range(0f, 1f)] private float slowTierMaximum = 0.45f;
+        [SerializeField, Range(0f, 1f)] private float fastTierMinimum = 0.75f;
+
         [Header("Persistent head pitch preview")]
         [SerializeField] private Transform headPitchTransform;
         [SerializeField] private float headDownPitchDegrees = 30f;
@@ -52,6 +60,7 @@ namespace HciRobot.Simulator
 
         public Vector2 ActualOutput => actualOutput;
         public float ActualLateralOutput { get; private set; }
+        public float ActualForwardSpeedMetresPerSecond { get; private set; }
         public RobotMotionMode CurrentMode => target.Mode;
         public string LastAction { get; private set; }
         public string HeadPitchLevel { get; private set; } = "center";
@@ -112,11 +121,15 @@ namespace HciRobot.Simulator
             }
 
             Vector3 currentVelocity = body.velocity;
-            Vector3 planarVelocity = transform.forward * (velocity * maximumForwardSpeed)
+            float forwardSpeed = useMeasuredForwardTiers && continuousMotion
+                ? CalculateMeasuredForwardSpeed(velocity)
+                : velocity * maximumForwardSpeed;
+            Vector3 planarVelocity = transform.forward * forwardSpeed
                 + transform.right * (lateral * maximumLateralSpeed);
             body.velocity = new Vector3(planarVelocity.x, currentVelocity.y, planarVelocity.z);
             body.angularVelocity = new Vector3(0f, steer * maximumTurnDegreesPerSecond * Mathf.Deg2Rad, 0f);
             actualOutput = new Vector2(velocity, steer);
+            ActualForwardSpeedMetresPerSecond = forwardSpeed;
             ActualLateralOutput = lateral;
         }
 
@@ -198,6 +211,7 @@ namespace HciRobot.Simulator
             FinishMirroredStep("cancelled");
             target = RobotCommand.Stop;
             actualOutput = Vector2.zero;
+            ActualForwardSpeedMetresPerSecond = 0f;
             ActualLateralOutput = 0f;
             if (body != null)
             {
@@ -276,6 +290,22 @@ namespace HciRobot.Simulator
         }
 
         private static float SmoothProgress(float value) => value * value * (3f - 2f * value);
+
+        public float CalculateMeasuredForwardSpeed(float velocity)
+        {
+            if (Mathf.Abs(velocity) <= deadzone)
+            {
+                return 0f;
+            }
+
+            float magnitude = Mathf.Abs(velocity);
+            float multiplier = magnitude <= slowTierMaximum
+                ? oneStepSpeedMultiplier
+                : magnitude > fastTierMinimum
+                    ? fastSpeedMultiplier
+                    : 1f;
+            return Mathf.Sign(velocity) * baselineForwardSpeed * multiplier;
+        }
 
         private void FinishMirroredStep(string status)
         {

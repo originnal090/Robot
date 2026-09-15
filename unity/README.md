@@ -49,7 +49,7 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 | 组件 | 用途 | 默认值/行为 |
 |---|---|---|
 | `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD/ACTION 服务 | `0.0.0.0:5075`；声明 `ACTION_V1`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有回执与 `DIST` 经同一写锁串行化；Console 只在连接或有效运动方向变化时记录，不逐包刷屏 |
-| `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；默认离散动作，可选 continuous；`head_down/center/up` 持久调整机器人相机俯仰 |
+| `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；continuous 模式按真机三档映射前进速度；`head_down/center/up` 持久调整机器人相机俯仰 |
 | `ForwardDistanceSensor` | 前向 ray/sphere cast | 默认 sphere cast；结果换算为整数 mm；默认每 0.30 s 发送 `DIST` |
 | `MjpegCameraServer` | TonyPi 风格 MJPEG | `0.0.0.0:8080/?action=stream`；Camera/RenderTexture/ReadPixels/JPEG 全在主线程；网络线程只发送缓存 JPEG |
 | `AutonomyStatusUdpReceiver` | 自治状态旁路接收 | `0.0.0.0:6102`；校验 `type/schema_version/session_id/seq`；同 session 只接受递增 seq，拒绝已退出会话迟到包；主线程 latest-only；默认 1.0 s watchdog |
@@ -84,7 +84,9 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 
 `VirtualRobotTcpServer > Diagnostics` 可分别关闭连接、命令变化和非法输入日志。Play Mode 下 `Client Status`、`Last Applied Command`、`Valid Commands Received`、`Invalid Lines Ignored` 会持续显示当前诊断值；连续收到同方向输入时只更新 Inspector 计数和最新值，不重复写 Console。
 
-该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 53 项 EditMode 测试。
+`TonyPiMotionDriver > Measured TonyPi Forward Tiers` 使用 2026-09-15 真机粗测：`go_forward` 16 秒约 0.60 m，对应基线 `0.0375 m/s`；`go_forward_one_step` 暂按老旧机器人偶发原地踏步后的有效速度 `0.4x` 处理；`go_forward_fast` 按 `2x` 处理。因此 continuous 输入 `|v| <= 0.45`、`0.45 < |v| <= 0.75`、`|v| > 0.75` 分别使用 `0.015`、`0.0375`、`0.075 m/s`。这些参数都可在 Inspector 修改；关闭 `Use Measured Forward Tiers` 后恢复 `v * Maximum Forward Speed` 的比例模型。
+
+该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 57 项 EditMode 测试。
 
 ## 安全与限制
 

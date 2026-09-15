@@ -104,6 +104,26 @@ namespace HciRobot.Simulator.Tests
             Assert.That(command.Mode, Is.EqualTo(RobotMotionMode.Continuous));
         }
 
+        [TestCase(0.30f, 0.015f)]
+        [TestCase(0.60f, 0.0375f)]
+        [TestCase(0.85f, 0.075f)]
+        [TestCase(-0.30f, -0.015f)]
+        public void Driver_MeasuredForwardTiersMatchHardwareCalibration(float input, float expected)
+        {
+            var robot = new GameObject("forward tier test");
+            try
+            {
+                robot.AddComponent<Rigidbody>().useGravity = false;
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                Assert.That(driver.CalculateMeasuredForwardSpeed(input),
+                    Is.EqualTo(expected).Within(0.00001f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(robot);
+            }
+        }
+
         [TestCase(-0.35f, RobotMotionMode.LateralLeft)]
         [TestCase(0.35f, RobotMotionMode.LateralRight)]
         public void LateralMapping_IsExclusiveAndBelowTurnPriority(float lateral, RobotMotionMode mode)
