@@ -31,10 +31,11 @@ device = 0
 
 [startup]
 # 武装后先直行，再停稳；随后每次只右转一个动作步并重新识别。
+# 当前路线标定：高速约 16 秒；若改用普通档 0.60，则约 32 秒。
 # estimated_turn_step_degrees 是实测前的估计值，明天应按场地录像校准。
 enabled = true
-forward_seconds = 1.5
-forward_velocity = 0.60
+forward_seconds = 16.0
+forward_velocity = 0.85
 settle_seconds = 0.50
 turn_steer = 0.35
 estimated_turn_step_degrees = 20.0
