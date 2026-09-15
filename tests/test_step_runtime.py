@@ -8,6 +8,7 @@ from hcirobot.app import SessionControl, run_loop
 from hcirobot.controller import ControllerConfig, VisualApproachController
 from hcirobot.model import ControlState, Detection, RobotCommand
 from hcirobot.robot import RecordingRobot
+from hcirobot.startup_route import StartupRoute, StartupRouteConfig
 from hcirobot.video import SyntheticBallSource, SyntheticConfig
 
 
@@ -132,3 +133,46 @@ def test_old_server_requires_explicit_legacy_mode():
     result = runtime(legacy, legacy=True)
     assert result.termination == "max_frames"
     assert any(c.steer for c in legacy.commands) and not legacy.steps
+
+
+def test_startup_route_moves_forward_then_takes_one_right_step_before_handoff():
+    robot, session, events = DelayedRobot(polls=3), SessionControl(), []
+
+    class RouteDetector:
+        config = ControllerConfig()  # only update_config compatibility is needed here
+
+        def process(self, _frame):
+            if robot.steps and not robot.pending:
+                return Detection(True, True, 320, 240, 30, 640, 480)
+            return Detection(False, False, None, None, None, 640, 480)
+
+    def sink(event):
+        events.append(event)
+        if event.decision is not None and event.decision.state is ControlState.ALIGNING:
+            session.request_stop()
+
+    result = run_loop(
+        SyntheticBallSource(SyntheticConfig(fps=100, realtime=True)),
+        RouteDetector(),
+        VisualApproachController(ControllerConfig()),
+        robot,
+        armed=True,
+        event_sink=sink,
+        session=session,
+        max_frames=100,
+        startup_route=StartupRoute(
+            StartupRouteConfig(
+                enabled=True,
+                forward_seconds=0.02,
+                settle_seconds=0.02,
+                estimated_turn_step_degrees=30,
+                max_turn_degrees=120,
+            )
+        ),
+    )
+    assert result.termination == "stop_requested"
+    assert len(robot.steps) == 1
+    assert robot.steps[0][1].steer > 0
+    assert any(command.velocity > 0 for command in robot.commands)
+    assert any(event.decision and event.decision.state is ControlState.STARTUP_FORWARD for event in events)
+    assert any(event.decision and event.decision.state is ControlState.STARTUP_TURN for event in events)

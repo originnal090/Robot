@@ -13,7 +13,7 @@ from typing import Any
 import cv2
 
 from .app import RuntimeEvent, SessionControl
-from .config import controller_config, detector_config, load_config
+from .config import ascend_yolo_config, controller_config, detector_config, load_config
 from .frame_recorder import FrameRecorder
 from .gamepad import GamepadMonitor, GamepadTeleop
 from .gui_model import GuiModel, SessionState
@@ -151,6 +151,7 @@ class SessionService(SessionRuntime):
 
     def defaults(self) -> dict:
         cfg = self.config
+        npu = ascend_yolo_config(cfg.get("npu", {}))
         return {
             "source": str(cfg["video"]["source"]),
             "backend": cfg["robot"]["backend"],
@@ -159,6 +160,8 @@ class SessionService(SessionRuntime):
             "approach_mode": cfg["controller"].get("approach_mode", "normal_then_slow"),
             "obstacle": cfg.get("obstacle", {}).get("enabled", True),
             "gamepad_enabled": self.gamepad_monitor is not None,
+            "detector_backend": "ascend" if npu.enabled else "lab",
+            "edge_model_path": npu.model if npu.enabled else "",
             "detection": asdict(detector_config(cfg["detection"])),
             "controller": asdict(controller_config(cfg["controller"])),
         }

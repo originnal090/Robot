@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import deque
 from dataclasses import dataclass
 
 from .model import ControlState, Detection, RobotCommand
@@ -26,6 +27,10 @@ class ControllerConfig:
     align_enter_error: float = 0.08
     align_exit_error: float = 0.14
     arrival_radius_ratio: float = 0.18
+    # Arrival is accepted only near image centre and while the stopped size
+    # samples agree. This rejects a close false box at the frame edge and one-frame jumps.
+    arrival_max_error: float = 0.10
+    arrival_radius_stability_ratio: float = 0.18
     slow_radius_ratio: float = 0.10
     search_steer: float = 0.35
     search_reverse_seconds: float = 2.0
@@ -68,6 +73,8 @@ class ControllerConfig:
             self.align_enter_error,
             self.align_exit_error,
             self.arrival_radius_ratio,
+            self.arrival_max_error,
+            self.arrival_radius_stability_ratio,
             self.slow_radius_ratio,
             self.search_steer,
             self.search_reverse_seconds,
@@ -96,6 +103,10 @@ class ControllerConfig:
             raise ValueError("alignment thresholds must satisfy 0 <= enter < exit <= 1")
         if not 0 < self.slow_radius_ratio < self.arrival_radius_ratio < 1:
             raise ValueError("radius thresholds must satisfy 0 < slow < arrival < 1")
+        if not 0 <= self.arrival_max_error <= self.align_exit_error:
+            raise ValueError("arrival max error must be between 0 and align_exit_error")
+        if not 0 <= self.arrival_radius_stability_ratio <= 1:
+            raise ValueError("arrival radius stability ratio must be between 0 and 1")
         if not 0 <= self.near_speed <= self.far_speed <= 1:
             raise ValueError("speeds must satisfy 0 <= near <= far <= 1")
         if self.search_reverse_seconds <= 0 or self.max_search_seconds <= 0:
@@ -168,6 +179,7 @@ class VisualApproachController:
         self._align_streak = 0
         self._misalign_streak = 0
         self._arrival_streak = 0
+        self._arrival_ratios: deque[float] = deque(maxlen=config.arrival_frames)
         self._lost_streak = 0
         self._last_correction_sign = 0
         self._fine_alignment = False
@@ -175,6 +187,8 @@ class VisualApproachController:
     def update_config(self, config: ControllerConfig) -> None:
         """Swap tuning parameters at runtime via an atomic reference swap."""
         self.config = config
+        self._arrival_ratios = deque(maxlen=config.arrival_frames)
+        self._arrival_streak = 0
 
     def arm(self, now: float) -> None:
         if self.state is ControlState.IDLE:
@@ -207,20 +221,30 @@ class VisualApproachController:
             radius_ratio = detection.radius_ratio
             self._last_target_error = error
             self._lost_streak = 0
-            if radius_ratio >= self.config.arrival_radius_ratio:
+            arrival_eligible = (
+                radius_ratio >= self.config.arrival_radius_ratio
+                and abs(error) <= self.config.arrival_max_error
+            )
+            if arrival_eligible:
                 self._arrival_streak += 1
-                if self._arrival_streak >= self.config.arrival_frames:
+                self._arrival_ratios.append(radius_ratio)
+                stable = self._arrival_size_stable()
+                if self._arrival_streak >= self.config.arrival_frames and stable:
                     self.state = ControlState.ARRIVED
                     self.reason = "arrival_confirmed"
+                elif self._arrival_streak >= self.config.arrival_frames:
+                    self.reason = "arrival_size_unstable"
                 else:
                     self.reason = "arrival_pending"
                 return self._decision(RobotCommand.stop(), error, radius_ratio)
             self._arrival_streak = 0
+            self._arrival_ratios.clear()
         else:
             error = None
             radius_ratio = None
             self._lost_streak += 1
             self._arrival_streak = 0
+            self._arrival_ratios.clear()
             self._align_streak = 0
             self._misalign_streak = 0
 
@@ -302,6 +326,15 @@ class VisualApproachController:
             self.reason = "target_temporarily_missing"
             return self._decision(RobotCommand.stop())
 
+        if (
+            radius_ratio >= self.config.arrival_radius_ratio
+            and abs(error) > self.config.arrival_max_error
+        ):
+            self.state = ControlState.ALIGNING
+            self.reason = "close_target_off_center"
+            self._align_streak = 0
+            return self._update_align(True, error, radius_ratio, now)
+
         if abs(error) > self.config.align_exit_error:
             self._misalign_streak += 1
             if self._misalign_streak >= self.config.misalign_frames:
@@ -360,7 +393,17 @@ class VisualApproachController:
         self._align_streak = 0
         self._misalign_streak = 0
         self._arrival_streak = 0
+        self._arrival_ratios.clear()
         self._lost_streak = 0
+
+    def _arrival_size_stable(self) -> bool:
+        if len(self._arrival_ratios) < self.config.arrival_frames:
+            return False
+        smallest = min(self._arrival_ratios)
+        largest = max(self._arrival_ratios)
+        return (largest - smallest) / max(smallest, 1e-9) <= (
+            self.config.arrival_radius_stability_ratio
+        )
 
     def _approach_speed(self, radius_ratio: float) -> float:
         if radius_ratio >= self.config.arrival_radius_ratio:

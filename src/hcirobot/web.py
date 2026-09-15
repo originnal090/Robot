@@ -49,7 +49,7 @@ class StartRequest(Owner):
     local_gamepad: bool = False
     obstacle: bool | None = None
     approach_mode: Literal["normal", "normal_then_slow", "slow_realtime"] | None = None
-    edge_model_path: str = Field(default="", max_length=2048)
+    edge_model_path: str | None = Field(default=None, max_length=2048)
 
 
 class TuneRequest(SessionRequest):

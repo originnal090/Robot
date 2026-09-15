@@ -21,6 +21,25 @@ maximum_aspect_ratio = 1.67
 confirmation_frames = 3
 release_frames = 3
 
+[npu]
+enabled = true
+model = "/home/HwHiAiUser/hcirobot-ascend/models/yolo11n_640.om"
+image_size = 640
+confidence = 0.053634531795978546
+iou = 0.45
+device = 0
+
+[startup]
+# 武装后先直行，再停稳；随后每次只右转一个动作步并重新识别。
+# estimated_turn_step_degrees 是实测前的估计值，明天应按场地录像校准。
+enabled = true
+forward_seconds = 1.5
+forward_velocity = 0.60
+settle_seconds = 0.50
+turn_steer = 0.35
+estimated_turn_step_degrees = 20.0
+max_turn_degrees = 120.0
+
 [controller]
 approach_mode = "normal_then_slow"
 single_step_turns = true
@@ -33,8 +52,10 @@ near_lateral_max_error = 0.25
 near_lateral_speed = 0.30
 align_enter_error = 0.08
 align_exit_error = 0.14
-arrival_radius_ratio = 0.18
-slow_radius_ratio = 0.10
+arrival_radius_ratio = 0.10
+arrival_max_error = 0.10
+arrival_radius_stability_ratio = 0.18
+slow_radius_ratio = 0.06
 search_steer = 0.35
 search_reverse_seconds = 2.0
 max_search_seconds = 12.0
@@ -47,7 +68,7 @@ near_speed = 0.21
 minimum_active_steer = 0.25
 align_frames = 3
 misalign_frames = 2
-arrival_frames = 3
+arrival_frames = 4
 lost_frames = 3
 
 [robot]

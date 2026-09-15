@@ -19,7 +19,7 @@ uv run hcirobot-web
 
 ## 香橙派局域网运行
 
-先按 `deploy/README.md` 准备 64 位 Linux、Python 3.11+ 和目标架构的依赖。
+先按 `deploy/README.md` 准备 64 位 Linux、Python 3.10+ 和目标架构的依赖。
 修改 `deploy/config/config.orangepi.toml` 中的机器人地址。运行：
 
 ```bash
@@ -96,9 +96,13 @@ uv run hcirobot-web --host 0.0.0.0 --config deploy/config/config.orangepi.toml \
 - 相机重连、画面冻结、恢复后的目标重新确认、TCP 断开处理继承桌面版策略。
 - 视频采集和控制线程独立于网页。JPEG 编码在线程中按最多约 10 Hz 执行，
   最新帧覆盖旧帧，多个浏览器共享已编码图像，慢客户端不会堵住机器人控制。
-- LAB、SVM、Hybrid 的核心检测器不变。选择端侧模型时填写**服务端文件系统**上的
-  `.json` profile 或 `.npz` 路径，加载失败会在连接硬件前报错。
-  `.pt`/Ascend 模型尚未接入现有闭环检测器；Web 迁移不改变这项限制。
+- LAB、SVM、Hybrid 识别器仍可使用；Ascend NPU 模式填写香橙派文件系统上的
+  `.om` 路径。CANN 环境与 ACLLite 在启动脚本中加载，模型在每次会话内初始化一次，
+  每帧走 NPU 推理并在会话结束时释放。`.pt` 不能直接用于板端闭环。
+- `[startup]` 可配置“先直行、停稳、逐步右转找球”。每个右转动作收到 `STEP_V1`
+  完成回执后才重新识别，扫描角度有硬上限；角度由实际动作步幅估算，必须用场地录像校准。
+- 到达判定以球框尺寸为主，但同时要求目标居中，并在停车后的连续帧中尺寸稳定；
+  `arrival_radius_ratio` 可在页面热调，另外两项约束在 TOML 中配置。
 - 调参仅影响当前会话，不写回 TOML。会话启动后读取 profile 的实际参数，
   热更新保留未修改字段。接近策略、识别器和避障开关在运行期间锁定。
 - 采集的原始 PNG 保存在服务工作目录的 `artifacts/captures/`；网页显示路径和帧数，

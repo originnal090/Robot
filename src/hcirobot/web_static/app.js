@@ -205,6 +205,9 @@ async function initialize() {
     $("login-panel").hidden = true;
     for (const key of ["source", "backend", "host", "port"]) $(key).value = defaults[key];
     $("approach").value = defaults.approach_mode;
+    $("detector").value = defaults.detector_backend ?? "lab";
+    $("model-path").value = defaults.edge_model_path ?? "";
+    $("model-field").hidden = $("detector").value === "lab";
     $("obstacle").checked = defaults.obstacle;
     $("local-gamepad").disabled = !defaults.gamepad_enabled;
     fillTuning(defaults);

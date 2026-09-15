@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,10 @@ from .detector import RedBallDetector
 from .model import ControlState, Detection, RobotCommand
 from .navigation import ObstaclePolicy
 from .robot import RobotBackend
+from .startup_route import StartupRoute
 from .video import annotate
+
+UTC = timezone.utc
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +450,7 @@ def run_loop(
     duplicate_frame_limit: int = 0,
     preserve_manual_on_video_failure: bool = False,
     resume_autonomy_on_video_recovery: bool = False,
+    startup_route: StartupRoute | None = None,
 ) -> RunResult:
     if frame_timeout_seconds <= 0:
         raise ValueError("frame timeout must be positive")
@@ -578,10 +582,24 @@ def run_loop(
         if controller.config.approach_mode != "slow_realtime"
         else None
     )
+    if startup_route is not None and not startup_route.config.enabled:
+        startup_route = None
     walk_command = RobotCommand.stop()
     last_radius_ratio: float | None = None
+
+    def arm_autonomy(now: float) -> None:
+        if startup_route is not None:
+            startup_route.arm(now)
+        else:
+            controller.arm(now)
+
+    def reset_autonomy() -> None:
+        controller.reset()
+        if startup_route is not None:
+            startup_route.reset()
+
     if armed:
-        controller.arm(clock())
+        arm_autonomy(clock())
 
     frames: queue.Queue = queue.Queue(maxsize=1)
     capture_stop = threading.Event()
@@ -611,8 +629,10 @@ def run_loop(
         was_armed = is_armed
         if was_armed:
             is_armed = False
-            resume_autonomy_pending = resume_autonomy_on_video_recovery
-            controller.reset()
+            resume_autonomy_pending = resume_autonomy_on_video_recovery and not (
+                startup_route is not None and startup_route.active
+            )
+            reset_autonomy()
             walk_command = RobotCommand.stop()
             last_radius_ratio = None
             if approach_gate is not None:
@@ -668,7 +688,7 @@ def run_loop(
                 resume_autonomy_pending = False
                 if is_armed:
                     is_armed = False
-                    controller.reset()
+                    reset_autonomy()
                     walk_command = RobotCommand.stop()
                     last_radius_ratio = None
                     if approach_gate is not None:
@@ -690,7 +710,7 @@ def run_loop(
                         last_radius_ratio = None
                         if approach_gate is not None:
                             approach_gate.hold_settle()
-                        controller.arm(clock())
+                        arm_autonomy(clock())
                     emit("armed", "autonomy armed")
 
             if step_id is not None:
@@ -699,7 +719,10 @@ def run_loop(
                     completed_id = step_id
                     step_id = None
                     walk_command = RobotCommand.stop()
-                    approach_gate.hold_settle()
+                    if approach_gate is not None:
+                        approach_gate.hold_settle()
+                    if startup_route is not None and startup_route.waiting_for_step:
+                        startup_route.mark_step_complete(clock())
                     send_command(RobotCommand.stop(), "step_complete")
                     emit("step", f"{completed_id}: {status}", frame_count=frame_count)
                 elif status in ("error", "cancelled"):
@@ -756,7 +779,7 @@ def run_loop(
                         emit("video_stale", "等待新帧，已停止自治输出", frame_count=frame_count)
                 if silence_seconds < frame_timeout_seconds:
                     continue
-                if controller.state is ControlState.IDLE:
+                if not is_armed:
                     if video_retry or (preserve_manual_on_video_failure and vision_hold_active):
                         continue  # keep the robot link and manual controls alive
                     termination = "preview_timeout"
@@ -816,12 +839,12 @@ def run_loop(
                     resume_autonomy_pending = False
                     # Discard confirmation/tracking earned before the freeze.
                     detector.update_config(detector.config)
-                    controller.reset()
+                    reset_autonomy()
                     walk_command = RobotCommand.stop()
                     last_radius_ratio = None
                     if approach_gate is not None:
                         approach_gate.hold_settle()
-                    controller.arm(clock())
+                    arm_autonomy(clock())
                     is_armed = True
                     emit(
                         "autonomy_resumed",
@@ -829,7 +852,15 @@ def run_loop(
                         frame_count=frame_count,
                     )
 
-            if approach_gate is not None and is_armed and manual is None:
+            if (
+                approach_gate is not None
+                and is_armed
+                and manual is None
+                and (
+                    not (startup_route is not None and startup_route.active)
+                    or step_id is not None
+                )
+            ):
                 # Burst-walking modes: during walk/settle the camera bounces, so
                 # vision work is skipped; the last sensed intent repeats during
                 # walk and sonar-based obstacle safety still runs every frame.
@@ -891,8 +922,28 @@ def run_loop(
                     continue
 
             detection = detector.process(item)
-            decision = controller.update(detection, clock())
-            if approach_gate is not None and is_armed and manual is None:
+            now = clock()
+            startup_step_request = False
+            if is_armed and startup_route is not None and startup_route.active:
+                startup = startup_route.update(detection, now)
+                startup_step_request = startup.request_step
+                if startup.target_acquired:
+                    controller.arm(now)
+                    decision = controller.update(detection, now)
+                    if approach_gate is not None:
+                        approach_gate.hold_settle()
+                elif startup.failed:
+                    decision = controller.fail_safe(startup.reason)
+                else:
+                    decision = ControlDecision(startup.state, startup.command, startup.reason)
+            else:
+                decision = controller.update(detection, now)
+            if (
+                approach_gate is not None
+                and is_armed
+                and manual is None
+                and not (startup_route is not None and startup_route.active)
+            ):
                 last_radius_ratio = decision.radius_ratio
                 walk_command = decision.command
             obstacle = None
@@ -923,12 +974,30 @@ def run_loop(
                     approach_gate.hold_settle()
                     walk_command = RobotCommand.stop()
                 send_command(RobotCommand.stop(), "obstacle_hold")
+            elif startup_step_request:
+                if not getattr(robot, "supports_steps", False):
+                    decision = controller.fail_safe("startup_step_protocol_unavailable")
+                    send_command(RobotCommand.stop(), "shutdown")
+                    emit("error", "启动右转需要机器人 STEP_V1 单步协议")
+                else:
+                    step_id = robot.start_step(decision.command)
+                    startup_route.mark_step_started()
+                    step_started = last_step_heartbeat = time.monotonic()
+                    step_interrupted = False
+                    output_v, output_steer = decision.command.velocity, decision.command.steer
+                    output_lateral = decision.command.lateral
+                    output_grab = False
+                    output_source = "startup_turn"
+                    emit("step", f"{step_id}: startup requested", frame_count=frame_count)
             else:
                 source_name = "autonomy" if is_armed else "unarmed_hold"
                 # Gated modes only cache intent while sensing. Executing it
                 # here used to add the whole sense window to each motion burst
                 # and destroy the stationary frames needed for confirmation.
-                command = RobotCommand.stop() if approach_gate is not None else decision.command
+                gated = approach_gate is not None and not (
+                    startup_route is not None and startup_route.active
+                )
+                command = RobotCommand.stop() if gated else decision.command
                 send_command(command, source_name)
             frame_count += 1
             rendered = annotate(
@@ -1070,6 +1139,12 @@ def run_loop(
             source.close()
         except Exception as exc:  # noqa: BLE001 - robot cleanup already ran.
             cleanup_error = cleanup_error or exc
+        close_detector = getattr(detector, "close", None)
+        if close_detector is not None:
+            try:
+                close_detector()
+            except Exception as exc:  # noqa: BLE001 - other cleanup already ran.
+                cleanup_error = cleanup_error or exc
         capture_thread.join(timeout=0.5)
         if capture_thread.is_alive():
             cleanup_error = cleanup_error or RuntimeError("video capture thread did not stop")

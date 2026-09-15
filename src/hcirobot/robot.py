@@ -14,10 +14,12 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Protocol
 
 from .model import RobotCommand
+
+UTC = timezone.utc
 
 _ACTION_NAME = re.compile(r"[A-Za-z0-9_]{1,32}")
 _CONNECT_POLL_SECONDS = 0.1

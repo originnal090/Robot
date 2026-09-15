@@ -19,12 +19,21 @@ LISTEN_HOST=${HCIROBOT_WEB_HOST:-0.0.0.0}
 LISTEN_PORT=${HCIROBOT_WEB_PORT:-8090}
 ENABLE_GAMEPAD=${HCIROBOT_GAMEPAD:-1}
 PYTHON_BIN=${HCIROBOT_PYTHON:-$PROJECT_DIR/.venv/bin/python}
+WEB_DEPS=${HCIROBOT_WEB_DEPS:-$PROJECT_DIR/.webdeps}
+ASCEND_ENV=${HCIROBOT_ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}
+ACLLITE_DIR=${HCIROBOT_ACLLITE_DIR:-/usr/local/Ascend/thirdpart/aarch64/acllite}
 
 if [ ! -x "$PYTHON_BIN" ]; then
     printf '%s\n' "Python environment not found: $PYTHON_BIN" >&2
     printf '%s\n' "Run: uv sync --extra web --extra gamepad" >&2
     exit 1
 fi
+if [ -r "$ASCEND_ENV" ]; then
+    # shellcheck disable=SC1090 -- CANN installation location is configurable.
+    . "$ASCEND_ENV"
+fi
+PYTHONPATH="$PROJECT_DIR/src:$WEB_DEPS:$ACLLITE_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
 if [ ! -r "$CONFIG_PATH" ]; then
     printf '%s\n' "Configuration not readable: $CONFIG_PATH" >&2
     exit 1

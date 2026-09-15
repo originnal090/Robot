@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import tomllib
 from pathlib import Path
 from typing import Any
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 on the Orange Pi.
+    import tomli as tomllib
+
+from .ascend_yolo import AscendYoloConfig
 from .controller import ControllerConfig
 from .detector import DetectorConfig
 from .navigation import obstacle_config
 from .unity_udp import UnityStatusConfig
 
 _REQUIRED_SECTIONS = ("video", "detection", "controller", "robot")
-_OPTIONAL_SECTIONS = ("obstacle", "unity")
+_OPTIONAL_SECTIONS = ("obstacle", "unity", "npu", "startup")
 _VIDEO_KEYS = {"source", "width", "height", "fps", "frame_timeout_seconds"}
 _ROBOT_KEYS = {
     "backend",
@@ -48,6 +53,8 @@ def load_config(path: Path) -> dict[str, Any]:
     validate_robot_config(config["robot"])
     obstacle_config(config.get("obstacle", {}))
     unity_status_config(config.get("unity"))
+    ascend_yolo_config(config.get("npu", {}))
+    startup_route_config(config.get("startup", {}))
     return config
 
 
@@ -96,6 +103,16 @@ def detector_config(values: dict[str, Any]) -> DetectorConfig:
 
 def controller_config(values: dict[str, Any]) -> ControllerConfig:
     return ControllerConfig(**_dataclass_values(values, ControllerConfig, "controller"))
+
+
+def ascend_yolo_config(values: dict[str, Any]) -> AscendYoloConfig:
+    return AscendYoloConfig(**_dataclass_values(values, AscendYoloConfig, "npu"))
+
+
+def startup_route_config(values: dict[str, Any]):
+    from .startup_route import StartupRouteConfig
+
+    return StartupRouteConfig(**_dataclass_values(values, StartupRouteConfig, "startup"))
 
 
 def unity_status_config(values: dict[str, Any] | None) -> UnityStatusConfig:

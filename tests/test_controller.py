@@ -87,11 +87,12 @@ def test_alignment_hysteresis_requires_two_frames() -> None:
     assert second.command.velocity == 0
 
 
-def test_first_confirmed_close_target_stops_even_when_off_center() -> None:
+def test_first_confirmed_close_target_aligns_when_off_center() -> None:
     controller = armed_controller()
     close = controller.update(target(0.5, 0.20), 0.1)
-    assert close.state is ControlState.SEARCHING
-    assert close.command == RobotCommand.stop()
+    assert close.state is ControlState.ALIGNING
+    assert close.command.velocity == 0
+    assert close.command.steer > 0
 
 
 def test_arrival_requires_consecutive_visible_frames() -> None:
@@ -110,12 +111,28 @@ def test_arrival_requires_consecutive_visible_frames() -> None:
     assert arrived.state is ControlState.ARRIVED
 
 
-def test_close_off_center_target_stops_during_arrival_confirmation() -> None:
+def test_close_off_center_target_realigns_instead_of_false_arrival() -> None:
     controller = armed_controller(align_frames=1, arrival_frames=3)
     controller.update(target(0.0), 0.1)
     close = controller.update(target(0.12, 0.18), 0.2)
-    assert close.state is ControlState.APPROACHING
-    assert close.command == RobotCommand.stop()
+    assert close.state is ControlState.ALIGNING
+    assert close.command.steer > 0
+
+
+def test_arrival_rejects_unstable_size_jump_until_window_stabilizes() -> None:
+    controller = armed_controller(
+        align_frames=1,
+        arrival_frames=3,
+        arrival_radius_stability_ratio=0.10,
+    )
+    controller.update(target(0.0), 0.1)
+    for index, radius in enumerate((0.18, 0.24, 0.18)):
+        decision = controller.update(target(0.0, radius), 0.2 + index * 0.1)
+    assert decision.state is ControlState.APPROACHING
+    assert decision.reason == "arrival_size_unstable"
+    for index in range(3):
+        decision = controller.update(target(0.0, 0.19), 0.6 + index * 0.1)
+    assert decision.state is ControlState.ARRIVED
 
 
 def test_approach_uses_tonypi_discrete_motion_modes() -> None:

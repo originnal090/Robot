@@ -12,11 +12,19 @@ from typing import Any
 
 from .app import RuntimeEvent, SessionControl, run_loop, run_manual_loop
 from .cli import build_source
-from .config import controller_config, detector_config, load_config, unity_status_config
+from .config import (
+    ascend_yolo_config,
+    controller_config,
+    detector_config,
+    load_config,
+    startup_route_config,
+    unity_status_config,
+)
 from .controller import VisualApproachController
 from .detector import RedBallDetector
 from .detector_profile import load_detector
 from .robot import FanoutRobot, MirrorTcpRobot, RecordingRobot, TcpRobotClient, same_endpoint
+from .startup_route import StartupRoute
 from .unity_udp import UnityStatusPublisher, fanout_event_sinks
 from .video import RetryingSource
 
@@ -30,6 +38,7 @@ class SessionRuntime:
             self._publish_event(replace(event, session_id=control.session_id))
 
         source = None
+        detector = None
         robot = None
         unity_publisher = None
         run_loop_entered = False
@@ -52,7 +61,13 @@ class SessionRuntime:
             # The mode selector is read once per session, like the obstacle switch.
             config["controller"] = dict(config["controller"], approach_mode=values["approach_mode"])
             detection = detector_config(config["detection"])
-            if values["use_edge_model"]:
+            if values["use_edge_model"] and Path(values["edge_model_path"]).suffix.lower() == ".om":
+                from .ascend_yolo import AscendYoloDetector
+
+                npu_values = dict(config.get("npu", {}), enabled=True, model=values["edge_model_path"])
+                detector = AscendYoloDetector(ascend_yolo_config(npu_values), detection)
+                publish(RuntimeEvent("state", f"识别器：Ascend NPU {values['edge_model_path']}"))
+            elif values["use_edge_model"]:
                 detector = load_detector(Path(values["edge_model_path"]), detection)
                 publish(RuntimeEvent("state", f"识别器：端侧模型 {values['edge_model_path']}"))
             else:
@@ -111,6 +126,7 @@ class SessionRuntime:
                 duplicate_frame_limit=DUPLICATE_FRAME_LIMIT,
                 preserve_manual_on_video_failure=True,
                 resume_autonomy_on_video_recovery=True,
+                startup_route=StartupRoute(startup_route_config(config.get("startup", {}))),
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.
@@ -131,6 +147,13 @@ class SessionRuntime:
                         source.close()
                     except Exception as cleanup_exc:  # noqa: BLE001 - keep cleaning up.
                         message += f"; source cleanup failed: {cleanup_exc}"
+                if detector is not None:
+                    close_detector = getattr(detector, "close", None)
+                    if close_detector is not None:
+                        try:
+                            close_detector()
+                        except Exception as cleanup_exc:  # noqa: BLE001
+                            message += f"; detector cleanup failed: {cleanup_exc}"
             event = (
                 RuntimeEvent("finished", "stop_requested")
                 if cancelled_start

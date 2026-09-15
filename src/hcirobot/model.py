@@ -7,6 +7,8 @@ from enum import Enum
 
 class ControlState(str, Enum):
     IDLE = "IDLE"
+    STARTUP_FORWARD = "STARTUP_FORWARD"
+    STARTUP_TURN = "STARTUP_TURN"
     SEARCHING = "SEARCHING"
     ALIGNING = "ALIGNING"
     APPROACHING = "APPROACHING"

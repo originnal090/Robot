@@ -9,9 +9,11 @@ from pathlib import Path
 
 from .app import EventSink, RuntimeEvent, SessionControl, run_loop
 from .config import (
+    ascend_yolo_config,
     controller_config,
     detector_config,
     load_config,
+    startup_route_config,
     unity_status_config,
     validate_robot_config,
     validate_video_config,
@@ -28,6 +30,7 @@ from .robot import (
     parse_endpoint,
     same_endpoint,
 )
+from .startup_route import StartupRoute
 from .unity_udp import UnityStatusConfig, UnityStatusPublisher, fanout_event_sinks
 from .video import MjpegHttpSource, OpenCvVideoSource, SyntheticBallSource, SyntheticConfig
 
@@ -238,15 +241,31 @@ def main(argv: list[str] | None = None) -> int:
             config["controller"] = dict(config["controller"], approach_mode=args.approach_mode)
         effective_unity = build_unity_status_config(config, args)
         detection_config = detector_config(config["detection"])
-        if args.edge_model is not None:
-            from .detector_profile import load_detector
-
-            detector = load_detector(args.edge_model, detection_config)
-        else:
-            detector = RedBallDetector(detection_config)
+        npu = ascend_yolo_config(config.get("npu", {}))
         if args.check_config:
             print("config ok")
             return 0
+        selected_model = args.edge_model or (Path(npu.model) if npu.enabled else None)
+        if selected_model is not None and selected_model.suffix.lower() == ".om":
+            from .ascend_yolo import AscendYoloConfig, AscendYoloDetector
+
+            detector = AscendYoloDetector(
+                AscendYoloConfig(
+                    enabled=True,
+                    model=str(selected_model),
+                    image_size=npu.image_size,
+                    confidence=npu.confidence,
+                    iou=npu.iou,
+                    device=npu.device,
+                ),
+                detection_config,
+            )
+        elif selected_model is not None:
+            from .detector_profile import load_detector
+
+            detector = load_detector(selected_model, detection_config)
+        else:
+            detector = RedBallDetector(detection_config)
         unity_publisher = UnityStatusPublisher(effective_unity)
         source = build_source(source_value, effective_video, args.realtime)
         try:
@@ -297,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
             event_sink=event_sink,
             output_dir=args.output_dir,
             session=session,
+            startup_route=StartupRoute(startup_route_config(config.get("startup", {}))),
         )
         states = ",".join(state.value for state in result.states_seen)
         print(
