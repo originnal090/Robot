@@ -221,6 +221,9 @@ def test_session_start_has_model_initialization_lease_grace(service):
     assert service._expires == 15.0
     now[0] = 1.0
     service.heartbeat(client_id, lease)
+    assert service._expires == 16.0
+    service._publish_event(RuntimeEvent("started", session_id=service.model.session_id))
+    service.heartbeat(client_id, lease)
     assert service._expires == 1.8
 
 

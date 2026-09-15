@@ -126,7 +126,12 @@ class SessionService(SessionRuntime):
     def heartbeat(self, client: str, lease: str) -> None:
         with self._lock:
             self._require_owner(client, lease)
-            self._expires = self._clock() + LEASE_SECONDS
+            duration = (
+                STARTUP_LEASE_SECONDS
+                if self.model.session_state is SessionState.STARTING
+                else LEASE_SECONDS
+            )
+            self._expires = self._clock() + duration
 
     def release(self, client: str, lease: str) -> None:
         with self._lock:
@@ -183,8 +188,8 @@ class SessionService(SessionRuntime):
                 values["obstacle"] = False
             # Ascend ACL model initialization may briefly hold the interpreter,
             # preventing the WebSocket heartbeat task from running. A session
-            # always starts unarmed; the first heartbeat restores the normal
-            # sub-second lease before any operator can arm autonomy.
+            # always starts unarmed; once the worker publishes "started",
+            # heartbeats restore the normal sub-second lease before arming.
             self._expires = max(self._expires, self._clock() + STARTUP_LEASE_SECONDS)
             self.model.begin_start(
                 obstacle_enabled=values["obstacle"],
@@ -388,6 +393,10 @@ class SessionService(SessionRuntime):
                 self.model.fail(event.message)
             else:
                 self.model.apply_event(event)
+            if event.kind == "started" and self._owner not in (None, "local"):
+                # Model/source initialization is complete. A silent browser now
+                # returns to the normal fast-fail lease even if it sent no new heartbeat.
+                self._expires = min(self._expires, self._clock() + LEASE_SECONDS)
             if event.kind in ("error", "finished", "stopping", "estop", "video_stale"):
                 self._clear_frame()
             if (
