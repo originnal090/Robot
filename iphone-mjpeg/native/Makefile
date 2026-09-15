@@ -1,6 +1,7 @@
 CC ?= clang
 TARGET ?= iphone-camera
 MIN_IOS ?= 10.0
+SHELL := /var/jb/usr/bin/sh
 
 CFLAGS ?= -O2
 CFLAGS += -Wall -Wextra -fobjc-arc -fblocks -miphoneos-version-min=$(MIN_IOS)
