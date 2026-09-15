@@ -168,7 +168,7 @@ def _start_gamepad_teleop(
                 connected, text = monitor.status()
                 if not connected:
                     _gamepad_log(
-                        f"手柄未就绪：{text}；可用后自动连接（B 抢断/恢复，LS 移动，RS 旋转/俯仰）"
+                        f"手柄未就绪：{text}；可用后自动连接（B 抢断/恢复，LS 移动，RS 左右旋转，十字键上下俯仰）"
                     )
             teleop.poll(
                 session,

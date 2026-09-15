@@ -593,7 +593,7 @@ class RobotControlApp:
             self.manual_buttons.append(button)
         ttk.Label(
             panel,
-            text="LS 前后/横移，RS 左右旋转、上下逐档俯仰；头部动作需 robot_side 扩展服务",
+            text="LS 前后/横移，RS 左右旋转，十字键上下逐档俯仰；头部动作需 robot_side 扩展服务",
             style="PanelMuted.TLabel",
             wraplength=300,
         ).pack(anchor="w", pady=(3, 2))

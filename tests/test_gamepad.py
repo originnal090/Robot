@@ -369,7 +369,7 @@ def test_teleop_ls_x_requests_lateral_and_rs_x_requests_turn() -> None:
         monitor.stop()
 
 
-def test_teleop_rs_y_steps_head_through_three_persistent_levels() -> None:
+def test_teleop_dpad_steps_head_through_three_persistent_levels() -> None:
     backend, monitor, teleop = teleop_setup()
     session = SessionControl()
     try:
@@ -626,7 +626,7 @@ def make_xinput_state(buttons: int, lx: int, ly: int, rx: int = 0, ry: int = 0):
 def test_xinput_state_mapping_matches_sdl_button_order() -> None:
     from hcirobot.gamepad import XInputGamepadBackend
 
-    # A+B+Start; LS pushed up-right, RS pushed down-left.
+    # A+B+Start; LS pushed up-right, RS pushed down-left. RS-Y no longer pitches the head.
     state = make_xinput_state(0x1000 | 0x2000 | 0x0010, 32767, 32767, -32768, -32768)
     reading = XInputGamepadBackend._reading_from_state("XInput 手柄 #0", state)
     assert reading.connected
@@ -634,7 +634,23 @@ def test_xinput_state_mapping_matches_sdl_button_order() -> None:
     assert reading.drive_axis == pytest.approx(32767 / 32768)  # XInput: +Y is up = forward
     assert reading.lateral_axis == pytest.approx(32767 / 32768)
     assert reading.steer_axis == -1.0
-    assert reading.head_axis == -1.0
+    assert reading.head_axis == 0.0
+
+
+@pytest.mark.parametrize(
+    ("buttons", "expected"),
+    [
+        (0x0001, 1.0),  # D-Pad up
+        (0x0002, -1.0),  # D-Pad down
+        (0x0001 | 0x0002, 0.0),
+    ],
+)
+def test_xinput_dpad_controls_head_pitch(buttons: int, expected: float) -> None:
+    from hcirobot.gamepad import XInputGamepadBackend
+
+    state = make_xinput_state(buttons, 0, 0, ry=32767)
+    reading = XInputGamepadBackend._reading_from_state("XInput 手柄 #0", state)
+    assert reading.head_axis == expected
 
 
 def test_xinput_backend_reports_missing_library_as_none() -> None:

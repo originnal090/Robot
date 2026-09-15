@@ -124,6 +124,54 @@ namespace HciRobot.Simulator.Tests
             }
         }
 
+        [Test]
+        public void Driver_MovementSpeedMultiplierScalesTranslationButNotTurnRate()
+        {
+            var robot = new GameObject("movement scale test");
+            try
+            {
+                var body = robot.AddComponent<Rigidbody>();
+                body.useGravity = false;
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                driver.ContinuousMotion = true;
+                driver.MovementSpeedMultiplier = 2f;
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                typeof(TonyPiMotionDriver).GetMethod("Awake", flags).Invoke(driver, null);
+                var tick = typeof(TonyPiMotionDriver).GetMethod("FixedUpdate", flags);
+
+                driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0.6f, 0f, false, 0.2f, true));
+                tick.Invoke(driver, null);
+                Assert.That(Vector3.Dot(body.velocity, robot.transform.forward),
+                    Is.EqualTo(0.075f).Within(0.00001f));
+                Assert.That(driver.ActualForwardSpeedMetresPerSecond,
+                    Is.EqualTo(0.075f).Within(0.00001f));
+
+                driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, 0f, false, 0.2f, true, 0.5f));
+                tick.Invoke(driver, null);
+                Assert.That(Vector3.Dot(body.velocity, robot.transform.right),
+                    Is.EqualTo(0.2f).Within(0.00001f));
+
+                driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, 0.5f, false, 0.2f, true));
+                tick.Invoke(driver, null);
+                Assert.That(body.angularVelocity.y * Mathf.Rad2Deg,
+                    Is.EqualTo(60f).Within(0.001f));
+
+                driver.ApplyCommand(Mirror("scaled lateral", "start", lateral: 0.35f));
+                float displacement = 0f;
+                for (int i = 0; i < 200; i++)
+                {
+                    tick.Invoke(driver, null);
+                    displacement += Mathf.Abs(Vector3.Dot(body.velocity, robot.transform.right))
+                        * Time.fixedDeltaTime;
+                }
+                Assert.That(displacement, Is.EqualTo(0.04f).Within(0.001f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(robot);
+            }
+        }
+
         [TestCase(-0.35f, RobotMotionMode.LateralLeft)]
         [TestCase(0.35f, RobotMotionMode.LateralRight)]
         public void LateralMapping_IsExclusiveAndBelowTurnPriority(float lateral, RobotMotionMode mode)

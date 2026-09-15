@@ -16,6 +16,10 @@ namespace HciRobot.Simulator
         [SerializeField, Range(0f, 1f)] private float deadzone = 0.20f;
         [SerializeField] private bool continuousMotion;
 
+        [Header("Scene scale")]
+        [Tooltip("Scales forward and lateral movement to match the scene's distance units. Rotation is unchanged.")]
+        [SerializeField, Min(0f)] private float movementSpeedMultiplier = 1f;
+
         [Header("Measured TonyPi forward tiers")]
         [SerializeField] private bool useMeasuredForwardTiers = true;
         [SerializeField, Min(0f)] private float baselineForwardSpeed = 0.0375f;
@@ -83,6 +87,12 @@ namespace HciRobot.Simulator
             set => continuousMotion = value;
         }
 
+        public float MovementSpeedMultiplier
+        {
+            get => movementSpeedMultiplier;
+            set => movementSpeedMultiplier = Mathf.Max(0f, value);
+        }
+
         private void Reset()
         {
             body = GetComponent<Rigidbody>();
@@ -124,8 +134,9 @@ namespace HciRobot.Simulator
             float forwardSpeed = useMeasuredForwardTiers && continuousMotion
                 ? CalculateMeasuredForwardSpeed(velocity)
                 : velocity * maximumForwardSpeed;
+            forwardSpeed *= movementSpeedMultiplier;
             Vector3 planarVelocity = transform.forward * forwardSpeed
-                + transform.right * (lateral * maximumLateralSpeed);
+                + transform.right * (lateral * maximumLateralSpeed * movementSpeedMultiplier);
             body.velocity = new Vector3(planarVelocity.x, currentVelocity.y, planarVelocity.z);
             body.angularVelocity = new Vector3(0f, steer * maximumTurnDegreesPerSecond * Mathf.Deg2Rad, 0f);
             actualOutput = new Vector2(velocity, steer);
@@ -256,7 +267,8 @@ namespace HciRobot.Simulator
             bool small = magnitude <= 0.45f;
             bool fast = magnitude > 0.75f;
             stepDegrees = turn ? sign * (small ? smallStepTurnDegrees : fast ? fastStepTurnDegrees : normalStepTurnDegrees) : 0f;
-            stepMetres = turn ? 0f : sign * (small ? smallStepLateralMetres : fast ? fastStepLateralMetres : normalStepLateralMetres);
+            stepMetres = turn ? 0f : sign * movementSpeedMultiplier
+                * (small ? smallStepLateralMetres : fast ? fastStepLateralMetres : normalStepLateralMetres);
             stepDuration = Mathf.Max(0.1f, small
                 ? (turn ? (sign < 0 ? smallLeftTurnSeconds : smallRightTurnSeconds)
                         : (sign < 0 ? smallLeftLateralSeconds : smallRightLateralSeconds))

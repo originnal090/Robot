@@ -49,13 +49,17 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 | 组件 | 用途 | 默认值/行为 |
 |---|---|---|
 | `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD/ACTION 服务 | `0.0.0.0:5075`；声明 `ACTION_V1`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有回执与 `DIST` 经同一写锁串行化；Console 只在连接或有效运动方向变化时记录，不逐包刷屏 |
-| `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；continuous 模式按真机三档映射前进速度；`head_down/center/up` 持久调整机器人相机俯仰 |
+| `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；continuous 模式按真机三档映射前进速度；`Movement Speed Multiplier` 统一缩放前进/横移以适配场景长度，转向角速度不变；`head_down/center/up` 持久调整机器人相机俯仰 |
 | `ForwardDistanceSensor` | 前向 ray/sphere cast | 默认 sphere cast；结果换算为整数 mm；默认每 0.30 s 发送 `DIST` |
 | `MjpegCameraServer` | TonyPi 风格 MJPEG | `0.0.0.0:8080/?action=stream`；Camera/RenderTexture/ReadPixels/JPEG 全在主线程；网络线程只发送缓存 JPEG |
 | `AutonomyStatusUdpReceiver` | 自治状态旁路接收 | `0.0.0.0:6102`；校验 `type/schema_version/session_id/seq`；同 session 只接受递增 seq，拒绝已退出会话迟到包；主线程 latest-only；默认 1.0 s watchdog |
 | `AutonomyStatusHud` | IMGUI 状态面板 | 左上角显示控制状态、武装、目标检测、实际输出与来源、当前动作、障碍距离/避障计数、estop/fault/termination；状态超时标记 STALE；格式化逻辑在 `AutonomyStatusHudText`，可测试 |
 | `ObserverCameraRig` | 第三人称跟随相机 | LateUpdate 平滑跟随机器人后上方并看向机器人前方；不随机身自转旋转，Game 视图保持世界稳定 |
 | `SimulationTrialRecorder` | JSONL 试验记录 | 机器人/目标世界坐标、真实距离和朝向误差、轨迹、碰撞、最小间隙、实际输出、稳定停车时长和自治状态；按真值阈值写 `trial_summary` |
+
+在机器人根对象的 `TonyPiMotionDriver > Scene scale > Movement Speed Multiplier`
+调整场景位移比例。`1.0` 保持标定值，`2.0` 让相同指令在 Unity 中产生两倍前进和
+横移速度（单步横移距离也翻倍）；原地转向角速度不受该值影响。
 
 ## 场景矩阵
 
@@ -86,7 +90,7 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 
 `TonyPiMotionDriver > Measured TonyPi Forward Tiers` 使用 2026-09-15 真机粗测：`go_forward` 16 秒约 0.60 m，对应基线 `0.0375 m/s`；`go_forward_one_step` 暂按老旧机器人偶发原地踏步后的有效速度 `0.4x` 处理；`go_forward_fast` 按 `2x` 处理。因此 continuous 输入 `|v| <= 0.45`、`0.45 < |v| <= 0.75`、`|v| > 0.75` 分别使用 `0.015`、`0.0375`、`0.075 m/s`。这些参数都可在 Inspector 修改；关闭 `Use Measured Forward Tiers` 后恢复 `v * Maximum Forward Speed` 的比例模型。
 
-该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 57 项 EditMode 测试。
+该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 58 项 EditMode 测试。
 
 ## 安全与限制
 
