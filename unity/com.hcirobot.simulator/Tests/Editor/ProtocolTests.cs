@@ -66,6 +66,22 @@ namespace HciRobot.Simulator.Tests
         }
 
         [Test]
+        public void CommandDiagnostics_CollapseMagnitudeChangesButDescribeCurrentValues()
+        {
+            var leftSlow = new RobotCommand(0f, -0.35f, false, null, RobotMotionMode.Continuous);
+            var leftFast = new RobotCommand(0f, -0.90f, false, null, RobotMotionMode.Continuous);
+            var forwardLeft = new RobotCommand(0.4f, -0.2f, false, null, RobotMotionMode.Continuous);
+
+            Assert.That(RobotCommandDiagnostics.ChangeKey(leftSlow), Is.EqualTo("motion:turn-left"));
+            Assert.That(RobotCommandDiagnostics.ChangeKey(leftFast), Is.EqualTo("motion:turn-left"));
+            Assert.That(RobotCommandDiagnostics.ChangeKey(forwardLeft), Is.EqualTo("motion:forward+left"));
+            Assert.That(RobotCommandDiagnostics.Describe(leftSlow),
+                Is.EqualTo("motion=turn-left v=0.00 steer=-0.35 lateral=0.00"));
+            Assert.That(RobotCommandDiagnostics.Describe(RobotCommand.Stop),
+                Is.EqualTo("motion=stand v=0.00 steer=0.00 lateral=0.00"));
+        }
+
+        [Test]
         public void ActionV1_ParsesRequestAndFormatsCorrelatedReceipts()
         {
             const string line = "ACTION:{\"id\":\"action_1\",\"name\":\"head_down\"}";

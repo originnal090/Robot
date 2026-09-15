@@ -24,7 +24,18 @@ namespace HciRobot.Simulator
         [SerializeField, Min(0.05f)] private float watchdogSeconds = 0.60f;
         [SerializeField] private TonyPiMotionDriver motionDriver;
 
+        [Header("Diagnostics")]
+        [SerializeField] private bool logConnectionEvents = true;
+        [SerializeField] private bool logCommandChanges = true;
+        [SerializeField] private bool warnOnInvalidInput = true;
+        [SerializeField] private string clientStatus = "not connected";
+        [SerializeField] private string lastAppliedCommand = "none";
+        [SerializeField] private int validCommandsReceived;
+        [SerializeField] private int invalidLinesIgnored;
+
         private readonly ConcurrentQueue<RobotCommand> pendingCommands = new ConcurrentQueue<RobotCommand>();
+        private readonly ConcurrentQueue<string> pendingInfoLogs = new ConcurrentQueue<string>();
+        private readonly ConcurrentQueue<string> pendingWarningLogs = new ConcurrentQueue<string>();
         private readonly object clientGate = new object();
         private readonly object writeGate = new object();
         private TcpListener listener;
@@ -34,7 +45,12 @@ namespace HciRobot.Simulator
         private long lastValidCommandTicks;
         private int watchdogStopQueued;
         private string pendingError;
+        private string pendingClientStatus;
         private string mirroredStepId;
+        private string lastLoggedCommandKey;
+        private int receivedCommandCount;
+        private int rejectedLineCount;
+        private int resetCommandDiagnostics;
         private readonly Dictionary<string, string> actionHistory = new Dictionary<string, string>();
         private readonly Dictionary<string, string> actionNames = new Dictionary<string, string>();
 
@@ -61,6 +77,11 @@ namespace HciRobot.Simulator
             set => continuousMotion = value;
         }
 
+        public string ClientStatus => clientStatus;
+        public string LastAppliedCommand => lastAppliedCommand;
+        public int ValidCommandsReceived => validCommandsReceived;
+        public int InvalidLinesIgnored => invalidLinesIgnored;
+
         private void Reset()
         {
             motionDriver = GetComponent<TonyPiMotionDriver>();
@@ -73,6 +94,28 @@ namespace HciRobot.Simulator
 
         private void Update()
         {
+            string status = Interlocked.Exchange(ref pendingClientStatus, null);
+            if (status != null)
+            {
+                clientStatus = status;
+            }
+            validCommandsReceived = Volatile.Read(ref receivedCommandCount);
+            invalidLinesIgnored = Volatile.Read(ref rejectedLineCount);
+            if (Interlocked.Exchange(ref resetCommandDiagnostics, 0) != 0)
+            {
+                lastLoggedCommandKey = null;
+                lastAppliedCommand = "none";
+            }
+
+            while (pendingInfoLogs.TryDequeue(out string info))
+            {
+                Debug.Log(info, this);
+            }
+            while (pendingWarningLogs.TryDequeue(out string warning))
+            {
+                Debug.LogWarning(warning, this);
+            }
+
             string error = Interlocked.Exchange(ref pendingError, null);
             if (!string.IsNullOrEmpty(error))
             {
@@ -86,6 +129,12 @@ namespace HciRobot.Simulator
                 if (ageSeconds > watchdogSeconds && Interlocked.Exchange(ref watchdogStopQueued, 1) == 0)
                 {
                     QueueStop();
+                    if (logConnectionEvents)
+                    {
+                        Debug.LogWarning(
+                            $"[HCIRobot TCP] No valid command for {ageSeconds:F2}s; watchdog stopped motion.",
+                            this);
+                    }
                 }
             }
 
@@ -96,6 +145,7 @@ namespace HciRobot.Simulator
                 {
                     motionDriver.ApplyCommand(command);
                 }
+                RecordAppliedCommand(command);
                 if (command.IsActionRequest)
                 {
                     CompleteAction(command);
@@ -168,6 +218,7 @@ namespace HciRobot.Simulator
             }
 
             cancellation = new CancellationTokenSource();
+            Interlocked.Exchange(ref pendingClientStatus, "starting");
             listenerThread = new Thread(ListenLoop)
             {
                 IsBackground = true,
@@ -209,6 +260,7 @@ namespace HciRobot.Simulator
             while (pendingCommands.TryDequeue(out _))
             {
             }
+            Interlocked.Exchange(ref pendingClientStatus, "not connected");
             Interlocked.Exchange(ref lastValidCommandTicks, 0);
             Interlocked.Exchange(ref watchdogStopQueued, 0);
             tokenSource?.Dispose();
@@ -223,6 +275,10 @@ namespace HciRobot.Simulator
                 listener = new TcpListener(address, Math.Max(1, Math.Min(65535, port)));
                 listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
                 listener.Start(1);
+                if (logConnectionEvents)
+                {
+                    pendingInfoLogs.Enqueue($"[HCIRobot TCP] Listening on {address}:{port}.");
+                }
 
                 while (!token.IsCancellationRequested)
                 {
@@ -245,6 +301,7 @@ namespace HciRobot.Simulator
                     }
 
                     ConfigureClient(accepted);
+                    string endpoint = accepted.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
                     TcpClient previous;
                     lock (clientGate)
                     {
@@ -254,6 +311,15 @@ namespace HciRobot.Simulator
                         actionNames.Clear();
                     }
                     previous?.Close();
+
+                    Interlocked.Exchange(ref receivedCommandCount, 0);
+                    Interlocked.Exchange(ref rejectedLineCount, 0);
+                    Interlocked.Exchange(ref resetCommandDiagnostics, 1);
+                    Interlocked.Exchange(ref pendingClientStatus, endpoint);
+                    if (logConnectionEvents)
+                    {
+                        pendingInfoLogs.Enqueue($"[HCIRobot TCP] Client connected: {endpoint}.");
+                    }
 
                     QueueStop();
                     Interlocked.Exchange(ref lastValidCommandTicks, 0);
@@ -279,6 +345,7 @@ namespace HciRobot.Simulator
         {
             var accumulator = new JsonLineAccumulator(maximumBufferedBytes);
             var readBuffer = new byte[4096];
+            string endpoint = accepted.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
             try
             {
                 NetworkStream stream = accepted.GetStream();
@@ -303,6 +370,11 @@ namespace HciRobot.Simulator
                 if (CloseClientIfCurrent(accepted))
                 {
                     QueueStop();
+                    Interlocked.Exchange(ref pendingClientStatus, "not connected");
+                    if (logConnectionEvents)
+                    {
+                        pendingInfoLogs.Enqueue($"[HCIRobot TCP] Client disconnected: {endpoint}; motion stopped.");
+                    }
                 }
                 else
                 {
@@ -335,8 +407,16 @@ namespace HciRobot.Simulator
 
             if (!RobotProtocolParser.TryParseLine(line, deadzone, continuousMotion, out RobotCommand command))
             {
+                int rejected = Interlocked.Increment(ref rejectedLineCount);
+                if (warnOnInvalidInput && rejected == 1)
+                {
+                    pendingWarningLogs.Enqueue(
+                        "[HCIRobot TCP] Ignored invalid input. Further invalid lines are counted in "
+                        + "Invalid Lines Ignored without Console spam.");
+                }
                 return;
             }
+            Interlocked.Increment(ref receivedCommandCount);
 
             lock (clientGate)
             {
@@ -404,7 +484,33 @@ namespace HciRobot.Simulator
                         command.ActionId, command.Action, "done");
                 }
             }
-            if (reply != null) SendLine(reply);
+            if (reply != null)
+            {
+                SendLine(reply);
+                if (logCommandChanges)
+                {
+                    Debug.Log($"[HCIRobot TCP] Action done: {command.Action} id={command.ActionId}.", this);
+                }
+            }
+        }
+
+        private void RecordAppliedCommand(RobotCommand command)
+        {
+            string summary = RobotCommandDiagnostics.Describe(command);
+            lastAppliedCommand = summary;
+            if (!logCommandChanges ||
+                (command.IsMirroredStep && command.MirroredStepPhase == "heartbeat"))
+            {
+                return;
+            }
+
+            string key = RobotCommandDiagnostics.ChangeKey(command);
+            if (key == lastLoggedCommandKey)
+            {
+                return;
+            }
+            lastLoggedCommandKey = key;
+            Debug.Log($"[HCIRobot TCP] Applied {summary}.", this);
         }
 
         private bool CloseClientIfCurrent(TcpClient target)
@@ -449,6 +555,77 @@ namespace HciRobot.Simulator
             }
 
             return IPAddress.Parse(value);
+        }
+    }
+
+    /// <summary>
+    /// Compact, stable command descriptions for diagnostics. ChangeKey excludes
+    /// continuously varying magnitudes so joystick/autonomy traffic does not flood
+    /// the Console while the effective direction remains unchanged.
+    /// </summary>
+    public static class RobotCommandDiagnostics
+    {
+        public static string ChangeKey(RobotCommand command)
+        {
+            if (command.IsMirroredStep)
+            {
+                return $"mirror-step:{command.MirroredStepId}:{command.MirroredStepPhase}";
+            }
+            if (command.IsAction)
+            {
+                return $"action:{command.ActionId}:{command.Action}:{command.ActionStatus}";
+            }
+            return "motion:" + MotionLabel(command);
+        }
+
+        public static string Describe(RobotCommand command)
+        {
+            if (command.IsMirroredStep)
+            {
+                return $"mirror step {command.MirroredStepPhase} id={command.MirroredStepId}";
+            }
+            if (command.IsAction)
+            {
+                string receipt = string.IsNullOrEmpty(command.ActionStatus)
+                    ? string.Empty
+                    : $" status={command.ActionStatus}";
+                string ident = string.IsNullOrEmpty(command.ActionId)
+                    ? string.Empty
+                    : $" id={command.ActionId}";
+                return $"action={command.Action}{ident}{receipt}";
+            }
+            return $"motion={MotionLabel(command)} v={command.Velocity:+0.00;-0.00;0.00} "
+                + $"steer={command.Steer:+0.00;-0.00;0.00} "
+                + $"lateral={command.Lateral:+0.00;-0.00;0.00}";
+        }
+
+        private static string MotionLabel(RobotCommand command)
+        {
+            const float epsilon = 0.0001f;
+            if (Mathf.Abs(command.Lateral) > epsilon)
+            {
+                return command.Lateral < 0f ? "lateral-left" : "lateral-right";
+            }
+
+            string longitudinal = command.Velocity > epsilon ? "forward"
+                : command.Velocity < -epsilon ? "backward"
+                : string.Empty;
+            string turn = command.Steer > epsilon ? "right"
+                : command.Steer < -epsilon ? "left"
+                : string.Empty;
+            if (!string.IsNullOrEmpty(longitudinal) && !string.IsNullOrEmpty(turn))
+            {
+                return longitudinal + "+" + turn;
+            }
+            if (!string.IsNullOrEmpty(longitudinal))
+            {
+                return longitudinal;
+            }
+            if (!string.IsNullOrEmpty(turn))
+            {
+                return "turn-" + turn;
+            }
+            return "stand";
         }
     }
 }

@@ -48,7 +48,7 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 
 | 组件 | 用途 | 默认值/行为 |
 |---|---|---|
-| `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD/ACTION 服务 | `0.0.0.0:5075`；声明 `ACTION_V1`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有回执与 `DIST` 经同一写锁串行化 |
+| `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD/ACTION 服务 | `0.0.0.0:5075`；声明 `ACTION_V1`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有回执与 `DIST` 经同一写锁串行化；Console 只在连接或有效运动方向变化时记录，不逐包刷屏 |
 | `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；默认离散动作，可选 continuous；`head_down/center/up` 持久调整机器人相机俯仰 |
 | `ForwardDistanceSensor` | 前向 ray/sphere cast | 默认 sphere cast；结果换算为整数 mm；默认每 0.30 s 发送 `DIST` |
 | `MjpegCameraServer` | TonyPi 风格 MJPEG | `0.0.0.0:8080/?action=stream`；Camera/RenderTexture/ReadPixels/JPEG 全在主线程；网络线程只发送缓存 JPEG |
@@ -82,7 +82,9 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 - `session_id` 内严格递增 seq 与新 session 切换；
 - HUD 文本格式化：状态/目标/输出/动作/障碍行、STALE、estop/fault/termination。
 
-该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 52 项 EditMode 测试。
+`VirtualRobotTcpServer > Diagnostics` 可分别关闭连接、命令变化和非法输入日志。Play Mode 下 `Client Status`、`Last Applied Command`、`Valid Commands Received`、`Invalid Lines Ignored` 会持续显示当前诊断值；连续收到同方向输入时只更新 Inspector 计数和最新值，不重复写 Console。
+
+该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 53 项 EditMode 测试。
 
 ## 安全与限制
 
