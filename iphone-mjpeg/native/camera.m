@@ -95,23 +95,15 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     if (status == AVAuthorizationStatusAuthorized) {
         return YES;
     }
-    if (status == AVAuthorizationStatusNotDetermined) {
-        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-        __block BOOL granted = NO;
-        [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL value) {
-            granted = value;
-            dispatch_semaphore_signal(semaphore);
-        }];
-        dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC);
-        if (dispatch_semaphore_wait(semaphore, deadline) == 0 && granted) {
-            return YES;
-        }
-    }
     if (error) {
+        NSString *statusName = status == AVAuthorizationStatusNotDetermined ? @"not determined" :
+                               status == AVAuthorizationStatusDenied ? @"denied" : @"restricted";
         *error = [NSError errorWithDomain:@"local.iphonecamera"
                                      code:1
                                  userInfo:@{NSLocalizedDescriptionKey:
-                                                @"Camera permission is unavailable. Sign with the supplied TCC entitlement or launch once from an authorized app context."}];
+                                                [NSString stringWithFormat:
+                                                    @"Camera permission is %@. This command-line helper will not trigger a TCC prompt without an app Info.plist; sign with the supplied entitlement or authorize it from an app context.",
+                                                    statusName]}];
     }
     return NO;
 }
@@ -330,13 +322,13 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     if (!pixelBuffer) {
         return;
     }
+    uint64_t timestampNs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000000000.0);
     uint32_t width = 0;
     uint32_t height = 0;
     NSData *jpeg = [self jpegFromPixelBuffer:pixelBuffer width:&width height:&height];
     if (!jpeg) {
         return;
     }
-    uint64_t timestampNs = (uint64_t)([[NSDate date] timeIntervalSince1970] * 1000000000.0);
     [self.frameCondition lock];
     self.latestJPEG = jpeg;
     self.latestWidth = width;
