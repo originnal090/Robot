@@ -98,7 +98,7 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     [panel addSubview:self.resolutionControl];
 
     [panel addSubview:[self panelLabelWithText:@"Camera FPS" frame:CGRectMake(12, 63, 250, 18)]];
-    self.fpsControl = [[UISegmentedControl alloc] initWithItems:@[@"15", @"24", @"30"]];
+    self.fpsControl = [[UISegmentedControl alloc] initWithItems:@[@"15", @"30", @"60"]];
     self.fpsControl.frame = CGRectMake(12, 83, 254, 30);
     [panel addSubview:self.fpsControl];
 
@@ -122,13 +122,13 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     [panel addSubview:applyButton];
 
     [panel addSubview:[self panelLabelWithText:@"Training capture FPS" frame:CGRectMake(12, 261, 250, 18)]];
-    self.datasetFPSControl = [[UISegmentedControl alloc] initWithItems:@[@"1", @"2", @"5"]];
-    self.datasetFPSControl.frame = CGRectMake(12, 281, 120, 30);
+    self.datasetFPSControl = [[UISegmentedControl alloc] initWithItems:@[@"1", @"5", @"15", @"30"]];
+    self.datasetFPSControl.frame = CGRectMake(12, 281, 150, 30);
     [panel addSubview:self.datasetFPSControl];
 
     self.recordButton = [self buttonWithTitle:@"Start capture"
                                         action:@selector(toggleDatasetRecording:)
-                                         frame:CGRectMake(140, 281, 126, 30)];
+                                         frame:CGRectMake(170, 281, 96, 30)];
     [panel addSubview:self.recordButton];
 
     self.datasetStatusLabel = [self panelLabelWithText:@"Not recording"
@@ -218,10 +218,12 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     NSInteger rotation = [defaults integerForKey:kRotationKey];
     NSInteger datasetFPS = [defaults integerForKey:kDatasetFPSKey];
     self.resolutionControl.selectedSegmentIndex = width > 640 ? 1 : 0;
-    self.fpsControl.selectedSegmentIndex = fps <= 15 ? 0 : (fps <= 24 ? 1 : 2);
+    self.fpsControl.selectedSegmentIndex = fps <= 15 ? 0 : (fps <= 30 ? 1 : 2);
     self.rotationControl.selectedSegmentIndex = rotation == 90 ? 1 :
                                                   (rotation == 180 ? 2 : (rotation == 270 ? 3 : 0));
-    self.datasetFPSControl.selectedSegmentIndex = datasetFPS <= 1 ? 0 : (datasetFPS <= 2 ? 1 : 2);
+    self.datasetFPSControl.selectedSegmentIndex = datasetFPS <= 1 ? 0 :
+                                                     (datasetFPS <= 5 ? 1 :
+                                                      (datasetFPS <= 15 ? 2 : 3));
     self.qualitySlider.value = [defaults integerForKey:kQualityKey];
     [self qualityChanged:self.qualitySlider];
 }
@@ -333,7 +335,7 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     (void)sender;
     NSInteger width = self.resolutionControl.selectedSegmentIndex == 1 ? 1280 : 640;
     NSInteger height = self.resolutionControl.selectedSegmentIndex == 1 ? 720 : 480;
-    NSInteger fpsValues[] = {15, 24, 30};
+    NSInteger fpsValues[] = {15, 30, 60};
     NSInteger rotationValues[] = {0, 90, 180, 270};
     NSInteger fps = fpsValues[MAX(0, self.fpsControl.selectedSegmentIndex)];
     NSInteger rotation = rotationValues[MAX(0, self.rotationControl.selectedSegmentIndex)];
@@ -348,7 +350,7 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
 }
 
 - (NSInteger)selectedDatasetFPS {
-    NSInteger values[] = {1, 2, 5};
+    NSInteger values[] = {1, 5, 15, 30};
     NSInteger index = MAX(0, self.datasetFPSControl.selectedSegmentIndex);
     NSInteger fps = values[index];
     [[NSUserDefaults standardUserDefaults] setInteger:fps forKey:kDatasetFPSKey];

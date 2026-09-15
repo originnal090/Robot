@@ -108,7 +108,7 @@ export IPHONE_MJPEG_BRIDGE_PORT=18088
 export IPHONE_MJPEG_WIDTH=640
 export IPHONE_MJPEG_HEIGHT=480
 export IPHONE_MJPEG_FPS=30
-export IPHONE_MJPEG_STREAM_FPS=15
+export IPHONE_MJPEG_STREAM_FPS=60
 export IPHONE_MJPEG_JPEG_QUALITY=60
 export IPHONE_MJPEG_ROTATION=0
 ```
@@ -120,14 +120,15 @@ service port.
 `IPHONE_MJPEG_ROTATION` accepts `0`, `90`, `180`, or `270`. Rotation uses the
 AVFoundation video connection, and mirroring is disabled. The default `0`
 means landscape-right. If the mounted phone is sideways or inverted, change
-this one value and restart. The tested defaults capture at `640x480@30` and
-serve each client at up to 15 FPS with JPEG quality 60. This keeps two clients
-below the measured Tailnet/Wi-Fi throughput without queuing stale frames.
+this one value and restart. The defaults capture at `640x480@30`; the HTTP
+server allows up to 60 FPS so it no longer limits a faster camera producer.
+The actual rate remains bounded by AVFoundation capture, JPEG encoding, and
+network throughput, while latest-frame delivery prevents stale-frame queues.
 `1280x720@30`, quality 75 remains available through the environment variables
 when the LAN has enough bandwidth.
 
-App build 7 adds an on-device **Config** panel. It persists resolution
-(640x480 or 1280x720), requested camera FPS (15/24/30), JPEG quality (40–90),
+App build 8 adds an on-device **Config** panel. It persists resolution
+(640x480 or 1280x720), requested camera FPS (15/30/60), JPEG quality (40–90),
 and output rotation (0/90/180/270) in the app container. Tap **Apply & save**;
 the capture session restarts while the Python/NekoView service stays up. The
 preview uses the same orientation as the encoded output and fills the landscape
@@ -277,8 +278,8 @@ No TonyPi source or configuration is changed by this project.
 
 ## Training-data capture
 
-App build 7 can save training frames without routing raw buffers through
-Python. Open **Config**, choose 1, 2, or 5 capture FPS, and tap **Start capture**.
+App build 8 can save training frames without routing raw buffers through
+Python. Open **Config**, choose 1, 5, 15, or 30 capture FPS, and tap **Start capture**.
 Tap **Stop capture** before copying the dataset. Each run creates a unique
 `Documents/Datasets/session-...` directory containing JPEG files,
 `metadata.json`, and a timestamped `frames.jsonl` manifest. Image writes run on

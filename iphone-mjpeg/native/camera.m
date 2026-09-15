@@ -116,6 +116,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 @property(nonatomic) NSInteger requestedWidth;
 @property(nonatomic) NSInteger requestedHeight;
 @property(nonatomic) NSInteger requestedFPS;
+@property(nonatomic) NSInteger configuredFPS;
 @property(nonatomic) CGFloat jpegQuality;
 @property(nonatomic) NSInteger rotation;
 @property(nonatomic, strong) AVCaptureSession *session;
@@ -136,7 +137,8 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 @property(nonatomic, readwrite, getter=isDatasetRecording) BOOL datasetRecording;
 @property(nonatomic, readwrite) NSUInteger datasetSavedCount;
 @property(nonatomic, copy, readwrite, nullable) NSString *datasetDirectory;
-@property(nonatomic) NSUInteger datasetEveryNFrames;
+@property(nonatomic) uint64_t datasetIntervalNs;
+@property(nonatomic) uint64_t datasetLastScheduledTimestampNs;
 @property(nonatomic) BOOL datasetWritePending;
 @end
 
@@ -162,6 +164,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         _requestedWidth = width;
         _requestedHeight = height;
         _requestedFPS = fps;
+        _configuredFPS = fps;
         _jpegQuality = MAX(1, MIN(100, quality)) / 100.0;
         _rotation = ((rotation % 360) + 360) % 360;
         _sessionQueue = dispatch_queue_create("local.iphonecamera.session", DISPATCH_QUEUE_SERIAL);
@@ -230,14 +233,17 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
         double sizeError = fabs((double)dimensions.width - self.requestedWidth) +
                            fabs((double)dimensions.height - self.requestedHeight);
-        BOOL supportsFPS = NO;
+        double fpsError = DBL_MAX;
         for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
             if (self.requestedFPS >= range.minFrameRate && self.requestedFPS <= range.maxFrameRate) {
-                supportsFPS = YES;
-                break;
+                fpsError = 0.0;
+            } else {
+                double nearest = self.requestedFPS < range.minFrameRate
+                    ? range.minFrameRate : range.maxFrameRate;
+                fpsError = MIN(fpsError, fabs(nearest - self.requestedFPS));
             }
         }
-        double score = sizeError + (supportsFPS ? 0.0 : 1000000.0);
+        double score = sizeError * 1000.0 + fpsError;
         if (score < bestScore) {
             bestScore = score;
             bestFormat = format;
@@ -253,13 +259,29 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         return;
     }
     device.activeFormat = bestFormat;
-    CMTime frameDuration = CMTimeMake(1, (int32_t)self.requestedFPS);
-    device.activeVideoMinFrameDuration = frameDuration;
-    device.activeVideoMaxFrameDuration = frameDuration;
+    double configuredFPS = 0.0;
+    double closestError = DBL_MAX;
+    for (AVFrameRateRange *range in bestFormat.videoSupportedFrameRateRanges) {
+        double candidate = self.requestedFPS;
+        if (candidate < range.minFrameRate) candidate = range.minFrameRate;
+        if (candidate > range.maxFrameRate) candidate = range.maxFrameRate;
+        double error = fabs(candidate - self.requestedFPS);
+        if (error < closestError) {
+            closestError = error;
+            configuredFPS = candidate;
+        }
+    }
+    if (configuredFPS > 0.0) {
+        self.configuredFPS = MAX(1, (NSInteger)llround(configuredFPS));
+        CMTime frameDuration = CMTimeMake(1, (int32_t)self.configuredFPS);
+        device.activeVideoMinFrameDuration = frameDuration;
+        device.activeVideoMaxFrameDuration = frameDuration;
+    }
     CMVideoDimensions activeDimensions =
         CMVideoFormatDescriptionGetDimensions(bestFormat.formatDescription);
-    IPMJLog(@"Selected camera format: %dx%d at requested %ld FPS",
-          activeDimensions.width, activeDimensions.height, (long)self.requestedFPS);
+    IPMJLog(@"Selected camera format: %dx%d at %ld FPS (requested %ld)",
+          activeDimensions.width, activeDimensions.height, (long)self.configuredFPS,
+          (long)self.requestedFPS);
     [device unlockForConfiguration];
 }
 
@@ -332,6 +354,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         return NO;
     }
     [session addInput:input];
+    [self configureFormatForDevice:device];
 
     AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
     output.alwaysDiscardsLateVideoFrames = YES;
@@ -454,8 +477,8 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         return NO;
     }
 
-    NSInteger boundedFPS = MAX(1, MIN(targetFPS, self.requestedFPS));
-    NSUInteger everyNFrames = MAX(1, (NSUInteger)llround((double)self.requestedFPS / boundedFPS));
+    NSInteger boundedFPS = MAX(1, MIN(targetFPS, self.configuredFPS));
+    uint64_t intervalNs = (uint64_t)llround(1000000000.0 / boundedFPS);
     NSDictionary *metadata = @{
         @"schema_version": @1,
         @"created_at": @([[NSDate date] timeIntervalSince1970]),
@@ -464,6 +487,7 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         @"requested_width": @(self.requestedWidth),
         @"requested_height": @(self.requestedHeight),
         @"requested_camera_fps": @(self.requestedFPS),
+        @"configured_camera_fps": @(self.configuredFPS),
         @"target_dataset_fps": @(boundedFPS),
         @"jpeg_quality": @((NSInteger)llround(self.jpegQuality * 100.0)),
         @"rotation": @(self.rotation)
@@ -482,13 +506,14 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 
     @synchronized(self) {
         self.datasetDirectory = directory;
-        self.datasetEveryNFrames = everyNFrames;
+        self.datasetIntervalNs = intervalNs;
+        self.datasetLastScheduledTimestampNs = 0;
         self.datasetSavedCount = 0;
         self.datasetWritePending = NO;
         self.datasetRecording = YES;
     }
-    IPMJLog(@"Dataset recording started: %@ (target=%ld FPS, every=%lu frames)",
-            directory, (long)boundedFPS, (unsigned long)everyNFrames);
+    IPMJLog(@"Dataset recording started: %@ (target=%ld FPS)",
+            directory, (long)boundedFPS);
     return YES;
 }
 
@@ -654,9 +679,11 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
             __block NSString *datasetDirectory = nil;
             @synchronized(self) {
                 if (self.datasetRecording && !self.datasetWritePending &&
-                    self.datasetEveryNFrames > 0 &&
-                    self.latestSequence % self.datasetEveryNFrames == 0) {
+                    self.datasetIntervalNs > 0 &&
+                    (self.datasetLastScheduledTimestampNs == 0 ||
+                     timestampNs - self.datasetLastScheduledTimestampNs >= self.datasetIntervalNs)) {
                     self.datasetWritePending = YES;
+                    self.datasetLastScheduledTimestampNs = timestampNs;
                     shouldSave = YES;
                     datasetDirectory = self.datasetDirectory;
                 }
