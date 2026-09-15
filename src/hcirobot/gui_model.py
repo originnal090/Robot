@@ -223,6 +223,21 @@ class GuiModel:
             if self.session_state is SessionState.RUNNING:
                 self.video_status = "等待画面"
             self.append_log(event.message)
+        elif event.kind == "autonomy_paused":
+            if self.session_state is not SessionState.RUNNING:
+                return
+            self.armed = False
+            self.control_state = "VIDEO_HOLD"
+            self.command = ZERO_COMMAND
+            self.output_source = str(event.output_source or "video_stale_hold")
+            self.append_log(event.message)
+        elif event.kind == "autonomy_resumed":
+            if self.session_state is not SessionState.RUNNING:
+                return
+            self.armed = True
+            self.control_state = "SEARCHING"
+            self.command = ZERO_COMMAND
+            self.append_log(event.message)
         elif event.kind == "manual_fallback":
             if self.session_state is not SessionState.RUNNING:
                 return

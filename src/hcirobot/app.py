@@ -414,6 +414,7 @@ def run_loop(
     frame_stale_stop_seconds: float | None = None,
     duplicate_frame_limit: int = 0,
     preserve_manual_on_video_failure: bool = False,
+    resume_autonomy_on_video_recovery: bool = False,
 ) -> RunResult:
     if frame_timeout_seconds <= 0:
         raise ValueError("frame timeout must be positive")
@@ -547,17 +548,20 @@ def run_loop(
     previous_fingerprint: bytes | None = None
     duplicate_count = 0
     vision_hold_active = False
+    resume_autonomy_pending = False
 
     def finish_safe(reason: str) -> None:
         controller.fail_safe(reason)
         send_command(RobotCommand.stop(), "shutdown")
 
     def enter_video_fallback(message: str) -> None:
-        """Drop autonomy while preserving the robot link for manual control."""
+        """Stop on stale vision while keeping the robot link available."""
         nonlocal is_armed, walk_command, last_radius_ratio, vision_hold_active
+        nonlocal resume_autonomy_pending
         was_armed = is_armed
         if was_armed:
             is_armed = False
+            resume_autonomy_pending = resume_autonomy_on_video_recovery
             controller.reset()
             walk_command = RobotCommand.stop()
             last_radius_ratio = None
@@ -566,9 +570,21 @@ def run_loop(
             send_command(RobotCommand.stop(), "video_stale_hold")
         if not vision_hold_active:
             vision_hold_active = True
-            emit("video_stale", message, frame_count=frame_count)
+            suffix = (
+                "；自治已暂停，画面恢复后重新确认目标"
+                if resume_autonomy_pending
+                else "；自治已解除，手柄控制保持可用"
+            )
+            emit("video_stale", message + suffix, frame_count=frame_count)
         if was_armed:
-            emit("manual_fallback", "图传异常，自治已解除；手柄控制保持可用", frame_count=frame_count)
+            if resume_autonomy_pending:
+                emit("autonomy_paused", "图传异常，自治已暂停等待恢复", frame_count=frame_count)
+            else:
+                emit(
+                    "manual_fallback",
+                    "图传异常，自治已解除；手柄控制保持可用",
+                    frame_count=frame_count,
+                )
 
     try:
         while True:
@@ -596,18 +612,27 @@ def run_loop(
                 break
             # consume_disarm() runs first so a stray request is cleared even
             # when the session is already disarmed.
-            if session.consume_disarm() and is_armed:
-                is_armed = False
-                controller.reset()
-                walk_command = RobotCommand.stop()
-                last_radius_ratio = None
-                if approach_gate is not None:
-                    approach_gate.hold_settle()
-                send_command(RobotCommand.stop(), "disarmed")
-                emit("disarmed", "manual takeover: autonomy disarmed")
+            disarm_requested = session.consume_disarm()
+            if disarm_requested:
+                had_autonomy = is_armed or resume_autonomy_pending
+                resume_autonomy_pending = False
+                if is_armed:
+                    is_armed = False
+                    controller.reset()
+                    walk_command = RobotCommand.stop()
+                    last_radius_ratio = None
+                    if approach_gate is not None:
+                        approach_gate.hold_settle()
+                    send_command(RobotCommand.stop(), "disarmed")
+                if had_autonomy:
+                    emit("disarmed", "manual takeover: autonomy disarmed")
             if session.consume_arm():
                 if vision_hold_active:
-                    emit("warning", "图传尚未恢复，已忽略自治武装请求")
+                    if resume_autonomy_on_video_recovery:
+                        resume_autonomy_pending = True
+                        emit("warning", "图传尚未恢复；恢复后将重新确认目标并继续自治")
+                    else:
+                        emit("warning", "图传尚未恢复，已忽略自治武装请求")
                 else:
                     is_armed = True
                     if controller.state is ControlState.IDLE:
@@ -640,6 +665,13 @@ def run_loop(
                     last_step_heartbeat = time.monotonic()
 
             manual = session.current_manual()
+            if manual is not None and resume_autonomy_pending:
+                resume_autonomy_pending = False
+                emit(
+                    "manual_fallback",
+                    "收到手柄输入，已取消图传恢复后的自动继续",
+                    frame_count=frame_count,
+                )
             manual_started = manual is not None and not manual_was_active
             if manual_started and obstacle_policy is not None:
                 # A manual pulse cancels residual autonomous avoidance immediately,
@@ -667,7 +699,7 @@ def run_loop(
                     and not vision_hold_active
                 ):
                     if preserve_manual_on_video_failure:
-                        enter_video_fallback("等待新帧；自治已解除，手柄控制保持可用")
+                        enter_video_fallback("等待新帧")
                     else:
                         send_command(RobotCommand.stop(), "video_stale_hold")
                         vision_hold_active = True
@@ -686,7 +718,7 @@ def run_loop(
             last_frame_received = time.monotonic()
             if item is _END:
                 if video_retry and preserve_manual_on_video_failure:
-                    enter_video_fallback("图传已结束；自治已解除，手柄控制保持可用")
+                    enter_video_fallback("图传已结束")
                     continue
                 if controller.state not in (ControlState.ARRIVED, ControlState.IDLE):
                     finish_safe("video_ended")
@@ -697,7 +729,7 @@ def run_loop(
             if isinstance(item, Exception):
                 if video_retry and preserve_manual_on_video_failure:
                     enter_video_fallback(
-                        f"图传重连已停止：{type(item).__name__}: {item}；手柄控制保持可用"
+                        f"图传重连已停止：{type(item).__name__}: {item}"
                     )
                     continue
                 raise item
@@ -709,7 +741,7 @@ def run_loop(
                     if duplicate_count >= duplicate_frame_limit:
                         if preserve_manual_on_video_failure:
                             enter_video_fallback(
-                                f"画面冻结：连续 {duplicate_count} 帧未变化；手柄控制保持可用"
+                                f"画面冻结：连续 {duplicate_count} 帧未变化"
                             )
                         else:
                             if not vision_hold_active:
@@ -734,6 +766,22 @@ def run_loop(
             if vision_hold_active:
                 vision_hold_active = False
                 emit("video_recovered", "已收到新画面", frame_count=frame_count)
+                if resume_autonomy_pending:
+                    resume_autonomy_pending = False
+                    # Discard confirmation/tracking earned before the freeze.
+                    detector.update_config(detector.config)
+                    controller.reset()
+                    walk_command = RobotCommand.stop()
+                    last_radius_ratio = None
+                    if approach_gate is not None:
+                        approach_gate.hold_settle()
+                    controller.arm(clock())
+                    is_armed = True
+                    emit(
+                        "autonomy_resumed",
+                        "画面已恢复；从目标重新确认开始继续自治",
+                        frame_count=frame_count,
+                    )
 
             if approach_gate is not None and is_armed and manual is None:
                 # Burst-walking modes: during walk/settle the camera bounces, so

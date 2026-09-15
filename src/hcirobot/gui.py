@@ -921,6 +921,7 @@ class RobotControlApp:
                 ),
                 duplicate_frame_limit=DUPLICATE_FRAME_LIMIT,
                 preserve_manual_on_video_failure=True,
+                resume_autonomy_on_video_recovery=True,
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.

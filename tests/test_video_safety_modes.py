@@ -43,6 +43,29 @@ class OneFrameThenBlockSource:
         self.closed.set()
 
 
+class FreezeThenRecoverSource:
+    def __init__(self, recovery_delay: float = 0.02) -> None:
+        self.closed = False
+        self.recovery_delay = recovery_delay
+
+    def __iter__(self):
+        frozen = np.zeros((48, 64, 3), dtype=np.uint8)
+        for _ in range(4):
+            if self.closed:
+                return
+            yield frozen.copy()
+            time.sleep(0.04)
+        time.sleep(self.recovery_delay)
+        for value in range(1, 5):
+            if self.closed:
+                return
+            yield np.full((48, 64, 3), value, dtype=np.uint8)
+            time.sleep(0.04)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class BrokenLiveSource:
     def __iter__(self):
         raise OSError("camera reconnect exhausted")
@@ -188,6 +211,74 @@ def test_exhausted_video_retries_preserve_robot_link_for_manual_control() -> Non
     assert not any(event.kind == "error" for event in events)
 
 
+def test_frozen_video_pauses_and_resumes_autonomy_after_fresh_frame() -> None:
+    robot = RecordingRobot()
+    control = SessionControl()
+    events: list[RuntimeEvent] = []
+
+    def sink(event: RuntimeEvent) -> None:
+        events.append(event)
+        if event.kind == "autonomy_resumed":
+            control.request_stop()
+
+    result = run_loop(
+        FreezeThenRecoverSource(),
+        RedBallDetector(DetectorConfig()),
+        _controller(),
+        robot,
+        armed=True,
+        frame_timeout_seconds=0.3,
+        frame_stale_stop_seconds=0.1,
+        duplicate_frame_limit=2,
+        preserve_manual_on_video_failure=True,
+        resume_autonomy_on_video_recovery=True,
+        session=control,
+        event_sink=sink,
+    )
+
+    kinds = [event.kind for event in events]
+    assert result.termination == "stop_requested"
+    assert kinds.index("video_stale") < kinds.index("autonomy_paused")
+    assert kinds.index("autonomy_paused") < kinds.index("video_recovered")
+    assert kinds.index("video_recovered") < kinds.index("autonomy_resumed")
+    assert not any(event.kind == "manual_fallback" for event in events)
+    assert any(command == RobotCommand.stop() for command in robot.commands)
+
+
+def test_manual_input_during_video_hold_cancels_automatic_resume() -> None:
+    robot = RecordingRobot()
+    control = SessionControl()
+    events: list[RuntimeEvent] = []
+
+    def sink(event: RuntimeEvent) -> None:
+        events.append(event)
+        if event.kind == "autonomy_paused":
+            control.request_manual(0.3, 0.0, 0.5, source="gamepad")
+        elif event.kind == "video_recovered":
+            control.request_stop()
+
+    result = run_loop(
+        FreezeThenRecoverSource(recovery_delay=0.15),
+        RedBallDetector(DetectorConfig()),
+        _controller(),
+        robot,
+        armed=True,
+        frame_timeout_seconds=0.3,
+        frame_stale_stop_seconds=0.1,
+        duplicate_frame_limit=2,
+        preserve_manual_on_video_failure=True,
+        resume_autonomy_on_video_recovery=True,
+        session=control,
+        event_sink=sink,
+    )
+
+    assert result.termination == "stop_requested"
+    assert any(event.kind == "manual_fallback" for event in events)
+    assert any(event.kind == "manual" and event.output_v == 0.3 for event in events)
+    assert any(event.kind == "video_recovered" for event in events)
+    assert not any(event.kind == "autonomy_resumed" for event in events)
+
+
 def test_control_only_model_enables_manual_and_never_autonomy() -> None:
     model = GuiModel()
     model.begin_start(obstacle_enabled=True, control_only=True)
@@ -246,3 +337,24 @@ def test_video_stale_switches_to_manual_without_faulting_session() -> None:
     assert model.control_state == "MANUAL"
     assert model.can_manual
     assert not model.fault
+
+
+def test_video_hold_model_reports_pause_and_automatic_resume() -> None:
+    model = GuiModel()
+    model.begin_start()
+    model.apply_event(RuntimeEvent("started", session_id=12))
+    model.apply_event(RuntimeEvent("armed", session_id=12))
+    model.apply_event(RuntimeEvent("video_stale", "等待新帧", session_id=12))
+    model.apply_event(RuntimeEvent("autonomy_paused", "自治已暂停", session_id=12))
+
+    assert model.session_state is SessionState.RUNNING
+    assert model.video_status == "画面冻结"
+    assert model.control_state == "VIDEO_HOLD"
+    assert not model.armed
+
+    model.apply_event(RuntimeEvent("video_recovered", "已收到新画面", session_id=12))
+    model.apply_event(RuntimeEvent("autonomy_resumed", "自治继续", session_id=12))
+
+    assert model.armed
+    assert model.control_state == "SEARCHING"
+    assert model.video_status == "等待画面"
