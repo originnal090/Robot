@@ -28,3 +28,9 @@ unity/**/*.user
 # Local diagnostics and vendor-source deployment bundles.
 .gui-diagnostic.png
 tonypi-service-code.tar.gz
+
+# iPhone MJPEG local/runtime artifacts.
+iphone-mjpeg/native/iphone-camera
+iphone-mjpeg/logs/
+iphone-mjpeg/run/
+iphone-mjpeg/test.jpg
