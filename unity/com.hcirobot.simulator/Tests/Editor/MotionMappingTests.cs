@@ -163,5 +163,41 @@ namespace HciRobot.Simulator.Tests
                 Object.DestroyImmediate(robot);
             }
         }
+
+        [Test]
+        public void HeadActions_SelectThreePersistentPitchesWithoutChangingOnBodyTurn()
+        {
+            var robot = new GameObject("head pitch test");
+            var camera = new GameObject("Robot Camera");
+            try
+            {
+                camera.transform.SetParent(robot.transform, false);
+                robot.AddComponent<Rigidbody>().useGravity = false;
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                typeof(TonyPiMotionDriver).GetMethod("Awake", flags).Invoke(driver, null);
+
+                driver.ApplyCommand(TonyPiCommandMapper.Action("head_down"));
+                Assert.That(driver.HeadPitchLevel, Is.EqualTo("down"));
+                Assert.That(camera.transform.localEulerAngles.x, Is.EqualTo(30f).Within(0.001f));
+                driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, 0.6f, false, 0.2f, true));
+                Assert.That(camera.transform.localEulerAngles.x, Is.EqualTo(30f).Within(0.001f));
+                driver.ApplyCommand(TonyPiCommandMapper.Action("head_center"));
+                Assert.That(camera.transform.localEulerAngles.x, Is.EqualTo(10f).Within(0.001f));
+                driver.ApplyCommand(TonyPiCommandMapper.Action("head_up"));
+                Assert.That(driver.HeadPitchLevel, Is.EqualTo("up"));
+                Assert.That(Mathf.DeltaAngle(camera.transform.localEulerAngles.x, -10f),
+                    Is.Zero.Within(0.001f));
+
+                driver.ApplyCommand(TonyPiCommandMapper.Action("head_up", "a1", "done"));
+                Assert.That(driver.LastActionReceiptId, Is.EqualTo("a1"));
+                Assert.That(driver.LastActionReceiptStatus, Is.EqualTo("done"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera);
+                Object.DestroyImmediate(robot);
+            }
+        }
     }
 }

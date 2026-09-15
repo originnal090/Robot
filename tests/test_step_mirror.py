@@ -71,7 +71,10 @@ def test_fanout_sends_start_immediately_then_primary_terminal_once(status):
         wait_for(lambda: len(lines) == 1)
         assert lines[0].startswith("MIRROR_STEP:")
         assert json.loads(lines[0][12:]) == {
-            "id": ident, "phase": "start", "steer": -0.35, "lateral": 0,
+            "id": ident,
+            "phase": "start",
+            "steer": -0.35,
+            "lateral": 0,
         }
         assert robot.step_status(ident) == "accepted"
         robot.heartbeat_step(ident)
@@ -80,7 +83,11 @@ def test_fanout_sends_start_immediately_then_primary_terminal_once(status):
         assert robot.step_status(ident) == status
         robot.send(RobotCommand.stop())
         wait_for(lambda: len(lines) == 4)
-        assert [json.loads(line[12:])["phase"] for line in lines[:3]] == ["start", "heartbeat", status]
+        assert [json.loads(line[12:])["phase"] for line in lines[:3]] == [
+            "start",
+            "heartbeat",
+            status,
+        ]
         assert json.loads(lines[3])["steer"] == 0
         assert len(primary.steps) == 1
 
@@ -140,3 +147,22 @@ def test_manual_stop_stays_after_queued_start(monkeypatch):
     finally:
         release.set()
         mirror.close()
+
+
+def test_action_command_and_real_robot_receipt_are_both_mirrored():
+    with mirror_receiver() as (mirror, lines):
+        primary = RecordingRobot()
+        robot = FanoutRobot(primary, (mirror,))
+        ident = robot.send_action("head_down")
+        assert ident is not None
+        assert robot.action_status(ident) == "done"
+        wait_for(lambda: len(lines) == 2)
+        assert lines[0] == "CMD:head_down"
+        assert json.loads(lines[1][14:]) == {
+            "id": ident,
+            "name": "head_down",
+            "status": "done",
+        }
+        assert robot.action_status(ident) == "done"
+        time.sleep(0.05)
+        assert len(lines) == 2

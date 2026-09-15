@@ -15,6 +15,7 @@ from hcirobot.gamepad import (
     GamepadTeleop,
     apply_deadzone,
     map_to_command,
+    map_to_motion,
     sanitize_axis,
 )
 from hcirobot.gui_model import GuiModel, SessionState
@@ -117,6 +118,20 @@ def test_map_to_command_follows_protocol_signs() -> None:
     assert velocity == pytest.approx(1.0)
     assert steer == pytest.approx(0.375)
     assert map_to_command(float("nan"), 0.0, 0.2) == (0.0, 0.0)
+
+
+def test_map_to_motion_uses_ls_x_for_lateral_and_rs_x_for_turning() -> None:
+    reading = GamepadReading(
+        connected=True,
+        drive_axis=0.6,
+        steer_axis=-0.8,
+        lateral_axis=0.4,
+        head_axis=1.0,
+    )
+    velocity, steer, lateral = map_to_motion(reading, 0.2)
+    assert velocity == pytest.approx(0.5)
+    assert steer == pytest.approx(-0.75)
+    assert lateral == pytest.approx(0.25)
 
 
 # ---------- monitor ----------
@@ -322,6 +337,67 @@ def test_teleop_sticks_drive_only_in_manual_mode() -> None:
         assert manual.source == "gamepad"
         assert manual.velocity == pytest.approx((0.9 - 0.2) / 0.8)
         assert manual.steer == pytest.approx(-(0.9 - 0.2) / 0.8)
+    finally:
+        monitor.stop()
+
+
+def test_teleop_ls_x_requests_lateral_and_rs_x_requests_turn() -> None:
+    backend, monitor, teleop = teleop_setup()
+    try:
+        session = SessionControl()
+        backend.queue_readings(
+            GamepadReading(True, "Fake Pad", 0.0, -0.8, frozenset(), lateral_axis=0.6)
+        )
+        assert wait_until(lambda: monitor.latest().lateral_axis == 0.6)
+        assert (
+            teleop.poll(
+                session,
+                armed=False,
+                live=True,
+                can_arm=True,
+                can_manual=True,
+                log=lambda _message: None,
+            )
+            == "manual"
+        )
+        manual = session.current_manual()
+        assert manual is not None
+        assert manual.velocity == 0.0
+        assert manual.steer == pytest.approx(-0.75)
+        assert manual.lateral == pytest.approx(0.5)
+    finally:
+        monitor.stop()
+
+
+def test_teleop_rs_y_steps_head_through_three_persistent_levels() -> None:
+    backend, monitor, teleop = teleop_setup()
+    session = SessionControl()
+    try:
+
+        def gesture(value: float) -> str | None:
+            backend.queue_readings(
+                GamepadReading(True, "Fake Pad", buttons=frozenset(), head_axis=value)
+            )
+            assert wait_until(lambda: monitor.latest().head_axis == value)
+            teleop.poll(
+                session,
+                armed=False,
+                live=True,
+                can_arm=True,
+                can_manual=True,
+                log=lambda _message: None,
+            )
+            return session.consume_action()
+
+        assert gesture(-1.0) == "head_down"
+        assert gesture(0.0) is None
+        assert gesture(1.0) == "head_center"
+        assert gesture(0.0) is None
+        assert gesture(1.0) == "head_up"
+        assert gesture(0.0) is None
+        assert gesture(1.0) is None  # already at the upper limit
+        assert gesture(0.0) is None
+        assert gesture(-1.0) == "head_center"
     finally:
         monitor.stop()
 
@@ -535,26 +611,30 @@ def test_cli_gamepad_teleop_lifecycle() -> None:
 # ---------- XInput backend (native Windows path) ----------
 
 
-def make_xinput_state(buttons: int, lx: int, ly: int):
+def make_xinput_state(buttons: int, lx: int, ly: int, rx: int = 0, ry: int = 0):
     from hcirobot.gamepad import _XInputState
 
     state = _XInputState()
     state.Gamepad.wButtons = buttons
     state.Gamepad.sThumbLX = lx
     state.Gamepad.sThumbLY = ly
+    state.Gamepad.sThumbRX = rx
+    state.Gamepad.sThumbRY = ry
     return state
 
 
 def test_xinput_state_mapping_matches_sdl_button_order() -> None:
     from hcirobot.gamepad import XInputGamepadBackend
 
-    # A(0x1000) + B(0x2000) + Start(0x0010); stick pushed fully up-right.
-    state = make_xinput_state(0x1000 | 0x2000 | 0x0010, 32767, 32767)
+    # A+B+Start; LS pushed up-right, RS pushed down-left.
+    state = make_xinput_state(0x1000 | 0x2000 | 0x0010, 32767, 32767, -32768, -32768)
     reading = XInputGamepadBackend._reading_from_state("XInput 手柄 #0", state)
     assert reading.connected
     assert reading.buttons == frozenset({0, 1, 7})  # A, B(toggle), Start
     assert reading.drive_axis == pytest.approx(32767 / 32768)  # XInput: +Y is up = forward
-    assert reading.steer_axis == pytest.approx(32767 / 32768)
+    assert reading.lateral_axis == pytest.approx(32767 / 32768)
+    assert reading.steer_axis == -1.0
+    assert reading.head_axis == -1.0
 
 
 def test_xinput_backend_reports_missing_library_as_none() -> None:

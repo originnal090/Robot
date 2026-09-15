@@ -37,10 +37,26 @@ namespace HciRobot.Simulator
         public float lateral;
     }
 
+    [Serializable]
+    public sealed class ActionMessage
+    {
+        public string id;
+        public string name;
+    }
+
+    [Serializable]
+    public sealed class MirroredActionMessage
+    {
+        public string id;
+        public string name;
+        public string status;
+    }
+
     public readonly struct RobotCommand
     {
         public RobotCommand(float velocity, float steer, bool grab, string action, RobotMotionMode mode,
-            float lateral = 0f, string mirroredStepId = null, string mirroredStepPhase = null)
+            float lateral = 0f, string mirroredStepId = null, string mirroredStepPhase = null,
+            string actionId = null, string actionStatus = null)
         {
             Velocity = velocity;
             Steer = steer;
@@ -50,6 +66,8 @@ namespace HciRobot.Simulator
             Mode = mode;
             MirroredStepId = mirroredStepId;
             MirroredStepPhase = mirroredStepPhase;
+            ActionId = actionId;
+            ActionStatus = actionStatus;
         }
 
         public float Velocity { get; }
@@ -62,6 +80,10 @@ namespace HciRobot.Simulator
         public string MirroredStepId { get; }
         public string MirroredStepPhase { get; }
         public bool IsMirroredStep => !string.IsNullOrEmpty(MirroredStepId);
+        public string ActionId { get; }
+        public string ActionStatus { get; }
+        public bool IsActionRequest => IsAction && !string.IsNullOrEmpty(ActionId) && ActionStatus == "request";
+        public bool IsMirroredAction => IsAction && !string.IsNullOrEmpty(ActionId) && ActionStatus != "request";
 
         public static RobotCommand Stop => new RobotCommand(0f, 0f, false, null, RobotMotionMode.Stand);
     }
@@ -146,9 +168,10 @@ namespace HciRobot.Simulator
             }
         }
 
-        public static RobotCommand Action(string name)
+        public static RobotCommand Action(string name, string id = null, string status = null)
         {
-            return new RobotCommand(0f, 0f, false, name, RobotMotionMode.Stand);
+            return new RobotCommand(0f, 0f, false, name, RobotMotionMode.Stand,
+                actionId: id, actionStatus: status);
         }
 
         private static bool IsFinite(float value)
@@ -253,6 +276,14 @@ namespace HciRobot.Simulator
             }
 
             string text = line.Trim();
+            if (text.StartsWith("MIRROR_ACTION:", StringComparison.Ordinal))
+            {
+                return TryParseMirroredAction(text.Substring(14), out command);
+            }
+            if (text.StartsWith("ACTION:", StringComparison.Ordinal))
+            {
+                return TryParseAction(text.Substring(7), out command);
+            }
             if (text.StartsWith("MIRROR_STEP:", StringComparison.Ordinal))
             {
                 return TryParseMirroredStep(text.Substring(12), deadzone, out command);
@@ -295,6 +326,46 @@ namespace HciRobot.Simulator
         private static bool HasRequiredNumericFields(string json)
         {
             return ContainsJsonKey(json, "v") && ContainsJsonKey(json, "steer");
+        }
+
+        private static bool TryParseAction(string json, out RobotCommand command)
+        {
+            command = RobotCommand.Stop;
+            try
+            {
+                var dto = JsonUtility.FromJson<ActionMessage>(json);
+                if (dto == null || !IsValidId(dto.id) || !IsValidAction(dto.name))
+                {
+                    return false;
+                }
+                command = TonyPiCommandMapper.Action(dto.name.ToLowerInvariant(), dto.id, "request");
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        private static bool TryParseMirroredAction(string json, out RobotCommand command)
+        {
+            command = RobotCommand.Stop;
+            try
+            {
+                var dto = JsonUtility.FromJson<MirroredActionMessage>(json);
+                if (dto == null || !IsValidId(dto.id) || !IsValidAction(dto.name)
+                    || (dto.status != "accepted" && dto.status != "done"
+                        && dto.status != "ignored" && dto.status != "error"))
+                {
+                    return false;
+                }
+                command = TonyPiCommandMapper.Action(dto.name.ToLowerInvariant(), dto.id, dto.status);
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
         }
 
         private static bool TryParseMirroredStep(string json, float deadzone, out RobotCommand command)
@@ -361,6 +432,12 @@ namespace HciRobot.Simulator
             return true;
         }
 
+        private static bool IsValidId(string ident)
+        {
+            return !string.IsNullOrEmpty(ident)
+                && Regex.IsMatch(ident, @"\A[A-Za-z0-9_-]{1,64}\z");
+        }
+
         private static bool IsFinite(float value)
         {
             return !float.IsNaN(value) && !float.IsInfinity(value);
@@ -369,10 +446,29 @@ namespace HciRobot.Simulator
 
     public static class RobotTelemetryFormatter
     {
+        public static byte[] CapabilitiesLine()
+        {
+            return Encoding.ASCII.GetBytes("CAPS:ACTION_V1\n");
+        }
+
         public static byte[] DistanceLine(int millimetres)
         {
             string text = "DIST:" + Math.Max(0, millimetres).ToString(CultureInfo.InvariantCulture) + "\n";
             return Encoding.ASCII.GetBytes(text);
+        }
+
+        public static byte[] ActionStatusLine(string ident, string name, string status, string detail = "")
+        {
+            if (!Regex.IsMatch(ident ?? "", @"\A[A-Za-z0-9_-]{1,64}\z")
+                || !Regex.IsMatch(name ?? "", @"\A[A-Za-z0-9_]{1,32}\z")
+                || (status != "accepted" && status != "done" && status != "ignored" && status != "error"))
+            {
+                throw new ArgumentException("invalid action status fields");
+            }
+            string safeDetail = (detail ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
+            string text = "ACTION_STATUS:{\"id\":\"" + ident + "\",\"name\":\"" + name
+                + "\",\"status\":\"" + status + "\",\"detail\":\"" + safeDetail + "\"}\n";
+            return Encoding.UTF8.GetBytes(text);
         }
     }
 }

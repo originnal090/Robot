@@ -16,6 +16,12 @@ namespace HciRobot.Simulator
         [SerializeField, Range(0f, 1f)] private float deadzone = 0.20f;
         [SerializeField] private bool continuousMotion;
 
+        [Header("Persistent head pitch preview")]
+        [SerializeField] private Transform headPitchTransform;
+        [SerializeField] private float headDownPitchDegrees = 30f;
+        [SerializeField] private float headCenterPitchDegrees = 10f;
+        [SerializeField] private float headUpPitchDegrees = -10f;
+
         [Header("Single-step mirror preview (step sizes need hardware calibration)")]
         [SerializeField, Min(0f)] private float smallStepTurnDegrees = 8f;
         [SerializeField, Min(0f)] private float normalStepTurnDegrees = 20f;
@@ -48,6 +54,9 @@ namespace HciRobot.Simulator
         public float ActualLateralOutput { get; private set; }
         public RobotMotionMode CurrentMode => target.Mode;
         public string LastAction { get; private set; }
+        public string HeadPitchLevel { get; private set; } = "center";
+        public string LastActionReceiptId { get; private set; }
+        public string LastActionReceiptStatus { get; private set; }
         public string ActiveMirroredStepId => mirroredStepId;
         public string LastMirroredStepStatus { get; private set; }
         public string MirroredStepPhase => mirroredStepId == null ? LastMirroredStepStatus
@@ -77,6 +86,10 @@ namespace HciRobot.Simulator
             if (body == null)
             {
                 body = GetComponent<Rigidbody>();
+            }
+            if (headPitchTransform == null)
+            {
+                headPitchTransform = transform.Find("Robot Camera");
             }
         }
 
@@ -120,6 +133,12 @@ namespace HciRobot.Simulator
 
         public void ApplyCommand(RobotCommand command)
         {
+            if (command.IsMirroredAction)
+            {
+                LastActionReceiptId = command.ActionId;
+                LastActionReceiptStatus = command.ActionStatus;
+                return;
+            }
             if (command.IsMirroredStep)
             {
                 ApplyMirroredStep(command);
@@ -132,6 +151,7 @@ namespace HciRobot.Simulator
             if (command.IsAction)
             {
                 LastAction = command.Action;
+                ApplyHeadAction(command.Action);
                 if (string.Equals(command.Action, "stand", StringComparison.OrdinalIgnoreCase))
                 {
                     StopMotion();
@@ -144,6 +164,33 @@ namespace HciRobot.Simulator
                 ? TonyPiCommandMapper.ToCommand(command.Velocity, command.Steer, command.Grab, deadzone, true, command.Lateral)
                 : TonyPiCommandMapper.ToCommand(command.Velocity, command.Steer, command.Grab, deadzone, false, command.Lateral);
             CommandApplied?.Invoke(target);
+        }
+
+        private void ApplyHeadAction(string action)
+        {
+            float pitch;
+            switch (action)
+            {
+                case "head_down":
+                    HeadPitchLevel = "down";
+                    pitch = headDownPitchDegrees;
+                    break;
+                case "head_center":
+                    HeadPitchLevel = "center";
+                    pitch = headCenterPitchDegrees;
+                    break;
+                case "head_up":
+                    HeadPitchLevel = "up";
+                    pitch = headUpPitchDegrees;
+                    break;
+                default:
+                    return;
+            }
+            if (headPitchTransform != null)
+            {
+                Vector3 angles = headPitchTransform.localEulerAngles;
+                headPitchTransform.localRotation = Quaternion.Euler(pitch, angles.y, angles.z);
+            }
         }
 
         public void StopMotion()

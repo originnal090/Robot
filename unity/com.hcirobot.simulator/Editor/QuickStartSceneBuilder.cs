@@ -89,6 +89,7 @@ namespace HciRobot.Simulator.Editor
             // (Robot pivot sits at its centre, y=0.8.)
             cameraObject.transform.localPosition = new Vector3(0f, -0.3f, 0.35f);
             cameraObject.transform.localRotation = Quaternion.Euler(10f, 0f, 0f);
+            AssignObject(driver, "headPitchTransform", cameraObject.transform);
             Camera camera = cameraObject.AddComponent<Camera>();
             camera.fieldOfView = 62f;
             camera.nearClipPlane = 0.05f;

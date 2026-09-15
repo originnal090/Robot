@@ -68,7 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--gamepad",
         action="store_true",
         help=(
-            "enable gamepad teleoperation: left stick drives, B preempts autonomy "
+            "enable gamepad teleoperation: LS drives/laterals, RS turns/tilts head; "
+            "B preempts autonomy "
             "into manual mode and resumes it on the next press (needs pygame)"
         ),
     )
@@ -167,7 +168,7 @@ def _start_gamepad_teleop(
                 connected, text = monitor.status()
                 if not connected:
                     _gamepad_log(
-                        f"手柄未就绪：{text}；可用后自动连接（B 键抢断/恢复自主，左摇杆驾驶）"
+                        f"手柄未就绪：{text}；可用后自动连接（B 抢断/恢复，LS 移动，RS 旋转/俯仰）"
                     )
             teleop.poll(
                 session,

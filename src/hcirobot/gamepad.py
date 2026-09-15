@@ -3,10 +3,11 @@
 The course baseline reads the controller inside Unity and forwards it to the
 robot over TCP 5075.  This module moves that role to the Python client: a
 background monitor polls the gamepad, one designated button preempts autonomy
-(``抢断`` -> manual) and pressing it again resumes autonomous pathfinding, and
-the left stick drives the robot through the same manual channel as the GUI jog
-buttons.  pygame is an optional dependency; without it the monitor reports the
-reason and never disturbs the control loop.
+(``抢断`` -> manual) and pressing it again resumes autonomous pathfinding.  The
+left stick drives/steps laterally, while the right stick rotates the body and
+selects one of three persistent camera pitch positions.  pygame is an optional
+dependency; without it the monitor reports the reason and never disturbs the
+control loop.
 """
 
 from __future__ import annotations
@@ -24,10 +25,12 @@ from typing import Protocol
 # XInput-style button indices (0=A, 1=B, 2=X, 3=Y, ...).  B is the takeover
 # button: press once to preempt autonomy, press again to resume it.
 TOGGLE_BUTTON = 1
-TOGGLE_HINT = "B 抢断/恢复自主，左摇杆驾驶，LT/RT 爬起，RB 灭火"
+TOGGLE_HINT = "B 抢断/恢复，LS 前后/横移，RS 旋转/俯仰，LT/RT 爬起，RB 灭火"
 DEADZONE = 0.20  # matches the TonyPi TCP_connect stick deadzone
 _DRIVE_AXIS = 1  # left stick Y: -1 when pushed up
-_STEER_AXIS = 0  # left stick X: +1 when pushed right
+_LATERAL_AXIS = 0  # left stick X: +1 when pushed right
+_STEER_AXIS = 2  # right stick X: +1 when pushed right
+_HEAD_AXIS = 3  # right stick Y: -1 when pushed up
 
 # Triggers are analog on XInput (SDL axes 4/5, XInput bytes); backends surface
 # them as synthetic buttons past the 11 SDL XInput buttons.
@@ -75,6 +78,15 @@ def map_to_command(drive: object, steer: object, deadzone: float) -> tuple[float
     return apply_deadzone(drive, deadzone), apply_deadzone(steer, deadzone)
 
 
+def map_to_motion(reading: GamepadReading, deadzone: float) -> tuple[float, float, float]:
+    """Map LS-Y, RS-X and LS-X to forward, turn and lateral protocol axes."""
+    return (
+        apply_deadzone(reading.drive_axis, deadzone),
+        apply_deadzone(reading.steer_axis, deadzone),
+        apply_deadzone(reading.lateral_axis, deadzone),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class GamepadReading:
     """One polled gamepad snapshot; axes use the protocol convention (+forward, +right)."""
@@ -84,6 +96,8 @@ class GamepadReading:
     drive_axis: float = 0.0
     steer_axis: float = 0.0
     buttons: frozenset[int] = frozenset()
+    lateral_axis: float = 0.0
+    head_axis: float = 0.0
 
 
 _DISCONNECTED = GamepadReading()
@@ -165,7 +179,17 @@ class PygameGamepadBackend:
                 connected=True,
                 name=joystick.get_name(),
                 drive_axis=-sanitize_axis(joystick.get_axis(_DRIVE_AXIS)),
-                steer_axis=sanitize_axis(joystick.get_axis(_STEER_AXIS)),
+                lateral_axis=sanitize_axis(joystick.get_axis(_LATERAL_AXIS)),
+                steer_axis=(
+                    sanitize_axis(joystick.get_axis(_STEER_AXIS))
+                    if joystick.get_numaxes() > _STEER_AXIS
+                    else 0.0
+                ),
+                head_axis=(
+                    -sanitize_axis(joystick.get_axis(_HEAD_AXIS))
+                    if joystick.get_numaxes() > _HEAD_AXIS
+                    else 0.0
+                ),
                 buttons=buttons,
             )
         except Exception as exc:  # device unplugged mid-read: reconnect path
@@ -310,7 +334,9 @@ class XInputGamepadBackend:
             connected=True,
             name=name,
             drive_axis=sanitize_axis(gamepad.sThumbLY / XInputGamepadBackend._THUMB_SCALE),
-            steer_axis=sanitize_axis(gamepad.sThumbLX / XInputGamepadBackend._THUMB_SCALE),
+            lateral_axis=sanitize_axis(gamepad.sThumbLX / XInputGamepadBackend._THUMB_SCALE),
+            steer_axis=sanitize_axis(gamepad.sThumbRX / XInputGamepadBackend._THUMB_SCALE),
+            head_axis=sanitize_axis(gamepad.sThumbRY / XInputGamepadBackend._THUMB_SCALE),
             buttons=buttons,
         )
 
@@ -552,6 +578,8 @@ class GamepadTeleop:
         self._clock = clock
         self._last_toggle_at = float("-inf")
         self._last_hint_at = float("-inf")
+        self._head_level = 0
+        self._head_axis_direction = 0
 
     @property
     def deadzone(self) -> float:
@@ -573,12 +601,19 @@ class GamepadTeleop:
             outcome = self._apply_toggle(session, armed=armed, live=live, can_arm=can_arm, log=log)
         outcome = self._apply_actions(session, live=live, can_manual=can_manual, log=log) or outcome
         reading = self._monitor.latest()
-        velocity, steer = map_to_command(reading.drive_axis, reading.steer_axis, self._deadzone)
-        if velocity == 0.0 and steer == 0.0:
+        head = apply_deadzone(reading.head_axis, self._deadzone)
+        outcome = (
+            self._apply_head_axis(session, head, live=live, can_manual=can_manual, log=log)
+            or outcome
+        )
+        velocity, steer, lateral = map_to_motion(reading, self._deadzone)
+        if velocity == 0.0 and steer == 0.0 and lateral == 0.0:
             return outcome
         if live and can_manual and session is not None:
             try:
-                session.request_manual(velocity, steer, self._manual_seconds, source="gamepad")
+                session.request_manual(
+                    velocity, steer, self._manual_seconds, lateral=lateral, source="gamepad"
+                )
                 outcome = "manual"
             except ValueError:
                 pass  # sanitized values cannot trip this; guard anyway
@@ -587,6 +622,35 @@ class GamepadTeleop:
             log("手柄：自主寻路运行中忽略摇杆输入，按 B 键抢断切入手动控制")
             outcome = "hint"
         return outcome
+
+    def _apply_head_axis(
+        self, session, value: float, *, live: bool, can_manual: bool, log: Log
+    ) -> str:
+        """Move one pitch level per neutral-to-up/down right-stick gesture."""
+        direction = 1 if value > 0 else -1 if value < 0 else 0
+        if direction == 0:
+            self._head_axis_direction = 0
+            return ""
+        if direction == self._head_axis_direction:
+            return ""
+        self._head_axis_direction = direction
+        next_level = max(-1, min(1, self._head_level + direction))
+        if next_level == self._head_level:
+            return ""
+        if not live or session is None:
+            return ""
+        if not can_manual:
+            log("手柄：自主模式下忽略头部俯仰，按 B 抢断后再试")
+            return ""
+        action = {-1: "head_down", 0: "head_center", 1: "head_up"}[next_level]
+        try:
+            session.request_action(action)
+        except ValueError as exc:
+            log(f"手柄头部动作被拒绝：{exc}")
+            return ""
+        self._head_level = next_level
+        log(f"手柄头部档位：{action}")
+        return "action"
 
     def _apply_actions(self, session, *, live: bool, can_manual: bool, log: Log) -> str:
         """Forward latched action-button presses as one-shot CMD requests."""
@@ -616,7 +680,7 @@ class GamepadTeleop:
         self._last_toggle_at = now
         if armed:
             session.request_disarm()
-            log("手柄：抢断自主寻路，切入手动控制（左摇杆驾驶，再按 B 恢复自主）")
+            log("手柄：抢断自主寻路，切入手动控制（LS 移动、RS 旋转/俯仰，再按 B 恢复自主）")
             return "disarm"
         if can_arm:
             session.request_arm()

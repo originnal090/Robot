@@ -28,7 +28,12 @@ _RAW_KEYS = ("v", "steer", "grab", "t")
 class RobotBackend(Protocol):
     def send(self, command: RobotCommand) -> None: ...
 
-    def send_action(self, name: str) -> None: ...
+    def send_action(self, name: str) -> str | None: ...
+
+    @property
+    def supports_actions(self) -> bool: ...
+
+    def action_status(self, ident: str) -> str | None: ...
 
     def send_raw(self, payload: dict) -> None: ...
 
@@ -165,6 +170,13 @@ class MirrorTcpRobot:
         validate_action_name(name)
         self._dispatch(f"CMD:{name}\n".encode())
 
+    @property
+    def supports_actions(self) -> bool:
+        return False
+
+    def action_status(self, ident: str) -> str | None:
+        return None
+
     def send_raw(self, payload: dict) -> None:
         self._dispatch(encode_raw_payload(payload))
 
@@ -184,6 +196,11 @@ class MirrorTcpRobot:
                     target=self._drain_mirror, name="robot-step-mirror", daemon=True
                 )
                 self._mirror_worker.start()
+        self._dispatch(data)
+
+    def mirror_action(self, payload: dict) -> None:
+        """Forward a real-robot action receipt to the display-only Unity mirror."""
+        data = ("MIRROR_ACTION:" + json.dumps(payload, allow_nan=False) + "\n").encode()
         self._dispatch(data)
 
     def _dispatch(self, data: bytes) -> None:
@@ -261,6 +278,7 @@ class FanoutRobot:
         self.primary = primary
         self.mirrors = tuple(mirrors)
         self._mirrored_step_id: str | None = None
+        self._mirrored_actions: dict[str, tuple[str, str]] = {}
 
     def connect(self) -> None:
         """Eagerly connect the primary while mirrors remain best-effort and lazy.
@@ -279,11 +297,31 @@ class FanoutRobot:
             with contextlib.suppress(Exception):
                 mirror.send(command)
 
-    def send_action(self, name: str) -> None:
-        self.primary.send_action(name)
+    def send_action(self, name: str) -> str | None:
+        ident = self.primary.send_action(name)
         for mirror in self.mirrors:
             with contextlib.suppress(Exception):
                 mirror.send_action(name)
+        if ident is not None:
+            self._mirrored_actions[ident] = (name, "pending")
+        return ident
+
+    @property
+    def supports_actions(self) -> bool:
+        return bool(getattr(self.primary, "supports_actions", False))
+
+    def action_status(self, ident: str) -> str | None:
+        status = getattr(self.primary, "action_status", None)
+        current = status(ident) if status is not None else None
+        mirrored = self._mirrored_actions.get(ident)
+        if mirrored is not None and current is not None and current != mirrored[1]:
+            name, _ = mirrored
+            self._mirror_action({"id": ident, "name": name, "status": current})
+            if current in ("done", "ignored", "error"):
+                self._mirrored_actions.pop(ident, None)
+            else:
+                self._mirrored_actions[ident] = (name, current)
+        return current
 
     def send_raw(self, payload: dict) -> None:
         self.primary.send_raw(payload)
@@ -301,8 +339,9 @@ class FanoutRobot:
     def start_step(self, command: RobotCommand) -> str:
         ident = self.primary.start_step(command)
         self._mirrored_step_id = ident
-        self._mirror_step({"id": ident, "phase": "start",
-                           "steer": command.steer, "lateral": command.lateral})
+        self._mirror_step(
+            {"id": ident, "phase": "start", "steer": command.steer, "lateral": command.lateral}
+        )
         return ident
 
     def step_status(self, ident: str) -> str | None:
@@ -321,6 +360,11 @@ class FanoutRobot:
         for mirror in self.mirrors:
             with contextlib.suppress(Exception):
                 mirror.mirror_step(payload)
+
+    def _mirror_action(self, payload: dict) -> None:
+        for mirror in self.mirrors:
+            with contextlib.suppress(Exception):
+                mirror.mirror_action(payload)
 
     def cancel(self) -> None:
         for backend in (self.primary, *self.mirrors):
@@ -387,7 +431,9 @@ class RecordingRobot:
     actions: list[str] = field(default_factory=list)
     raw_payloads: list[dict] = field(default_factory=list)
     steps: list[tuple[str, RobotCommand]] = field(default_factory=list)
+    action_receipts: dict[str, str] = field(default_factory=dict)
     supports_steps = True
+    supports_actions = True
 
     def start_step(self, command: RobotCommand) -> str:
         ident = uuid.uuid4().hex
@@ -404,9 +450,15 @@ class RecordingRobot:
     def send(self, command: RobotCommand) -> None:
         self.commands.append(command)
 
-    def send_action(self, name: str) -> None:
+    def send_action(self, name: str) -> str:
         validate_action_name(name)
         self.actions.append(name)
+        ident = uuid.uuid4().hex
+        self.action_receipts[ident] = "done"
+        return ident
+
+    def action_status(self, ident: str) -> str | None:
+        return self.action_receipts.get(ident)
 
     def send_raw(self, payload: dict) -> None:
         validate_raw_payload(payload)
@@ -461,7 +513,9 @@ class TcpRobotClient:
         self._data_lock = threading.Lock()
         self._reader: threading.Thread | None = None
         self._supports_steps = False
+        self._supports_actions = False
         self._steps: dict[str, str] = {}
+        self._actions: dict[str, str] = {}
 
     def connect(self) -> None:
         with self._lock:
@@ -528,9 +582,23 @@ class TcpRobotClient:
     def send(self, command: RobotCommand) -> None:
         self._send_bytes(encode_legacy_command(command))
 
-    def send_action(self, name: str) -> None:
+    def send_action(self, name: str) -> str | None:
         validate_action_name(name)
-        self._send_bytes(f"CMD:{name}\n".encode())
+        with self._data_lock:
+            supported = self._supports_actions
+        if not supported:
+            self._send_bytes(f"CMD:{name}\n".encode())
+            return None
+        ident = uuid.uuid4().hex
+        payload = {"id": ident, "name": name}
+        with self._data_lock:
+            self._actions[ident] = "pending"
+        self._send_bytes(("ACTION:" + json.dumps(payload) + "\n").encode())
+        return ident
+
+    def action_status(self, ident: str) -> str | None:
+        with self._data_lock:
+            return self._actions.get(ident)
 
     def send_raw(self, payload: dict) -> None:
         self._send_bytes(encode_raw_payload(payload))
@@ -539,6 +607,11 @@ class TcpRobotClient:
     def supports_steps(self) -> bool:
         with self._data_lock:
             return self._supports_steps
+
+    @property
+    def supports_actions(self) -> bool:
+        with self._data_lock:
+            return self._supports_actions
 
     def start_step(self, command: RobotCommand) -> str:
         if not self.supports_steps:
@@ -610,12 +683,35 @@ class TcpRobotClient:
         if text == "CAPS:STEP_V1":
             with self._data_lock:
                 self._supports_steps = True
+        elif text == "CAPS:ACTION_V1":
+            with self._data_lock:
+                self._supports_actions = True
+        elif text.startswith("ACTION_STATUS:"):
+            try:
+                payload = json.loads(text[14:])
+                ident, status = payload["id"], payload["status"]
+                if not isinstance(ident, str) or status not in (
+                    "accepted",
+                    "done",
+                    "ignored",
+                    "error",
+                ):
+                    return
+            except (ValueError, TypeError, KeyError):
+                return
+            with self._data_lock:
+                if self._actions.get(ident) in ("pending", "accepted"):
+                    self._actions[ident] = status
+            self._emit("action", text[14:])
         elif text.startswith("STEP_STATUS:"):
             try:
                 payload = json.loads(text[12:])
                 ident, status = payload["id"], payload["status"]
                 if not isinstance(ident, str) or status not in (
-                    "accepted", "done", "cancelled", "error"
+                    "accepted",
+                    "done",
+                    "cancelled",
+                    "error",
                 ):
                     return
             except (ValueError, TypeError, KeyError):
@@ -720,7 +816,9 @@ class TcpRobotClient:
                 self._socket = None
                 with self._data_lock:
                     self._supports_steps = False
+                    self._supports_actions = False
                     self._steps = {ident: "error" for ident in self._steps}
+                    self._actions = {ident: "error" for ident in self._actions}
         self._close_socket(sock)
 
     @staticmethod

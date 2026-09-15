@@ -1,6 +1,6 @@
 # HCIRobot Unity 本地仿真包
 
-`unity/com.hcirobot.simulator` 是面向 Unity 2022.3 LTS 及更新版本的轻量本地包。它只使用 Unity 与 .NET 自带 API，不依赖 PICO、XR、URP 或其他第三方包。
+`unity/com.hcirobot.simulator` 0.2.0 是面向 Unity 2022.3 LTS 及更新版本的轻量本地包。它只使用 Unity 与 .NET 自带 API，不依赖 PICO、XR、URP 或其他第三方包。
 
 ## 导入
 
@@ -35,8 +35,8 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 
 | 组件 | 用途 | 默认值/行为 |
 |---|---|---|
-| `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD 服务 | `0.0.0.0:5075`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有 `DIST` 写经同一写锁串行化 |
-| `TonyPiMotionDriver` | Rigidbody 平面运动 | 死区 0.20；转向优先；负值左转、正值右转；默认离散动作，可选 continuous |
+| `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD/ACTION 服务 | `0.0.0.0:5075`；声明 `ACTION_V1`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有回执与 `DIST` 经同一写锁串行化 |
+| `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；默认离散动作，可选 continuous；`head_down/center/up` 持久调整机器人相机俯仰 |
 | `ForwardDistanceSensor` | 前向 ray/sphere cast | 默认 sphere cast；结果换算为整数 mm；默认每 0.30 s 发送 `DIST` |
 | `MjpegCameraServer` | TonyPi 风格 MJPEG | `0.0.0.0:8080/?action=stream`；Camera/RenderTexture/ReadPixels/JPEG 全在主线程；网络线程只发送缓存 JPEG |
 | `AutonomyStatusUdpReceiver` | 自治状态旁路接收 | `0.0.0.0:6102`；校验 `type/schema_version/session_id/seq`；同 session 只接受递增 seq，拒绝已退出会话迟到包；主线程 latest-only；默认 1.0 s watchdog |
@@ -49,7 +49,7 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 | 场景 | TCP 5075 | MJPEG 8080 | UDP 6102 | Rigidbody | 适用目的 |
 |---|---:|---:|---:|---:|---|
 | Quick Start 完整场景 | 开 | 开 | 开 | 开 | PC 闭环控制、红球视觉、距离避障、轨迹与碰撞评估 |
-| 控制协议冒烟 | 开 | 可关 | 可关 | 开 | 测试 JSONL/CMD、死区、左右符号、看门狗停车 |
+| 控制协议冒烟 | 开 | 可关 | 可关 | 开 | 测试 JSONL/CMD/ACTION、死区、左右符号、看门狗停车 |
 | 视觉源测试 | 可关 | 开 | 可关 | 可选 | 用现有 Python 视频源验证 MJPEG 读取与红球检测 |
 | 自治状态可视化/记录 | 可关 | 可关 | 开 | 可选 | 验证 schema/session/seq、乱序过滤、latest-only 和状态 watchdog |
 | 纯离线场景编辑 | 关 | 关 | 关 | 可选 | 摆放目标和障碍，不占用端口；禁用对应组件即可 |
@@ -62,14 +62,14 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 
 - TonyPi JSON DTO 必填字段、越界和非法 JSON；
 - 跨 socket read 的 JSONL/CMD 拼帧；
+- `ACTION_V1` 请求、完成回执与真机回执镜像；
 - `DIST:<mm>\n` 格式；
 - 0.20 死区、转向优先、负左正右和 continuous 映射；
 - 自治状态 `type=autonomy_status` / `schema_version=1` DTO；
 - `session_id` 内严格递增 seq 与新 session 切换；
 - HUD 文本格式化：状态/目标/输出/动作/障碍行、STALE、estop/fault/termination。
 
-该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 EditMode 测试（协议、运动映射、
-状态过滤与 HUD 共 18 项）。
+该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 51 项 EditMode 测试。
 
 ## 安全与限制
 

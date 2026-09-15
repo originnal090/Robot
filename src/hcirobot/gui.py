@@ -21,7 +21,7 @@ from .detector import DetectorConfig, RedBallDetector
 from .detector_profile import load_detector
 from .edge_detector import EdgeBallDetector
 from .frame_recorder import FrameRecorder
-from .gamepad import TOGGLE_HINT, GamepadMonitor, GamepadTeleop, map_to_command
+from .gamepad import TOGGLE_HINT, GamepadMonitor, GamepadTeleop, map_to_motion
 from .gui_model import GuiModel, SessionState
 from .robot import (
     FanoutRobot,
@@ -583,9 +583,17 @@ class RobotControlApp:
         )
         up_back.pack(side="left", padx=8)
         self.manual_buttons = [nod, shake, up_front, up_back]
+        head_row = ttk.Frame(panel, style="Panel.TFrame")
+        head_row.pack(anchor="w", pady=(4, 0))
+        for label, action in (("低头", "head_down"), ("回正", "head_center"), ("抬头", "head_up")):
+            button = ttk.Button(
+                head_row, text=label, width=8, command=lambda name=action: self._send_action(name)
+            )
+            button.pack(side="left", padx=(0, 8))
+            self.manual_buttons.append(button)
         ttk.Label(
             panel,
-            text="爬起/灭火发课程 CMD（left_trigger/right_trigger/right_grip）；点头/摇头需 robot_side 扩展服务",
+            text="LS 前后/横移，RS 左右旋转、上下逐档俯仰；头部动作需 robot_side 扩展服务",
             style="PanelMuted.TLabel",
             wraplength=300,
         ).pack(anchor="w", pady=(3, 2))
@@ -811,7 +819,11 @@ class RobotControlApp:
             "use_edge_model": bool(self.edge_model_var.get()),
             "edge_model_path": self.edge_model_path_var.get().strip(),
         }
-        if not values["control_only"] and values["use_edge_model"] and not values["edge_model_path"]:
+        if (
+            not values["control_only"]
+            and values["use_edge_model"]
+            and not values["edge_model_path"]
+        ):
             self.model.append_log("端侧模型已启用，请先选择模型文件")
             self._refresh_view()
             return
@@ -863,9 +875,7 @@ class RobotControlApp:
             detection = detector_config(config["detection"])
             if values["use_edge_model"]:
                 detector = load_detector(Path(values["edge_model_path"]), detection)
-                publish(
-                    RuntimeEvent("state", f"识别器：端侧模型 {values['edge_model_path']}")
-                )
+                publish(RuntimeEvent("state", f"识别器：端侧模型 {values['edge_model_path']}"))
             else:
                 detector = RedBallDetector(detection)
                 publish(RuntimeEvent("state", "识别器：LAB"))
@@ -1128,14 +1138,19 @@ class RobotControlApp:
             self._clear_frame_view("会话已结束")
             return
         self.model.apply_event(event)
-        if (event.kind == 'started' and self.active_detector is not None
-                and getattr(self.active_detector, 'profile_id', None) is not None
-                and self.active_controller is not None):
-            self._set_tuning_from_config({
-                'detection': asdict(self.active_detector.config),
-                'controller': asdict(self.active_controller.config),
-            })
-            self.model.append_log(f'实验版本：{self.active_detector.profile_id}（已载入版本参数）')
+        if (
+            event.kind == "started"
+            and self.active_detector is not None
+            and getattr(self.active_detector, "profile_id", None) is not None
+            and self.active_controller is not None
+        ):
+            self._set_tuning_from_config(
+                {
+                    "detection": asdict(self.active_detector.config),
+                    "controller": asdict(self.active_controller.config),
+                }
+            )
+            self.model.append_log(f"实验版本：{self.active_detector.profile_id}（已载入版本参数）")
         if event.kind in ("finished", "estop"):
             self._clear_frame_view("会话已结束")
 
@@ -1378,7 +1393,7 @@ class RobotControlApp:
         self._refresh_detector_selector()
         self.start_button.configure(
             text="连接手柄控制" if self.control_only_var.get() else "开始预览",
-            state="normal" if model.can_start and not worker_busy else "disabled"
+            state="normal" if model.can_start and not worker_busy else "disabled",
         )
         self.arm_button.configure(state="normal" if model.can_arm else "disabled")
         self.stop_button.configure(state="normal" if model.can_stop else "disabled")
@@ -1411,11 +1426,13 @@ class RobotControlApp:
             gamepad_mode, mode_color = "手动控制", GOOD
         self.gamepad_mode_value.configure(text=gamepad_mode, foreground=mode_color)
         reading = self.gamepad_monitor.latest()
-        axes_velocity, axes_steer = map_to_command(
-            reading.drive_axis, reading.steer_axis, self.gamepad_teleop.deadzone
+        axes_velocity, axes_steer, axes_lateral = map_to_motion(
+            reading, self.gamepad_teleop.deadzone
         )
         self.gamepad_axes_value.configure(
-            text=f"摇杆 v={axes_velocity:+.2f} steer={axes_steer:+.2f}"
+            text=(
+                f"摇杆 v={axes_velocity:+.2f} steer={axes_steer:+.2f} lateral={axes_lateral:+.2f}"
+            )
             if reading.connected
             else "摇杆 --（未连接）"
         )

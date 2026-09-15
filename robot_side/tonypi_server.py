@@ -634,6 +634,19 @@ def shake_plan(config: Optional[ServiceConfig] = None) -> List[Tuple[Any, ...]]:
     )
 
 
+def head_pose_plan(position: str, config: Optional[ServiceConfig] = None) -> List[Tuple[Any, ...]]:
+    """Move pitch to one persistent low/center/high position."""
+    if position not in ("down", "center", "up"):
+        raise ValueError("head position must be down, center or up")
+    servo_id = HEAD_PITCH_ID if config is None else config.head_pitch_id
+    center = PITCH_CENTER if config is None else config.pitch_center
+    amplitude = NOD_AMPLITUDE if config is None else config.nod_amplitude
+    limits = (PITCH_MIN, PITCH_MAX) if config is None else (config.pitch_min, config.pitch_max)
+    step_ms = HEAD_STEP_MS if config is None else config.head_step_ms
+    offset = {"down": -amplitude, "center": 0, "up": amplitude}[position]
+    return [("head", servo_id, clamp(center + offset, *limits), step_ms)]
+
+
 @dataclass
 class RobotSession:
     now: Callable[[], float] = field(default=time.time)
@@ -669,6 +682,13 @@ class RobotSession:
     action_lateral_l_fast: str = ACTION_LATERAL_L_FAST
     nod: Callable[[], List[Tuple[Any, ...]]] = field(default=nod_plan)
     shake: Callable[[], List[Tuple[Any, ...]]] = field(default=shake_plan)
+    head_down: Callable[[], List[Tuple[Any, ...]]] = field(
+        default=lambda: head_pose_plan("down")
+    )
+    head_center: Callable[[], List[Tuple[Any, ...]]] = field(
+        default=lambda: head_pose_plan("center")
+    )
+    head_up: Callable[[], List[Tuple[Any, ...]]] = field(default=lambda: head_pose_plan("up"))
 
     @classmethod
     def from_config(cls, config: ServiceConfig) -> "RobotSession":
@@ -701,6 +721,9 @@ class RobotSession:
             action_lateral_l_fast=config.action_lateral_l_fast,
             nod=lambda: nod_plan(config),
             shake=lambda: shake_plan(config),
+            head_down=lambda: head_pose_plan("down", config),
+            head_center=lambda: head_pose_plan("center", config),
+            head_up=lambda: head_pose_plan("up", config),
         )
 
     def handle_line(self, line: str) -> List[Tuple[Any, ...]]:
@@ -755,6 +778,12 @@ class RobotSession:
             return self.nod()
         if cmd == "shake":
             return self.shake()
+        if cmd == "head_down":
+            return self.head_down()
+        if cmd == "head_center":
+            return self.head_center()
+        if cmd == "head_up":
+            return self.head_up()
         if cmd == "stand":
             return self._set_mode("stand", force=True)
         action = CMD_MAP.get(cmd)
@@ -1044,6 +1073,7 @@ class TonyPiService:
         self._last_sonar_warning = float("-inf")
         self._step = None
         self._step_history = {}
+        self._action_history = {}
         self._step_wakeup = threading.Event()
         self.action_directory = Path("/home/pi/TonyPi/ActionGroups")
 
@@ -1100,7 +1130,7 @@ class TonyPiService:
             if fatal:
                 self._latch_fault("actuator failure: %s" % exc)
             else:
-                print("[ERR] final stand failed:", exc)
+                print("[ERR] actuator plan failed:", exc)
             return False
         return True
 
@@ -1128,6 +1158,61 @@ class TonyPiService:
         if self._step is not None:
             self._step["cancel"].set()
             self._step_wakeup.set()
+
+    def _action_reply(self, conn, request) -> None:
+        payload = {key: request[key] for key in ("id", "name", "status", "detail")}
+        self._send_line(
+            conn, ("ACTION_STATUS:" + json.dumps(payload) + "\n").encode(), "ACTION"
+        )
+
+    def _handle_action_line(self, conn, text: str) -> bool:
+        """Execute one named action exactly once and return an ID-correlated receipt."""
+        if not text.startswith("ACTION:"):
+            return False
+        try:
+            payload = json.loads(text[7:])
+            ident, name = payload["id"], payload["name"]
+            valid = set(payload) == {"id", "name"}
+            valid = valid and isinstance(ident, str) and bool(
+                re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", ident)
+            )
+            valid = valid and isinstance(name, str) and bool(
+                re.fullmatch(r"[a-zA-Z0-9_]{1,32}", name)
+            )
+        except (ValueError, TypeError, KeyError):
+            return True
+        with self._lock:
+            previous = self._action_history.get(ident)
+            if previous is not None:
+                reply = dict(previous)
+                plan = []
+            else:
+                reply = {"id": ident, "name": name, "status": "error", "detail": "invalid"}
+                plan = []
+                if len(self._action_history) >= 1024:
+                    reply["detail"] = "session_action_limit"
+                elif valid:
+                    plan = self.session.handle_cmd(name)
+                    if plan and plan[0][0] != "unknown":
+                        reply.update(status="accepted", detail="")
+                    else:
+                        reply.update(status="ignored", detail="cooldown_busy_or_unknown")
+                        plan = []
+                    self._action_history[ident] = reply
+                else:
+                    self._action_history[ident] = reply
+        self._action_reply(conn, reply)
+        if reply["status"] != "accepted":
+            return True
+        success = self._execute_plan(plan, fatal=False)
+        with self._lock:
+            reply.update(status="done" if success else "error",
+                         detail="" if success else "actuator_failure")
+            self._action_history[ident] = reply
+        self._action_reply(conn, reply)
+        if not success:
+            self._latch_fault("single action failed: " + name)
+        return True
 
     def _step_reply(self, conn, request) -> None:
         payload = {key: request[key] for key in ("id", "status", "detail")}
@@ -1389,6 +1474,8 @@ class TonyPiService:
                 text = line.decode("utf-8", "ignore").strip()
                 if not text:
                     continue
+                if self._handle_action_line(conn, text):
+                    continue
                 if self._handle_step_line(conn, text):
                     continue
                 with self._lock:
@@ -1420,6 +1507,7 @@ class TonyPiService:
                 with self._lock:
                     self._conn = conn
                     self._step_history = {}
+                    self._action_history = {}
                     plan = self.session.force_stand()
                 if not self._execute_plan(plan):
                     break
@@ -1427,6 +1515,7 @@ class TonyPiService:
                     getattr(self.runtime.board, "setBusServoPulse", None)
                 ):
                     self._send_line(conn, b"CAPS:STEP_V1\n", "CAPS")
+                    self._send_line(conn, b"CAPS:ACTION_V1\n", "CAPS")
 
                 try:
                     self._handle_connection(conn)

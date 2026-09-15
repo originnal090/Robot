@@ -66,6 +66,40 @@ namespace HciRobot.Simulator.Tests
         }
 
         [Test]
+        public void ActionV1_ParsesRequestAndFormatsCorrelatedReceipts()
+        {
+            const string line = "ACTION:{\"id\":\"action_1\",\"name\":\"head_down\"}";
+            Assert.That(RobotProtocolParser.TryParseLine(line, 0.2f, false, out RobotCommand command), Is.True);
+            Assert.That(command.IsActionRequest, Is.True);
+            Assert.That(command.ActionId, Is.EqualTo("action_1"));
+            Assert.That(command.Action, Is.EqualTo("head_down"));
+            Assert.That(Encoding.ASCII.GetString(RobotTelemetryFormatter.CapabilitiesLine()),
+                Is.EqualTo("CAPS:ACTION_V1\n"));
+            Assert.That(Encoding.UTF8.GetString(RobotTelemetryFormatter.ActionStatusLine(
+                "action_1", "head_down", "done")),
+                Is.EqualTo("ACTION_STATUS:{\"id\":\"action_1\",\"name\":\"head_down\","
+                    + "\"status\":\"done\",\"detail\":\"\"}\n"));
+        }
+
+        [TestCase("MIRROR_ACTION:{\"id\":\"a1\",\"name\":\"head_up\",\"status\":\"accepted\"}", "accepted")]
+        [TestCase("MIRROR_ACTION:{\"id\":\"a1\",\"name\":\"head_up\",\"status\":\"done\"}", "done")]
+        public void MirroredAction_ParsesRealRobotReceipt(string line, string status)
+        {
+            Assert.That(RobotProtocolParser.TryParseLine(line, 0.2f, false, out RobotCommand command), Is.True);
+            Assert.That(command.IsMirroredAction, Is.True);
+            Assert.That(command.ActionId, Is.EqualTo("a1"));
+            Assert.That(command.ActionStatus, Is.EqualTo(status));
+        }
+
+        [TestCase("ACTION:{\"id\":\"bad id\",\"name\":\"head_up\"}")]
+        [TestCase("ACTION:{\"id\":\"a1\",\"name\":\"bad/name\"}")]
+        [TestCase("MIRROR_ACTION:{\"id\":\"a1\",\"name\":\"head_up\",\"status\":\"pending\"}")]
+        public void ActionV1_RejectsMalformedMessages(string line)
+        {
+            Assert.That(RobotProtocolParser.TryParseLine(line, 0.2f, false, out _), Is.False);
+        }
+
+        [Test]
         public void MirroredStep_StartPreservesGaitMagnitudeInDiscreteMode()
         {
             const string line = "MIRROR_STEP:{\"id\":\"step_1\",\"phase\":\"start\",\"steer\":-0.35,\"lateral\":0}";
@@ -133,6 +167,48 @@ namespace HciRobot.Simulator.Tests
                 update.Invoke(server, null);
                 Assert.That(driver.ActiveMirroredStepId, Is.Null);
                 Assert.That(driver.LastMirroredStepStatus, Is.EqualTo("cancelled"));
+            }
+            finally
+            {
+                source.Close();
+                Object.DestroyImmediate(robot);
+            }
+        }
+
+        [Test]
+        public void ActionV1_ServerAppliesOnMainThreadAndDeduplicatesId()
+        {
+            var robot = new GameObject("action transport test");
+            robot.SetActive(false);
+            var source = new TcpClient();
+            try
+            {
+                robot.AddComponent<Rigidbody>();
+                var camera = new GameObject("Robot Camera");
+                camera.transform.SetParent(robot.transform, false);
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                var server = robot.AddComponent<VirtualRobotTcpServer>();
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                typeof(TonyPiMotionDriver).GetMethod("Awake", flags).Invoke(driver, null);
+                typeof(VirtualRobotTcpServer).GetField("motionDriver", flags).SetValue(server, driver);
+                typeof(VirtualRobotTcpServer).GetField("client", flags).SetValue(server, source);
+                var handle = typeof(VirtualRobotTcpServer).GetMethod("HandleLine", flags);
+                var update = typeof(VirtualRobotTcpServer).GetMethod("Update", flags);
+
+                handle.Invoke(server, new object[] { source,
+                    "ACTION:{\"id\":\"same_id\",\"name\":\"head_down\"}" });
+                Assert.That(driver.LastAction, Is.Null);
+                update.Invoke(server, null);
+                Assert.That(driver.LastAction, Is.EqualTo("head_down"));
+                Assert.That(driver.HeadPitchLevel, Is.EqualTo("down"));
+
+                handle.Invoke(server, new object[] { source,
+                    "ACTION:{\"id\":\"same_id\",\"name\":\"head_up\"}" });
+                update.Invoke(server, null);
+                Assert.That(driver.LastAction, Is.EqualTo("head_down"));
+                var history = (Dictionary<string, string>)typeof(VirtualRobotTcpServer)
+                    .GetField("actionHistory", flags).GetValue(server);
+                Assert.That(history["same_id"], Is.EqualTo("done"));
             }
             finally
             {

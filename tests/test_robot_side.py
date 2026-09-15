@@ -6,6 +6,7 @@ import socket
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -310,6 +311,30 @@ def test_shake_moves_yaw_servo_within_safe_range() -> None:
     assert all(ts.YAW_MIN <= p <= ts.YAW_MAX for p in pulses)
     assert head[-1][2] == ts.YAW_CENTER
     assert len(set(pulses)) == 3
+
+
+def test_persistent_head_commands_select_three_pitch_levels() -> None:
+    session = ts.RobotSession(now=lambda: 10.0, cmd_cooldown_s=0.0)
+    down = session.handle_line("CMD:head_down")
+    center = session.handle_line("CMD:head_center")
+    up = session.handle_line("CMD:head_up")
+    assert down == [("head", ts.HEAD_PITCH_ID, ts.PITCH_CENTER - ts.NOD_AMPLITUDE, ts.HEAD_STEP_MS)]
+    assert center == [("head", ts.HEAD_PITCH_ID, ts.PITCH_CENTER, ts.HEAD_STEP_MS)]
+    assert up == [("head", ts.HEAD_PITCH_ID, ts.PITCH_CENTER + ts.NOD_AMPLITUDE, ts.HEAD_STEP_MS)]
+
+
+def test_persistent_head_commands_use_configured_limits_and_step_time() -> None:
+    config = replace(
+        ts.ServiceConfig(),
+        pitch_min=1400,
+        pitch_center=1450,
+        pitch_max=1500,
+        nod_amplitude=200,
+        head_step_ms=321,
+    )
+    session = ts.RobotSession.from_config(config)
+    assert session.handle_line("CMD:head_down") == [("head", config.head_pitch_id, 1400, 321)]
+    assert session.handle_line("CMD:head_up") == [("head", config.head_pitch_id, 1500, 321)]
 
 
 def test_legacy_session_can_allow_head_command_while_moving() -> None:

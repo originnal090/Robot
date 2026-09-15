@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live gamepad diagnostic: print axes, buttons and the mapped v/steer command.
+"""Live gamepad diagnostic: print all axes and mapped motion commands.
 
 Wiggle the sticks and press buttons while this runs; the numbers are exactly
 what the teleop stack sees (same backend, same deadzone mapping).  Use it to
@@ -25,7 +25,7 @@ from hcirobot.gamepad import (
     CompositeGamepadBackend,
     PygameGamepadBackend,
     XInputGamepadBackend,
-    map_to_command,
+    map_to_motion,
 )
 
 
@@ -40,7 +40,9 @@ def list_devices() -> int:
     for index in range(count):
         stick = pygame.joystick.Joystick(index)
         stick.init()
-        print(f"[{index}] {stick.get_name()}  axes={stick.get_numaxes()} buttons={stick.get_numbuttons()}")
+        print(
+            f"[{index}] {stick.get_name()}  axes={stick.get_numaxes()} buttons={stick.get_numbuttons()}"
+        )
     return 0
 
 
@@ -68,13 +70,16 @@ def probe(seconds: float, deadzone: float, backend_choice: str) -> int:
     try:
         while time.monotonic() < deadline:
             reading = backend.read()
-            velocity, steer = map_to_command(reading.drive_axis, reading.steer_axis, deadzone)
+            velocity, steer, lateral = map_to_motion(reading, deadzone)
             buttons = " ".join(
-                f"{index}{'*' if index == TOGGLE_BUTTON else ''}" for index in sorted(reading.buttons)
+                f"{index}{'*' if index == TOGGLE_BUTTON else ''}"
+                for index in sorted(reading.buttons)
             )
             print(
-                f"\rraw={reading.drive_axis:+.3f}/{reading.steer_axis:+.3f} "
-                f"-> v={velocity:+.3f} steer={steer:+.3f}  buttons=[{buttons or '-'}]   ",
+                f"\rLS={reading.lateral_axis:+.3f}/{reading.drive_axis:+.3f} "
+                f"RS={reading.steer_axis:+.3f}/{reading.head_axis:+.3f} "
+                f"-> v={velocity:+.3f} steer={steer:+.3f} lateral={lateral:+.3f} "
+                f"buttons=[{buttons or '-'}]   ",
                 end="",
                 flush=True,
             )
@@ -88,8 +93,12 @@ def probe(seconds: float, deadzone: float, backend_choice: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--seconds", type=float, default=20.0, help="how long to watch (default 20)")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--seconds", type=float, default=20.0, help="how long to watch (default 20)"
+    )
     parser.add_argument("--deadzone", type=float, default=DEADZONE)
     parser.add_argument(
         "--backend",

@@ -242,9 +242,15 @@ class SyntheticBallSource:
             (8, 0.50, 88),
         ]
         period = 1.0 / max(self.config.fps, 0.1)
+        frame_index = 0
         for count, x_ratio, radius in scenarios:
             for _ in range(count):
                 frame = np.full((self.config.height, self.config.width, 3), 32, dtype=np.uint8)
+                # A real live camera has sensor noise even when the scene is still.
+                # Keep the deterministic source visibly live to the duplicate-frame
+                # safety detector without affecting the target region.
+                frame[0, 0] = frame_index & 0xFF
+                frame_index += 1
                 if x_ratio is not None:
                     center = (round(self.config.width * x_ratio), self.config.height // 2)
                     cv2.circle(frame, center, radius, self._ball_bgr, -1, lineType=cv2.LINE_8)

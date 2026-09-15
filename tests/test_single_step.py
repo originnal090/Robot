@@ -31,18 +31,24 @@ def wait_for(predicate, timeout=2):
 def make_action(path, durations=(40, 40, 40)):
     with sqlite3.connect(path) as database:
         database.execute("CREATE TABLE ActionGroup (id INTEGER PRIMARY KEY, duration, servo1)")
-        database.executemany("INSERT INTO ActionGroup VALUES (?, ?, ?)",
-                             [(i, duration, 500 + i) for i, duration in enumerate(durations)])
+        database.executemany(
+            "INSERT INTO ActionGroup VALUES (?, ?, ?)",
+            [(i, duration, 500 + i) for i, duration in enumerate(durations)],
+        )
 
 
 class Board:
     def __init__(self):
         self.frames = []
+        self.head_frames = []
         self.first_frame = threading.Event()
 
     def setBusServoPulse(self, servo, pulse, duration):
         self.frames.append((servo, pulse, duration, time.perf_counter()))
         self.first_frame.set()
+
+    def setPWMServoPulse(self, servo, pulse, duration):
+        self.head_frames.append((servo, pulse, duration, time.perf_counter()))
 
 
 @contextmanager
@@ -51,8 +57,9 @@ def connected_service(tmp_path, *, durations=(40, 40, 40), missing=False):
     if not missing:
         make_action(tmp_path / "turn_right_small_step.d6a", durations)
     service = ts.TonyPiService(
-        config=ts.ServiceConfig(host="127.0.0.1", port=0, mode=ts.MODE_HARDWARE,
-                                step_interval_s=0.01),
+        config=ts.ServiceConfig(
+            host="127.0.0.1", port=0, mode=ts.MODE_HARDWARE, step_interval_s=0.01
+        ),
         runtime=ts.RuntimeHardware(board=board, agc=SimpleNamespace(runActionGroup=lambda _: None)),
     )
     service.action_directory = tmp_path
@@ -62,6 +69,7 @@ def connected_service(tmp_path, *, durations=(40, 40, 40), missing=False):
     motion.start()
     client = None
     try:
+
         def listening():
             sock = service._server_socket
             try:
@@ -73,7 +81,7 @@ def connected_service(tmp_path, *, durations=(40, 40, 40), missing=False):
         port = service._server_socket.getsockname()[1]
         client = TcpRobotClient("127.0.0.1", port, minimum_send_interval=0)
         client.connect()
-        wait_for(lambda: client.supports_steps)
+        wait_for(lambda: client.supports_steps and client.supports_actions)
         yield service, client, board
     finally:
         if client is not None:
@@ -99,6 +107,43 @@ def test_real_tcp_executes_once_and_done_follows_last_frame(tmp_path):
         assert client.step_status(ident) == "done"
 
 
+def test_real_tcp_head_action_executes_once_and_returns_done(tmp_path):
+    with connected_service(tmp_path) as (_, client, board):
+        ident = client.send_action("head_down")
+        assert ident is not None
+        assert client.action_status(ident) in ("pending", "accepted", "done")
+        wait_for(lambda: client.action_status(ident) == "done")
+        assert len(board.head_frames) == 1
+        assert board.head_frames[0][1] == ts.PITCH_CENTER - ts.NOD_AMPLITUDE
+        client._send_bytes(
+            ("ACTION:" + json.dumps({"id": ident, "name": "head_down"}) + "\n").encode()
+        )
+        time.sleep(0.05)
+        assert len(board.head_frames) == 1
+        assert client.action_status(ident) == "done"
+
+
+def test_action_status_parser_does_not_rewind_done_receipt():
+    client = TcpRobotClient("localhost")
+    client._actions = {"expected": "accepted"}
+    client._handle_telemetry_line(
+        b'ACTION_STATUS:{"id":"expected","name":"head_up","status":"done"}'
+    )
+    client._handle_telemetry_line(
+        b'ACTION_STATUS:{"id":"expected","name":"head_up","status":"accepted"}'
+    )
+    assert client.action_status("expected") == "done"
+
+
+def test_unknown_action_is_ignored_without_actuator_output(tmp_path):
+    with connected_service(tmp_path) as (_, client, board):
+        ident = client.send_action("unknown_action")
+        assert ident is not None
+        wait_for(lambda: client.action_status(ident) == "ignored")
+        assert board.head_frames == []
+        assert board.frames == []
+
+
 def test_full_control_loop_with_real_service_completes_one_step(tmp_path):
     from hcirobot.app import SessionControl, run_loop
     from hcirobot.controller import ControllerConfig, VisualApproachController
@@ -117,7 +162,10 @@ def test_full_control_loop_with_real_service_completes_one_step(tmp_path):
             SyntheticBallSource(SyntheticConfig(fps=50, realtime=True)),
             SimpleNamespace(process=lambda _: Detection(True, True, 384, 240, 30, 640, 480)),
             VisualApproachController(ControllerConfig(sense_seconds=0.04)),
-            client, armed=True, session=session, event_sink=sink,
+            client,
+            armed=True,
+            session=session,
+            event_sink=sink,
         )
         assert result.termination == "stop_requested"
         assert len(board.frames) == 3
@@ -129,8 +177,9 @@ def test_duplicate_while_running_and_busy_request_never_start_extra_action(tmp_p
     with connected_service(tmp_path, durations=(100, 100)) as (_, client, board):
         ident = client.start_step(RobotCommand(steer=0.3))
         assert board.first_frame.wait(1)
-        client._send_bytes((f'STEP:{{"id":"{ident}","steer":0.3}}\n'
-                            'STEP:{"id":"other","steer":0.3}\n').encode())
+        client._send_bytes(
+            (f'STEP:{{"id":"{ident}","steer":0.3}}\nSTEP:{{"id":"other","steer":0.3}}\n').encode()
+        )
         wait_for(lambda: client.step_status(ident) == "done")
         client._send_bytes(b'STEP:{"id":"other","steer":0.3}\n')
         time.sleep(0.05)
@@ -154,11 +203,16 @@ def test_cancel_before_dispatch_and_retry_never_reaches_actuator():
     assert b'"cancelled"' in replies[-1]
 
 
-@pytest.mark.parametrize("payload", [
-    '{"id":"bad","steer":true}', '{"id":"bad","steer":NaN}',
-    '{"id":"bad","steer":0.3,"lateral":0.3}',
-    '{"id":"bad","steer":0.1}', '{"id":"bad","v":0.6,"steer":0.3}',
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"id":"bad","steer":true}',
+        '{"id":"bad","steer":NaN}',
+        '{"id":"bad","steer":0.3,"lateral":0.3}',
+        '{"id":"bad","steer":0.1}',
+        '{"id":"bad","v":0.6,"steer":0.3}',
+    ],
+)
 def test_invalid_step_cannot_execute_or_fall_through_to_legacy(payload):
     replies = []
     conn = SimpleNamespace(sendall=lambda data: replies.append(data))
@@ -172,11 +226,12 @@ def test_full_dedupe_table_refuses_new_ids_without_eviction():
     replies = []
     conn = SimpleNamespace(sendall=lambda data: replies.append(data))
     service = ts.TonyPiService(config=ts.ServiceConfig(mode=ts.MODE_DRY_RUN))
-    service._step_history = {str(i): {"id": str(i), "status": "done", "detail": ""}
-                             for i in range(1024)}
+    service._step_history = {
+        str(i): {"id": str(i), "status": "done", "detail": ""} for i in range(1024)
+    }
     service._handle_step_line(conn, 'STEP:{"id":"new","steer":0.3}')
     assert service._step is None
-    assert b'session_step_limit' in replies[-1]
+    assert b"session_step_limit" in replies[-1]
     service._handle_step_line(conn, 'STEP:{"id":"0","steer":0.3}')
     assert service._step is None and b'"done"' in replies[-1]
 
@@ -214,8 +269,10 @@ def test_missing_or_invalid_action_is_error_before_any_servo_output(tmp_path, mi
 
 def test_hardware_exception_is_not_reported_as_success(tmp_path):
     with connected_service(tmp_path) as (_, client, board):
+
         def fail(*_):
             raise OSError("servo transport failed")
+
         board.setBusServoPulse = fail
         ident = client.start_step(RobotCommand(steer=0.3))
         wait_for(lambda: client.step_status(ident) == "error")
@@ -245,8 +302,11 @@ def test_heartbeat_keeps_long_step_alive(tmp_path):
 def test_status_parser_ignores_unknown_ids_and_cannot_rewind_terminal_status():
     client = TcpRobotClient("localhost")
     client._steps = {"expected": "accepted"}
-    for message in [b'STEP_STATUS:garbage', b'STEP_STATUS:[]',
-                    b'STEP_STATUS:{"id":"unknown","status":"done"}']:
+    for message in [
+        b"STEP_STATUS:garbage",
+        b"STEP_STATUS:[]",
+        b'STEP_STATUS:{"id":"unknown","status":"done"}',
+    ]:
         client._handle_telemetry_line(message)
     assert client.step_status("expected") == "accepted"
     client._handle_telemetry_line(b'STEP_STATUS:{"id":"expected","status":"cancelled"}')

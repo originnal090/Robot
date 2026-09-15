@@ -71,6 +71,7 @@ class ManualCommand:
     steer: float
     until: float
     source: str = "manual"
+    lateral: float = 0.0
 
 
 _MANUAL_SOURCES = frozenset({"manual", "gamepad"})
@@ -86,7 +87,7 @@ class SessionControl:
         self._estop = threading.Event()
         self._lock = threading.Lock()
         self._manual: ManualCommand | None = None
-        self._action: str | None = None
+        self._actions: list[str] = []
         self._robot: RobotBackend | None = None
         self.session_id = next(_session_counter)
 
@@ -120,18 +121,28 @@ class SessionControl:
         self._cancel_robot()
 
     def request_manual(
-        self, velocity: float, steer: float, seconds: float, *, source: str = "manual"
+        self,
+        velocity: float,
+        steer: float,
+        seconds: float,
+        *,
+        lateral: float = 0.0,
+        source: str = "manual",
     ) -> None:
         if not -1.0 <= velocity <= 1.0:
             raise ValueError("manual velocity must be between -1 and 1")
         if not -1.0 <= steer <= 1.0:
             raise ValueError("manual steer must be between -1 and 1")
+        if not -1.0 <= lateral <= 1.0:
+            raise ValueError("manual lateral must be between -1 and 1")
         if not 0.0 < seconds <= 5.0:
             raise ValueError("manual duration must be between 0 and 5 seconds")
         if source not in _MANUAL_SOURCES:
             raise ValueError("manual source must be one of: " + ", ".join(sorted(_MANUAL_SOURCES)))
         with self._lock:
-            self._manual = ManualCommand(velocity, steer, time.monotonic() + seconds, source)
+            self._manual = ManualCommand(
+                velocity, steer, time.monotonic() + seconds, source, lateral
+            )
 
     def current_manual(self) -> ManualCommand | None:
         with self._lock:
@@ -146,12 +157,11 @@ class SessionControl:
         if not _ACTION_NAME.fullmatch(name):
             raise ValueError("action name must be 1-32 alphanumeric or underscore characters")
         with self._lock:
-            self._action = name
+            self._actions.append(name)
 
     def consume_action(self) -> str | None:
         with self._lock:
-            action, self._action = self._action, None
-            return action
+            return self._actions.pop(0) if self._actions else None
 
     def consume_arm(self) -> bool:
         if self._arm.is_set():
@@ -277,9 +287,11 @@ def run_manual_loop(
     event_seq = itertools.count(1)
     output_v = 0.0
     output_steer = 0.0
+    output_lateral = 0.0
     output_source = "manual_hold"
     command_count = 0
     manual_was_active = False
+    pending_action_ids: set[str] = set()
     termination = "completed"
     final_state = ControlState.IDLE
     cleanup_error: Exception | None = None
@@ -295,43 +307,63 @@ def run_manual_loop(
                 session_id=session_id,
                 output_v=output_v,
                 output_steer=output_steer,
+                output_lateral=output_lateral,
                 output_source=output_source,
                 armed=False,
             ),
         )
 
     def send_stop(source_name: str) -> None:
-        nonlocal output_v, output_steer, output_source, command_count
+        nonlocal output_v, output_steer, output_lateral, output_source, command_count
         robot.send(RobotCommand.stop())
         output_v = 0.0
         output_steer = 0.0
+        output_lateral = 0.0
         output_source = source_name
         command_count += 1
 
     def send_manual(command: ManualCommand) -> None:
-        nonlocal output_v, output_steer, output_source, command_count
+        nonlocal output_v, output_steer, output_lateral, output_source, command_count
         robot.send_raw(
             {
                 "v": round(command.velocity, 4),
                 "steer": round(command.steer, 4),
+                "lateral": round(command.lateral, 4),
                 "grab": False,
                 "t": datetime.now(UTC).isoformat(),
             }
         )
         output_v = command.velocity
         output_steer = command.steer
+        output_lateral = command.lateral
         output_source = command.source
         command_count += 1
+
+    def send_action(name: str) -> None:
+        ident = robot.send_action(name)
+        if ident is not None:
+            pending_action_ids.add(ident)
+        emit("action", name)
+
+    def poll_action_receipts() -> None:
+        status_for = getattr(robot, "action_status", None)
+        if status_for is None:
+            return
+        for ident in tuple(pending_action_ids):
+            status = status_for(ident)
+            if status in ("done", "ignored", "error"):
+                pending_action_ids.discard(ident)
+                emit("action_status", f"{ident}:{status}")
 
     emit("started", "manual-only session started")
     try:
         send_stop("manual_hold")
         emit("manual", "manual control ready")
         while True:
+            poll_action_receipts()
             action = session.consume_action()
             if action is not None:
-                robot.send_action(action)
-                emit("action", action)
+                send_action(action)
             if session.consume_estop():
                 termination = "estop"
                 final_state = ControlState.LOST_SAFE
@@ -441,6 +473,7 @@ def run_loop(
     step_started = 0.0
     step_interrupted = False
     last_step_heartbeat = float("-inf")
+    pending_action_ids: set[str] = set()
 
     def emit(kind: str, message: str = "", **kwargs: Any) -> None:
         event_values = {
@@ -474,7 +507,7 @@ def run_loop(
         output_lateral = command.lateral
         output_source = source_name
 
-    def send_vector(velocity: float, steer: float, source_name: str) -> None:
+    def send_vector(velocity: float, steer: float, lateral: float, source_name: str) -> None:
         nonlocal output_v, output_steer, output_grab, output_lateral, output_source
         nonlocal step_interrupted
         if step_id is not None:
@@ -482,6 +515,7 @@ def run_loop(
         payload = {
             "v": round(velocity, 4),
             "steer": round(steer, 4),
+            "lateral": round(lateral, 4),
             "grab": False,
             "t": datetime.now(UTC).isoformat(),
         }
@@ -489,8 +523,24 @@ def run_loop(
         output_v = float(payload["v"])
         output_steer = float(payload["steer"])
         output_grab = False
-        output_lateral = 0.0
+        output_lateral = float(payload["lateral"])
         output_source = source_name
+
+    def send_action(name: str, **event_values: Any) -> None:
+        ident = robot.send_action(name)
+        if ident is not None:
+            pending_action_ids.add(ident)
+        emit("action", name, **event_values)
+
+    def poll_action_receipts() -> None:
+        status_for = getattr(robot, "action_status", None)
+        if status_for is None:
+            return
+        for ident in tuple(pending_action_ids):
+            status = status_for(ident)
+            if status in ("done", "ignored", "error"):
+                pending_action_ids.discard(ident)
+                emit("action_status", f"{ident}:{status}")
 
     def _latch_blocked(vision_flag: bool | None) -> None:
         nonlocal is_armed, termination
@@ -588,12 +638,12 @@ def run_loop(
 
     try:
         while True:
+            poll_action_receipts()
             action = session.consume_action()
             if action is not None:
                 if step_id is not None:
                     step_interrupted = True
-                robot.send_action(action)
-                emit("action", action)
+                send_action(action)
             if session.consume_estop():
                 controller.estop("operator_estop")
                 is_armed = False
@@ -681,7 +731,7 @@ def run_loop(
                 approach_gate.hold_settle()
                 walk_command = RobotCommand.stop()
             if manual is not None:
-                send_vector(manual.velocity, manual.steer, manual.source)
+                send_vector(manual.velocity, manual.steer, manual.lateral, manual.source)
                 manual_was_active = True
                 emit("manual", "manual command", frame_count=frame_count)
             elif manual_was_active:
@@ -728,9 +778,7 @@ def run_loop(
                 break
             if isinstance(item, Exception):
                 if video_retry and preserve_manual_on_video_failure:
-                    enter_video_fallback(
-                        f"图传重连已停止：{type(item).__name__}: {item}"
-                    )
+                    enter_video_fallback(f"图传重连已停止：{type(item).__name__}: {item}")
                     continue
                 raise item
 
@@ -740,9 +788,7 @@ def run_loop(
                     duplicate_count += 1
                     if duplicate_count >= duplicate_frame_limit:
                         if preserve_manual_on_video_failure:
-                            enter_video_fallback(
-                                f"画面冻结：连续 {duplicate_count} 帧未变化"
-                            )
+                            enter_video_fallback(f"画面冻结：连续 {duplicate_count} 帧未变化")
                         else:
                             if not vision_hold_active:
                                 if is_armed:
@@ -787,8 +833,10 @@ def run_loop(
                 # Burst-walking modes: during walk/settle the camera bounces, so
                 # vision work is skipped; the last sensed intent repeats during
                 # walk and sonar-based obstacle safety still runs every frame.
-                phase = "step_wait" if step_id is not None else approach_gate.advance(
-                    last_radius_ratio, walk_command
+                phase = (
+                    "step_wait"
+                    if step_id is not None
+                    else approach_gate.advance(last_radius_ratio, walk_command)
                 )
                 if phase != "sense":
                     obstacle = None
@@ -800,7 +848,7 @@ def run_loop(
                         if obstacle.action == "maneuver":
                             approach_gate.hold_settle()
                             walk_command = RobotCommand.stop()
-                            send_vector(obstacle.velocity, obstacle.steer, "obstacle_maneuver")
+                            send_vector(obstacle.velocity, obstacle.steer, 0.0, "obstacle_maneuver")
                             frame_count += 1
                             emit("frame", obstacle.reason, frame_count=frame_count)
                             continue
@@ -869,7 +917,7 @@ def run_loop(
                 if approach_gate is not None:
                     approach_gate.hold_settle()
                     walk_command = RobotCommand.stop()
-                send_vector(obstacle.velocity, obstacle.steer, "obstacle_maneuver")
+                send_vector(obstacle.velocity, obstacle.steer, 0.0, "obstacle_maneuver")
             elif obstacle is not None and obstacle.action == "hold":
                 if approach_gate is not None:
                     approach_gate.hold_settle()
@@ -961,8 +1009,7 @@ def run_loop(
                     # right_grip = crouch-and-extinguish).  A send failure must
                     # not mask the arrival: warn and still end the session.
                     try:
-                        robot.send_action(controller.config.arrival_action)
-                        emit("action", controller.config.arrival_action, frame_count=frame_count)
+                        send_action(controller.config.arrival_action, frame_count=frame_count)
                     except (ConnectionError, OSError, ValueError) as exc:
                         emit("warning", f"到达动作下发失败：{exc}", frame_count=frame_count)
                 break

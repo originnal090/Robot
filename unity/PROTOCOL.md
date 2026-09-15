@@ -94,9 +94,33 @@ PC 镜像发送采用有界后台队列，从首次单步镜像起后续 STOP/�
 CMD:nod\n
 CMD:shake\n
 CMD:stand\n
+CMD:head_down\n
+CMD:head_center\n
+CMD:head_up\n
 ```
 
-动作名仅允许 1-32 个 ASCII 字母、数字或下划线。`TonyPiMotionDriver` 发布 `ActionReceived` 事件并记录 `LastAction`；`stand` 另外立即停车。`nod`、`shake` 和课程按钮动作不模拟具体舵机动画，场景脚本可订阅事件自行表现。
+动作名仅允许 1-32 个 ASCII 字母、数字或下划线。`TonyPiMotionDriver` 发布 `ActionReceived` 事件并记录 `LastAction`；`stand` 另外立即停车。三个 `head_*` 动作把机器人相机保持在低头、回正、抬头三档；转身和横移不会改变相机相对机身的俯仰档位。`nod`、`shake` 和课程按钮动作不模拟具体舵机动画，场景脚本可订阅事件自行表现。
+
+### 单动作 ID 与完成回执
+
+Unity 包 0.2.0 声明 `CAPS:ACTION_V1`，也能作为主机器人后端接收带 ID 的动作：
+
+```text
+ACTION:{"id":"action_1","name":"head_down"}
+ACTION_STATUS:{"id":"action_1","name":"head_down","status":"accepted","detail":""}
+ACTION_STATUS:{"id":"action_1","name":"head_down","status":"done","detail":""}
+```
+
+ID 为 1–64 位 ASCII 字母、数字、下划线或短横线。每条新动作先回 `accepted`，主线程应用后回 `done`；同一连接内重发相同 ID 只返回已有状态，不重复入队。会话最多记住 1024 个 ID，重连后清空。Unity 的完成表示命令已在主线程应用，不代表模拟了实体舵机的完整耗时。
+
+PC 同时控制真机并镜像 Unity 时，仍先用兼容 `CMD` 立即显示动作，随后把真机回执原样旁路给 Unity：
+
+```text
+MIRROR_ACTION:{"id":"action_1","name":"head_down","status":"accepted"}
+MIRROR_ACTION:{"id":"action_1","name":"head_down","status":"done"}
+```
+
+`status` 支持 `accepted`、`done`、`ignored`、`error`。这条旁路只更新 `LastActionReceiptId/Status`，不会再次执行动作，因此晚到或重复回执不会造成头部重复转动。
 
 ### 距离遥测
 

@@ -268,6 +268,7 @@ OrangePi 板端基准命令见 `docs/edge-recognition.md`。
 | 按钮 | 行为 |
 |---|---|
 | 点头 / 摇头 | 发送 `CMD:nod` / `CMD:shake`，需要机器人端运行 `robot_side/tonypi_server.py`；课程原版 `TCP_connect.py` 会忽略 |
+| 低头 / 回正 / 抬头 | 发送保持姿态的 `head_down` / `head_center` / `head_up`；扩展服务用动作 ID 回传 accepted/done，Unity 0.2.0 保持相机俯仰档位 |
 | 前爬起 / 后爬起 | 发送 `CMD:left_trigger` / `CMD:right_trigger`（课程按钮名，映射 stand_up_front/back 动作组，真机两端服务都支持） |
 | 蹲下灭火 | 发送 `CMD:right_grip`（映射 outfire 动作组） |
 | 前进 / 后退 / 左转 / 右转 | 发送 0.35 秒点动脉冲（复用课程 JSON 协议，`v` 可为负实现后退） |
@@ -294,9 +295,11 @@ PNG，按钮实时显示已存张数；再点一次停止。数据落在
 
 - **B 键**：自主寻路运行中按下 → 抢断，自治解除并切入手动控制；再按一次 →
   恢复自主寻路。0.25 s 防抖，急停/故障锁存未复位时拒绝恢复并提示。
-- **左摇杆**驾驶（仅手动模式）：上下前进/后退、左右转向，0.20 死区，输出走
+- **左摇杆（LS）**（仅手动模式）：上下前进/后退、左右横移，0.20 死区，输出走
   与点动按钮相同的 `request_manual` 通道（来源标记 `gamepad`），松杆 0.3 s
   内自动停车。
+- **右摇杆（RS）**（仅手动模式）：左右让机身原地旋转，不改变头部；上下按
+  低/中/高三档逐级调整相机俯仰。一次越过死区只走一档，需回中后才能走下一档。
 - **动作键**（仅手动模式，发课程 CMD 按钮名）：LT = 前倒爬起
   （`left_trigger`→stand_up_front）、RT = 后倒爬起（`right_trigger`→
   stand_up_back）、RB = 蹲下灭火（`right_grip`→outfire）；自主模式下按下会被

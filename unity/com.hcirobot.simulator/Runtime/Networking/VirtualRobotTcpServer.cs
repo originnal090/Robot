@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -34,6 +35,8 @@ namespace HciRobot.Simulator
         private int watchdogStopQueued;
         private string pendingError;
         private string mirroredStepId;
+        private readonly Dictionary<string, string> actionHistory = new Dictionary<string, string>();
+        private readonly Dictionary<string, string> actionNames = new Dictionary<string, string>();
 
         public bool HasClient
         {
@@ -92,6 +95,10 @@ namespace HciRobot.Simulator
                 if (motionDriver != null)
                 {
                     motionDriver.ApplyCommand(command);
+                }
+                if (command.IsActionRequest)
+                {
+                    CompleteAction(command);
                 }
             }
         }
@@ -243,12 +250,15 @@ namespace HciRobot.Simulator
                     {
                         previous = client;
                         client = accepted;
+                        actionHistory.Clear();
+                        actionNames.Clear();
                     }
                     previous?.Close();
 
                     QueueStop();
                     Interlocked.Exchange(ref lastValidCommandTicks, 0);
                     Interlocked.Exchange(ref watchdogStopQueued, 0);
+                    SendLine(RobotTelemetryFormatter.CapabilitiesLine());
                     var worker = new Thread(() => ReadClient(accepted, token))
                     {
                         IsBackground = true,
@@ -334,7 +344,31 @@ namespace HciRobot.Simulator
                 // has replaced it. Do not enqueue its late command.
                 if (!ReferenceEquals(client, source)) return;
                 bool refreshWatchdog = true;
-                if (command.IsMirroredStep)
+                byte[] actionReply = null;
+                bool enqueue = true;
+                if (command.IsActionRequest)
+                {
+                    if (actionHistory.TryGetValue(command.ActionId, out string previousStatus))
+                    {
+                        actionReply = RobotTelemetryFormatter.ActionStatusLine(
+                            command.ActionId, actionNames[command.ActionId], previousStatus);
+                        enqueue = false;
+                    }
+                    else if (actionHistory.Count >= 1024)
+                    {
+                        actionReply = RobotTelemetryFormatter.ActionStatusLine(
+                            command.ActionId, command.Action, "error", "session_action_limit");
+                        enqueue = false;
+                    }
+                    else
+                    {
+                        actionHistory.Add(command.ActionId, "accepted");
+                        actionNames.Add(command.ActionId, command.Action);
+                        actionReply = RobotTelemetryFormatter.ActionStatusLine(
+                            command.ActionId, command.Action, "accepted");
+                    }
+                }
+                else if (command.IsMirroredStep)
                 {
                     bool matches = mirroredStepId == command.MirroredStepId;
                     if (command.MirroredStepPhase == "heartbeat" && !matches) return;
@@ -346,14 +380,31 @@ namespace HciRobot.Simulator
                         if (matches && command.MirroredStepPhase != "heartbeat") mirroredStepId = null;
                     }
                 }
-                else mirroredStepId = null;
-                pendingCommands.Enqueue(command);
+                else if (!command.IsMirroredAction) mirroredStepId = null;
+                if (enqueue) pendingCommands.Enqueue(command);
                 if (refreshWatchdog)
                 {
                     Interlocked.Exchange(ref lastValidCommandTicks, DateTime.UtcNow.Ticks);
                     Interlocked.Exchange(ref watchdogStopQueued, 0);
                 }
+                if (actionReply != null) SendLine(actionReply);
             }
+        }
+
+        private void CompleteAction(RobotCommand command)
+        {
+            byte[] reply = null;
+            lock (clientGate)
+            {
+                if (client != null && actionHistory.TryGetValue(command.ActionId, out string status)
+                    && status == "accepted")
+                {
+                    actionHistory[command.ActionId] = "done";
+                    reply = RobotTelemetryFormatter.ActionStatusLine(
+                        command.ActionId, command.Action, "done");
+                }
+            }
+            if (reply != null) SendLine(reply);
         }
 
         private bool CloseClientIfCurrent(TcpClient target)
