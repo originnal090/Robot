@@ -1,0 +1,24 @@
+[Unit]
+Description=HCIRobot web console (user service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hcirobot/current
+ExecStart=%h/hcirobot/start.sh
+ExecStartPost=/bin/sh -c '/usr/bin/systemctl --user show --property MainPID --value hcirobot-web.service > %h/hcirobot/web.pid'
+ExecStopPost=/bin/rm -f %h/hcirobot/web.pid
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=40
+UMask=0077
+StandardOutput=append:%h/hcirobot/web.log
+StandardError=append:%h/hcirobot/web.log
+
+# Restarting this service only restores the console. Sessions still require an
+# operator to claim control and arm the robot from the Web UI.
+
+[Install]
+WantedBy=default.target

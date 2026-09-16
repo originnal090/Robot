@@ -6,6 +6,14 @@ The web service replaces the CLI controller service for the same robot and never
 For a foreground Orange Pi launch, copy `env/hcirobot-web.env.example` to
 `/etc/hcirobot/web.env`, set the token, then run `./deploy/start_webui.sh`.
 
+For a home-directory deployment without root, install
+`systemd/hcirobot-web-user.service` as
+`~/.config/systemd/user/hcirobot-web.service`, enable linger once with
+`loginctl enable-linger "$USER"`, then run
+`systemctl --user enable --now hcirobot-web.service`. The unit starts the
+console unarmed, restarts it after failures, and writes its current MainPID to
+`~/hcirobot/web.pid`.
+
 These files are templates, not universal image-specific installers. Replace users, paths, IP addresses, Python paths and action-group directories for the actual boards.
 
 ## Support baseline
