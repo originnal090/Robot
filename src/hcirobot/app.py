@@ -721,8 +721,6 @@ def run_loop(
                     walk_command = RobotCommand.stop()
                     if approach_gate is not None:
                         approach_gate.hold_settle()
-                    if startup_route is not None and startup_route.waiting_for_step:
-                        startup_route.mark_step_complete(clock())
                     send_command(RobotCommand.stop(), "step_complete")
                     emit("step", f"{completed_id}: {status}", frame_count=frame_count)
                 elif status in ("error", "cancelled"):
@@ -857,8 +855,7 @@ def run_loop(
                 and is_armed
                 and manual is None
                 and (
-                    not (startup_route is not None and startup_route.active)
-                    or step_id is not None
+                    not (startup_route is not None and startup_route.active) or step_id is not None
                 )
             ):
                 # Burst-walking modes: during walk/settle the camera bounces, so
@@ -923,17 +920,13 @@ def run_loop(
 
             detection = detector.process(item)
             now = clock()
-            startup_step_request = False
             if is_armed and startup_route is not None and startup_route.active:
                 startup = startup_route.update(detection, now)
-                startup_step_request = startup.request_step
                 if startup.target_acquired:
                     controller.arm(now)
                     decision = controller.update(detection, now)
                     if approach_gate is not None:
                         approach_gate.hold_settle()
-                elif startup.failed:
-                    decision = controller.fail_safe(startup.reason)
                 else:
                     decision = ControlDecision(startup.state, startup.command, startup.reason)
             else:
@@ -974,21 +967,6 @@ def run_loop(
                     approach_gate.hold_settle()
                     walk_command = RobotCommand.stop()
                 send_command(RobotCommand.stop(), "obstacle_hold")
-            elif startup_step_request:
-                if not getattr(robot, "supports_steps", False):
-                    decision = controller.fail_safe("startup_step_protocol_unavailable")
-                    send_command(RobotCommand.stop(), "shutdown")
-                    emit("error", "启动右转需要机器人 STEP_V1 单步协议")
-                else:
-                    step_id = robot.start_step(decision.command)
-                    startup_route.mark_step_started()
-                    step_started = last_step_heartbeat = time.monotonic()
-                    step_interrupted = False
-                    output_v, output_steer = decision.command.velocity, decision.command.steer
-                    output_lateral = decision.command.lateral
-                    output_grab = False
-                    output_source = "startup_turn"
-                    emit("step", f"{step_id}: startup requested", frame_count=frame_count)
             else:
                 source_name = "autonomy" if is_armed else "unarmed_hold"
                 # Gated modes only cache intent while sensing. Executing it

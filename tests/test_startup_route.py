@@ -12,42 +12,56 @@ def target() -> Detection:
     return Detection(True, True, 320.0, 240.0, 30.0, 640, 480)
 
 
-def test_forward_settle_then_bounded_right_steps() -> None:
+def test_optional_forward_then_continuous_right_until_six_confirmed_frames() -> None:
     route = StartupRoute(
         StartupRouteConfig(
             enabled=True,
+            forward_enabled=True,
             forward_seconds=1.0,
             settle_seconds=0.5,
-            estimated_turn_step_degrees=30,
-            max_turn_degrees=120,
+            acquire_frames=6,
         )
     )
     route.arm(0.0)
     assert route.update(missing(), 0.9).command == RobotCommand(velocity=0.60)
     assert route.update(missing(), 1.0).command == RobotCommand.stop()
-    for index in range(4):
-        turn = route.update(missing(), 1.5 + index)
-        assert turn.state is ControlState.STARTUP_TURN
-        assert turn.request_step and turn.command.steer > 0
-        route.mark_step_started()
-        route.mark_step_complete(1.5 + index)
-        route.update(missing(), 2.0 + index)
-    failed = route.update(missing(), 5.5)
-    assert failed.failed
-    assert failed.state is ControlState.LOST_SAFE
-
-
-def test_confirmed_target_hands_off_after_turn_settle() -> None:
-    route = StartupRoute(StartupRouteConfig(enabled=True, forward_seconds=0))
-    route.arm(0.0)
-    decision = route.update(target(), 0.5)
-    assert decision.target_acquired
+    turn = route.update(missing(), 1.5)
+    assert turn.state is ControlState.STARTUP_TURN
+    assert turn.command.steer > 0
+    for index in range(5):
+        confirming = route.update(target(), 1.6 + index / 10)
+        assert not confirming.target_acquired
+        assert confirming.command.steer > 0
+    acquired = route.update(target(), 2.1)
+    assert acquired.target_acquired
+    assert acquired.command == RobotCommand.stop()
     assert not route.active
 
 
+def test_forward_is_disabled_by_default() -> None:
+    route = StartupRoute(StartupRouteConfig(enabled=True, forward_seconds=16))
+    route.arm(0.0)
+    assert route.update(missing(), 0.0).command == RobotCommand.stop()
+    turn = route.update(missing(), 0.5)
+    assert turn.command.velocity == 0
+    assert turn.command.steer > 0
+
+
 def test_unconfirmed_candidate_does_not_end_scan() -> None:
-    route = StartupRoute(StartupRouteConfig(enabled=True, forward_seconds=0))
+    route = StartupRoute(StartupRouteConfig(enabled=True, acquire_frames=6))
     route.arm(0.0)
     candidate = Detection(True, False, 320.0, 240.0, 30.0, 640, 480)
     decision = route.update(candidate, 0.5)
-    assert decision.request_step
+    assert not decision.target_acquired
+    assert decision.command.steer > 0
+
+
+def test_target_confirmation_streak_resets_after_one_missing_frame() -> None:
+    route = StartupRoute(StartupRouteConfig(enabled=True, settle_seconds=0.1, acquire_frames=6))
+    route.arm(0.0)
+    for index in range(3):
+        assert not route.update(target(), 0.1 + index / 100).target_acquired
+    assert not route.update(missing(), 0.2).target_acquired
+    for index in range(5):
+        assert not route.update(target(), 0.3 + index / 100).target_acquired
+    assert route.update(target(), 0.4).target_acquired

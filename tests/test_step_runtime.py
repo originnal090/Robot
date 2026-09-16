@@ -53,11 +53,22 @@ class DelayedRobot(RecordingRobot):
 def runtime(robot, *, sink=None, session=None, timeout=3, legacy=False):
     return run_loop(
         SyntheticBallSource(SyntheticConfig(fps=50, realtime=True)),
-        Detector(), VisualApproachController(ControllerConfig(
-            sense_seconds=0.06, settle_seconds=0.06,
-            turn_seconds_near=0.02, turn_seconds_far=0.04,
-            step_timeout_seconds=timeout, single_step_turns=not legacy,
-        )), robot, armed=True, event_sink=sink, session=session, max_frames=40,
+        Detector(),
+        VisualApproachController(
+            ControllerConfig(
+                sense_seconds=0.06,
+                settle_seconds=0.06,
+                turn_seconds_near=0.02,
+                turn_seconds_far=0.04,
+                step_timeout_seconds=timeout,
+                single_step_turns=not legacy,
+            )
+        ),
+        robot,
+        armed=True,
+        event_sink=sink,
+        session=session,
+        max_frames=40,
     )
 
 
@@ -135,14 +146,14 @@ def test_old_server_requires_explicit_legacy_mode():
     assert any(c.steer for c in legacy.commands) and not legacy.steps
 
 
-def test_startup_route_moves_forward_then_takes_one_right_step_before_handoff():
+def test_startup_route_optionally_moves_forward_then_turns_right_until_stable_target():
     robot, session, events = DelayedRobot(polls=3), SessionControl(), []
 
     class RouteDetector:
         config = ControllerConfig()  # only update_config compatibility is needed here
 
         def process(self, _frame):
-            if robot.steps and not robot.pending:
+            if any(command.steer > 0 for command in robot.commands):
                 return Detection(True, True, 320, 240, 30, 640, 480)
             return Detection(False, False, None, None, None, 640, 480)
 
@@ -163,16 +174,20 @@ def test_startup_route_moves_forward_then_takes_one_right_step_before_handoff():
         startup_route=StartupRoute(
             StartupRouteConfig(
                 enabled=True,
+                forward_enabled=True,
                 forward_seconds=0.02,
                 settle_seconds=0.02,
-                estimated_turn_step_degrees=30,
-                max_turn_degrees=120,
+                acquire_frames=6,
             )
         ),
     )
     assert result.termination == "stop_requested"
-    assert len(robot.steps) == 1
-    assert robot.steps[0][1].steer > 0
+    assert not robot.steps
+    assert sum(command.steer > 0 for command in robot.commands) >= 6
     assert any(command.velocity > 0 for command in robot.commands)
-    assert any(event.decision and event.decision.state is ControlState.STARTUP_FORWARD for event in events)
-    assert any(event.decision and event.decision.state is ControlState.STARTUP_TURN for event in events)
+    assert any(
+        event.decision and event.decision.state is ControlState.STARTUP_FORWARD for event in events
+    )
+    assert any(
+        event.decision and event.decision.state is ControlState.STARTUP_TURN for event in events
+    )

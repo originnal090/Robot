@@ -12,8 +12,10 @@ def test_orangepi_template_is_valid_and_targets_tcp() -> None:
 
     assert config["robot"]["backend"] == "tcp"
     assert config["unity"]["enabled"] is False
+    assert config["startup"]["forward_enabled"] is False
     assert config["startup"]["forward_seconds"] == 16.0
     assert config["startup"]["forward_velocity"] == 0.85
+    assert config["startup"]["acquire_frames"] == 6
 
 
 def test_orangepi_systemd_never_auto_arms() -> None:

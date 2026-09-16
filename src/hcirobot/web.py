@@ -48,6 +48,7 @@ class StartRequest(Owner):
     control_only: bool = False
     local_gamepad: bool = False
     obstacle: bool | None = None
+    startup_forward: bool = False
     approach_mode: Literal["normal", "normal_then_slow", "slow_realtime"] | None = None
     detector_backend: Literal["lab", "ascend", "svm"] | None = None
     detector_model_path: str | None = Field(default=None, max_length=2048)

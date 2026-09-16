@@ -114,6 +114,11 @@ class SessionRuntime:
             control.attach_robot(robot)
             self._connect_robot_backend(values, robot, publish)
             controller = VisualApproachController(controller_config(config["controller"]))
+            startup_config = startup_route_config(config.get("startup", {}))
+            startup_config = replace(
+                startup_config,
+                forward_enabled=bool(values.get("startup_forward", False)),
+            )
             self.active_detector = detector
             self.active_controller = controller
             run_kwargs: dict[str, Any] = {}
@@ -138,7 +143,7 @@ class SessionRuntime:
                 duplicate_frame_limit=DUPLICATE_FRAME_LIMIT,
                 preserve_manual_on_video_failure=True,
                 resume_autonomy_on_video_recovery=True,
-                startup_route=StartupRoute(startup_route_config(config.get("startup", {}))),
+                startup_route=StartupRoute(startup_config),
                 **run_kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - worker reports errors to the GUI.

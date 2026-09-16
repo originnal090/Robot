@@ -14,7 +14,13 @@ from typing import Any
 import cv2
 
 from .app import RuntimeEvent, SessionControl
-from .config import ascend_yolo_config, controller_config, detector_config, load_config
+from .config import (
+    ascend_yolo_config,
+    controller_config,
+    detector_config,
+    load_config,
+    startup_route_config,
+)
 from .frame_recorder import FrameRecorder
 from .gamepad import GamepadMonitor, GamepadTeleop
 from .gui_model import GuiModel, SessionState
@@ -273,6 +279,7 @@ class SessionService(SessionRuntime):
     def defaults(self) -> dict:
         cfg = self.config
         npu = ascend_yolo_config(cfg.get("npu", {}))
+        startup = startup_route_config(cfg.get("startup", {}))
         project_root = Path.cwd()
         presets = [
             {
@@ -292,6 +299,10 @@ class SessionService(SessionRuntime):
             "port": cfg["robot"]["port"],
             "approach_mode": cfg["controller"].get("approach_mode", "normal_then_slow"),
             "obstacle": cfg.get("obstacle", {}).get("enabled", True),
+            # Forward lead-in is deliberately one-shot and opt-in per Web session.
+            "startup_forward": False,
+            "startup_enabled": startup.enabled,
+            "startup_forward_seconds": startup.forward_seconds,
             "gamepad_enabled": self.gamepad_monitor is not None,
             "detector_backend": "ascend" if npu.enabled else "lab",
             "detector_model_path": npu.model if npu.enabled else "",

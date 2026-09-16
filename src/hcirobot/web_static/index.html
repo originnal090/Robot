@@ -88,7 +88,7 @@
               <label for="detector">识别器</label><select id="detector"><option value="lab">LAB 颜色与轮廓</option><option value="ascend">Ascend NPU YOLO</option><option value="svm">端侧 SVM / Hybrid</option></select>
               <div id="ascend-model-field" hidden><label for="ascend-model-path">Ascend 模型</label><input id="ascend-model-path" placeholder="/home/…/yolo11n_640.om"><small class="muted">仅使用香橙派上的 .om 模型</small></div>
               <div id="svm-model-field" hidden><label for="svm-model">SVM / Hybrid 版本</label><select id="svm-model"></select><small id="svm-description" class="muted"></small><div id="svm-custom-field" hidden><label for="svm-custom-path">自定义服务端路径</label><input id="svm-custom-path" placeholder="artifacts/…/profile.json"><small class="muted">支持 .json 配置或 .npz 权重</small></div></div>
-              <div class="session-options"><label class="checkbox"><input id="obstacle" type="checkbox"> 启用局部避障</label><label class="checkbox"><input id="control-only" type="checkbox"> 仅手动控制，不连接图传</label><label class="checkbox"><input id="local-gamepad" type="checkbox"> 控制权交给香橙派手柄</label></div>
+              <div class="session-options"><label class="checkbox"><input id="startup-forward" type="checkbox"> <span id="startup-forward-label">本次会话起步先直行</span></label><label class="checkbox"><input id="obstacle" type="checkbox"> 启用局部避障</label><label class="checkbox"><input id="control-only" type="checkbox"> 仅手动控制，不连接图传</label><label class="checkbox"><input id="local-gamepad" type="checkbox"> 控制权交给香橙派手柄</label></div>
               <small class="muted">本机手柄模式下使用 B 键武装，网页可监看、停止和急停。</small>
             </fieldset>
           </section>

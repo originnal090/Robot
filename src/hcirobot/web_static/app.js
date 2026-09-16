@@ -200,6 +200,7 @@ function connect() {
     lease = "";
     clientId = "";
     $("browser-gamepad").checked = false;
+    $("startup-forward").checked = false;
     clearDrive();
     render();
     reconnectTimer = setTimeout(connect, 1500);
@@ -218,6 +219,11 @@ async function initialize() {
     fillSvmModels(defaults.svm_presets ?? [], defaults.svm_model_path ?? "");
     updateDetectorFields();
     $("obstacle").checked = defaults.obstacle;
+    $("startup-forward").checked = false;
+    $("startup-forward").disabled = !defaults.startup_enabled;
+    $("startup-forward-label").textContent = defaults.startup_enabled
+      ? `本次会话起步先直行（${defaults.startup_forward_seconds} 秒）`
+      : "起步路线未启用";
     $("local-gamepad").disabled = !defaults.gamepad_enabled;
     fillTuning(defaults);
     connect();
@@ -256,9 +262,13 @@ $("start").onclick = () => perform(async () => {
     client_id: clientId, lease, source: $("source").value.trim(), backend: $("backend").value,
     host: $("host").value.trim(), port: Number($("port").value), mirror: $("mirror").value.trim(),
     control_only: $("control-only").checked, local_gamepad: $("local-gamepad").checked,
-    obstacle: $("obstacle").checked, approach_mode: $("approach").value,
+    obstacle: $("obstacle").checked, startup_forward: $("startup-forward").checked,
+    approach_mode: $("approach").value,
     detector_backend: detector, detector_model_path: modelPath,
   });
+  // The forward lead-in is consumed once. A restarted/reconnected session must
+  // not unexpectedly repeat a long open-loop movement.
+  $("startup-forward").checked = false;
   setTab("status");
 });
 $("arm").onclick = () => perform(() => api(`/api/session/${state.armed ? "disarm" : "arm"}`, context()));

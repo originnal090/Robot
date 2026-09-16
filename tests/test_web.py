@@ -263,6 +263,7 @@ def test_defaults_list_svm_variants_separately_from_ascend(service, tmp_path, mo
     (profile.parent / "model.npz").write_bytes(b"placeholder")
     profile.write_text('{"schema_version": 1, "model": "model.npz"}', encoding="utf-8")
     service.config["npu"] = {"enabled": True, "model": "/models/ball-yolo.om"}
+    service.config["startup"] = {"enabled": True, "forward_seconds": 16.0}
     monkeypatch.chdir(tmp_path)
 
     defaults = service.defaults()
@@ -272,6 +273,9 @@ def test_defaults_list_svm_variants_separately_from_ascend(service, tmp_path, mo
     assert defaults["detector_model_path"] == "/models/ball-yolo.om"
     assert defaults["svm_model_path"] != defaults["ascend_model_path"]
     assert defaults["svm_presets"][0]["available"] is True
+    assert defaults["startup_enabled"] is True
+    assert defaults["startup_forward"] is False
+    assert defaults["startup_forward_seconds"] == 16.0
 
 
 def test_invalid_axes_do_not_reach_session(service):

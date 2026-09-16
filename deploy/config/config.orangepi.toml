@@ -30,16 +30,15 @@ iou = 0.45
 device = 0
 
 [startup]
-# 武装后先直行，再停稳；随后每次只右转一个动作步并重新识别。
-# 当前路线标定：高速约 16 秒；若改用普通档 0.60，则约 32 秒。
-# estimated_turn_step_degrees 是实测前的估计值，明天应按场地录像校准。
+# 武装后默认跳过直行；WebUI 勾选一次性选项后才执行 16 秒高速直行。
+# 停稳后持续右转，目标连续确认 6 帧才交给视觉闭环。
 enabled = true
+forward_enabled = false
 forward_seconds = 16.0
 forward_velocity = 0.85
 settle_seconds = 0.50
 turn_steer = 0.35
-estimated_turn_step_degrees = 20.0
-max_turn_degrees = 120.0
+acquire_frames = 6
 
 [controller]
 approach_mode = "normal_then_slow"
