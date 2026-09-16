@@ -19,6 +19,26 @@ def target(error: float, radius_ratio: float = 0.08) -> Detection:
     )
 
 
+def bottom_clipped_target(error: float, radius_ratio: float = 0.08) -> Detection:
+    width, height = 640, 480
+    radius = radius_ratio * min(width, height)
+    center_x = (error + 1.0) * width / 2.0
+    return Detection(
+        candidate_detected=True,
+        detected=True,
+        center_x=center_x,
+        center_y=height - radius / 2,
+        radius=radius,
+        frame_width=width,
+        frame_height=height,
+        box_left=center_x - radius,
+        box_top=height - radius,
+        box_right=center_x + radius,
+        box_bottom=height,
+        bottom_clipped=True,
+    )
+
+
 def missing(confirmed: bool = False) -> Detection:
     return Detection(False, confirmed, None, None, None, 640, 480)
 
@@ -135,6 +155,64 @@ def test_arrival_rejects_unstable_size_jump_until_window_stabilizes() -> None:
     assert decision.state is ControlState.ARRIVED
 
 
+def test_bottom_clipped_target_hands_off_to_bounded_final_approach() -> None:
+    controller = armed_controller(
+        align_frames=1,
+        final_approach_enabled=True,
+        slow_radius_ratio=0.06,
+        final_approach_radius_ratio=0.075,
+        final_approach_bottom_ratio=0.88,
+        final_approach_frames=3,
+        final_approach_velocity=0.30,
+        final_approach_seconds=0.60,
+    )
+    controller.update(target(0.0, 0.08), 0.0)
+    for now in (0.1, 0.2):
+        pending = controller.update(bottom_clipped_target(0.0, 0.07), now)
+        assert pending.state is ControlState.APPROACHING
+        assert pending.command == RobotCommand.stop()
+
+    final = controller.update(bottom_clipped_target(0.0, 0.06), 0.3)
+    assert final.state is ControlState.FINAL_APPROACH
+    assert final.command == RobotCommand(velocity=0.30)
+
+    blind = controller.update(missing(), 0.89)
+    assert blind.state is ControlState.FINAL_APPROACH
+    assert blind.command == RobotCommand(velocity=0.30)
+    arrived = controller.update(missing(), 0.90)
+    assert arrived.state is ControlState.ARRIVED
+    assert arrived.command == RobotCommand.stop()
+
+
+def test_bottom_clipped_false_positive_without_near_history_cannot_blind_walk() -> None:
+    controller = armed_controller(
+        align_frames=1,
+        final_approach_enabled=True,
+        slow_radius_ratio=0.06,
+        final_approach_radius_ratio=0.075,
+        final_approach_frames=2,
+    )
+    for now in (0.1, 0.2, 0.3):
+        decision = controller.update(bottom_clipped_target(0.0, 0.12), now)
+    assert decision.state is ControlState.APPROACHING
+    assert decision.command.velocity > 0
+
+
+def test_final_approach_stops_if_visible_target_moves_off_center() -> None:
+    controller = armed_controller(
+        align_frames=1,
+        final_approach_enabled=True,
+        slow_radius_ratio=0.06,
+        final_approach_radius_ratio=0.075,
+        final_approach_frames=1,
+    )
+    controller.update(target(0.0, 0.08), 0.0)
+    assert controller.update(bottom_clipped_target(0.0), 0.1).state is (ControlState.FINAL_APPROACH)
+    stopped = controller.update(bottom_clipped_target(0.3), 0.2)
+    assert stopped.state is ControlState.ALIGNING
+    assert stopped.command == RobotCommand.stop()
+
+
 def test_approach_uses_tonypi_discrete_motion_modes() -> None:
     controller = armed_controller(align_frames=1)
     forward = controller.update(target(0.0), 0.1)
@@ -208,15 +286,24 @@ def test_optional_near_lateral_is_exclusive_and_limited(sign: int) -> None:
     assert default.command.lateral == 0
 
 
-@pytest.mark.parametrize("values", [
-    {"turn_seconds_far": float("nan")},
-    {"sense_seconds": float("inf")},
-    {"turn_seconds_near": 0},
-    {"turn_seconds_near": 0.5, "turn_seconds_far": 0.4},
-    {"turn_full_error": 0.05},
-    {"near_lateral_enabled": "yes"},
-    {"near_lateral_speed": 0.1},
-])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"turn_seconds_far": float("nan")},
+        {"sense_seconds": float("inf")},
+        {"turn_seconds_near": 0},
+        {"turn_seconds_near": 0.5, "turn_seconds_far": 0.4},
+        {"turn_full_error": 0.05},
+        {"near_lateral_enabled": "yes"},
+        {"near_lateral_speed": 0.1},
+        {"final_approach_enabled": "yes"},
+        {"final_approach_enabled": True, "final_approach_radius_ratio": 0.19},
+        {"final_approach_bottom_ratio": 1.1},
+        {"final_approach_frames": 0},
+        {"final_approach_velocity": 0.6},
+        {"final_approach_seconds": 0},
+    ],
+)
 def test_invalid_pulse_config_rejected(values: dict) -> None:
     with pytest.raises((TypeError, ValueError)):
         ControllerConfig(**values)

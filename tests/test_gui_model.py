@@ -63,6 +63,7 @@ def test_model_tracks_frame_and_estop_latches() -> None:
     assert model.frame_count == 7
     assert model.target == "已确认"
     assert model.control_state == "APPROACHING"
+    assert model.bottom_ratio == "0.583"
     model.latch_estop()
     assert model.estop_latched
     assert not model.can_start
@@ -159,6 +160,7 @@ def test_stop_request_zeroes_telemetry_and_finished_confirms() -> None:
     assert model.target == "未确认"
     assert model.horizontal_error == "--"
     assert model.radius_ratio == "--"
+    assert model.bottom_ratio == "--"
 
 
 def test_fault_termination_is_not_overwritten_by_finished() -> None:
@@ -287,17 +289,27 @@ def test_obstacle_event_updates_telemetry_and_filters_foreign_session() -> None:
 
 def test_avoiding_transitions_count_and_fields_keep_last_reading() -> None:
     model = running_model(32)
-    model.apply_event(obstacle_event({"state": "CAUTION", "reason": "close", "distance": 200}, session_id=32))
+    model.apply_event(
+        obstacle_event({"state": "CAUTION", "reason": "close", "distance": 200}, session_id=32)
+    )
     assert model.obstacle_distance == "200"
-    model.apply_event(obstacle_event({"state": "AVOIDING", "reason": "deep", "action": "backup"}, session_id=32))
+    model.apply_event(
+        obstacle_event({"state": "AVOIDING", "reason": "deep", "action": "backup"}, session_id=32)
+    )
     assert model.avoid_count == 1
-    model.apply_event(obstacle_event({"state": "AVOIDING", "reason": "still_deep", "action": "turn"}, session_id=32))
+    model.apply_event(
+        obstacle_event(
+            {"state": "AVOIDING", "reason": "still_deep", "action": "turn"}, session_id=32
+        )
+    )
     assert model.avoid_count == 1  # staying in AVOIDING does not re-count
     assert model.obstacle_distance == "200"  # absent distance keeps the last reading
     model.apply_event(obstacle_event({"state": "COOLDOWN", "reason": "recovering"}, session_id=32))
     model.apply_event(obstacle_event({"state": "AVOIDING", "reason": "again"}, session_id=32))
     assert model.avoid_count == 2
-    model.apply_event(obstacle_event({"state": "CLEAR", "reason": "open", "vision_blocked": False}, session_id=32))
+    model.apply_event(
+        obstacle_event({"state": "CLEAR", "reason": "open", "vision_blocked": False}, session_id=32)
+    )
     assert model.vision_blocked == "否"
 
 
@@ -309,7 +321,9 @@ def test_obstacle_bad_json_is_logged_not_fatal() -> None:
     assert any("解析失败" in line for line in model.logs)
     model.apply_event(RuntimeEvent("obstacle", json.dumps(["wrong", "shape"]), session_id=33))
     assert model.obstacle_state == "无数据"
-    model.apply_event(RuntimeEvent("obstacle", json.dumps({"reason": "missing state"}), session_id=33))
+    model.apply_event(
+        RuntimeEvent("obstacle", json.dumps({"reason": "missing state"}), session_id=33)
+    )
     assert model.obstacle_state == "无数据"
     model.apply_event(RuntimeEvent("obstacle", json.dumps({"state": "  "}), session_id=33))
     assert model.obstacle_state == "无数据"
@@ -358,7 +372,9 @@ def test_finished_resets_obstacle_telemetry_but_keeps_latch() -> None:
 
 def test_fail_and_estop_reset_obstacle_telemetry() -> None:
     model = running_model(36)
-    model.apply_event(obstacle_event({"state": "CAUTION", "reason": "close", "distance": 240}, session_id=36))
+    model.apply_event(
+        obstacle_event({"state": "CAUTION", "reason": "close", "distance": 240}, session_id=36)
+    )
     model.fail("boom")
     assert model.obstacle_state == "无数据"
     assert model.obstacle_distance == "--"
@@ -412,7 +428,9 @@ def test_obstacle_suppressed_key_logs_note_and_stays_tolerant() -> None:
     assert any("机动被压制（未武装）" in line for line in model.logs)
     # Missing key: no note, existing fields keep working.
     model.apply_event(
-        obstacle_event({"state": "AVOIDING", "reason": "still_deep", "action": "turn"}, session_id=43)
+        obstacle_event(
+            {"state": "AVOIDING", "reason": "still_deep", "action": "turn"}, session_id=43
+        )
     )
     assert model.avoid_count == 1  # staying in AVOIDING still does not re-count
     assert model.logs[-1] == "避障 AVOIDING（turn）：still_deep"

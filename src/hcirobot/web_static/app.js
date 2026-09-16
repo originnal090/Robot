@@ -55,6 +55,11 @@ const tuning = [
   ["align_enter_error", "进入对准误差", "controller", 0.01],
   ["align_exit_error", "退出对准误差", "controller", 0.01],
   ["arrival_radius_ratio", "到达半径比例", "controller", 0.01],
+  ["final_approach_radius_ratio", "盲区交接半径比例", "controller", 0.005],
+  ["final_approach_bottom_ratio", "盲区交接底边比例", "controller", 0.01],
+  ["final_approach_frames", "盲区交接确认帧数", "controller", 1],
+  ["final_approach_velocity", "盲区末段速度", "controller", 0.05],
+  ["final_approach_seconds", "盲区末段秒数", "controller", 0.05],
 ];
 
 function showNotice(message) {
@@ -140,6 +145,7 @@ function render() {
   $("target").textContent = state.target;
   $("error").textContent = state.horizontal_error;
   $("radius").textContent = state.radius_ratio;
+  $("bottom-ratio").textContent = state.bottom_ratio;
   $("frame-count").textContent = `${state.frame_count} FRAMES`;
   $("robot-status").textContent = state.robot_status;
   $("owner-status").textContent = ({you:"当前页面",other:"其他页面",local:"香橙派手柄",none:"未分配"})[state.owner];

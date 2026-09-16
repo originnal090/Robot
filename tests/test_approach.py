@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+
+import numpy as np
 import pytest
 
 from hcirobot.app import run_loop
@@ -10,7 +13,7 @@ from hcirobot.controller import (
     VisualApproachController,
 )
 from hcirobot.detector import DetectorConfig, RedBallDetector
-from hcirobot.model import ControlState, RobotCommand
+from hcirobot.model import ControlState, Detection, RobotCommand
 from hcirobot.robot import RecordingRobot
 from hcirobot.video import SyntheticBallSource, SyntheticConfig
 
@@ -172,6 +175,46 @@ class StepClock:
         return self.value
 
 
+class FrameSequence:
+    def __init__(self, count: int) -> None:
+        self.frames = [np.zeros((480, 640, 3), dtype=np.uint8) for _ in range(count)]
+
+    def __iter__(self):
+        for frame in self.frames:
+            yield frame
+            time.sleep(0.01)
+
+    def close(self) -> None:
+        return None
+
+
+class DetectionSequence:
+    def __init__(self, detections: list[Detection]) -> None:
+        self.detections = iter(detections)
+
+    def process(self, _frame) -> Detection:
+        return next(self.detections)
+
+
+def final_target(*, clipped: bool) -> Detection:
+    width, height = 640, 480
+    radius = 0.08 * height
+    return Detection(
+        True,
+        True,
+        width / 2,
+        height - radius / 2 if clipped else height / 2,
+        radius,
+        width,
+        height,
+        box_left=width / 2 - radius,
+        box_top=height - radius if clipped else height / 2 - radius,
+        box_right=width / 2 + radius,
+        box_bottom=height if clipped else height / 2 + radius,
+        bottom_clipped=clipped,
+    )
+
+
 def test_gated_run_loop_reaches_arrival_with_burst_pattern() -> None:
     robot = RecordingRobot()
     events: list = []
@@ -210,6 +253,42 @@ def test_gated_run_loop_reaches_arrival_with_burst_pattern() -> None:
     sensed = [event for event in events if event.kind == "frame" and event.decision]
     assert any(event.decision.command != RobotCommand.stop() for event in sensed)
     assert all(event.output_v == event.output_steer == 0 for event in sensed)
+
+
+def test_gated_runtime_executes_final_approach_without_replaying_burst_gate() -> None:
+    robot = RecordingRobot()
+    config = ControllerConfig(
+        approach_mode="normal_then_slow",
+        align_frames=1,
+        sense_seconds=100.0,
+        final_approach_enabled=True,
+        slow_radius_ratio=0.06,
+        final_approach_radius_ratio=0.075,
+        final_approach_frames=2,
+        final_approach_velocity=0.30,
+        final_approach_seconds=0.15,
+    )
+    detections = [
+        final_target(clipped=False),
+        final_target(clipped=True),
+        final_target(clipped=True),
+        Detection(False, False, None, None, None, 640, 480),
+        Detection(False, False, None, None, None, 640, 480),
+    ]
+
+    result = run_loop(
+        FrameSequence(len(detections)),
+        DetectionSequence(detections),
+        VisualApproachController(config),
+        robot,
+        armed=True,
+        clock=StepClock(0.1),
+    )
+
+    assert result.final_state is ControlState.ARRIVED
+    assert ControlState.FINAL_APPROACH in result.states_seen
+    assert RobotCommand(velocity=0.30) in robot.commands
+    assert robot.actions == ["right_grip"]
 
 
 def test_slow_realtime_mode_has_no_gating() -> None:

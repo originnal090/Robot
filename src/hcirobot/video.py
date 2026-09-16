@@ -292,6 +292,11 @@ def annotate(
         state = f" obstacle={obstacle_state}" if obstacle_state else ""
         lines.append(f"dist={distance_mm:.0f}mm{state}")
     lines.append(f"detected={detection.detected} candidate={detection.candidate_detected}")
+    if detection.has_current_target:
+        lines.append(
+            f"radius_ratio={detection.radius_ratio:.3f} "
+            f"bottom={detection.bottom_ratio:.3f} clipped={detection.bottom_clipped}"
+        )
     for index, text in enumerate(lines):
         cv2.putText(
             output,

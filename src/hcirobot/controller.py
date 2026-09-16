@@ -46,6 +46,16 @@ class ControllerConfig:
     misalign_frames: int = 2
     arrival_frames: int = 3
     lost_frames: int = 3
+    # A near, centred ball that reaches the bottom image boundary is entering
+    # the camera blind zone.  After several confirmed clipped frames, advance
+    # slowly for a short calibrated interval instead of treating disappearance
+    # as an ordinary lost target.
+    final_approach_enabled: bool = False
+    final_approach_radius_ratio: float = 0.12
+    final_approach_bottom_ratio: float = 0.88
+    final_approach_frames: int = 3
+    final_approach_velocity: float = 0.30
+    final_approach_seconds: float = 0.60
     # CMD name sent once when autonomy reaches ARRIVED ("" disables).  Uses the
     # course button-name namespace so both TCP_connect.py and tonypi_server.py
     # accept it: "right_grip" maps to the crouch-and-extinguish (outfire) group.
@@ -96,6 +106,10 @@ class ControllerConfig:
             self.step_timeout_seconds,
             self.near_lateral_max_error,
             self.near_lateral_speed,
+            self.final_approach_radius_ratio,
+            self.final_approach_bottom_ratio,
+            self.final_approach_velocity,
+            self.final_approach_seconds,
         )
         if not all(math.isfinite(value) for value in float_values):
             raise ValueError("all controller values must be finite")
@@ -121,6 +135,23 @@ class ControllerConfig:
             raise ValueError("approach steer maximum must be between 0 and 1")
         if min(self.align_frames, self.misalign_frames, self.arrival_frames, self.lost_frames) < 1:
             raise ValueError("frame thresholds must be positive")
+        if not isinstance(self.final_approach_enabled, bool):
+            raise TypeError("final_approach_enabled must be a boolean")
+        if not 0 < self.final_approach_radius_ratio < 1:
+            raise ValueError("final approach radius must be in (0, 1)")
+        if (
+            self.final_approach_enabled
+            and self.final_approach_radius_ratio > self.arrival_radius_ratio
+        ):
+            raise ValueError("enabled final approach radius must not exceed arrival radius")
+        if not 0 < self.final_approach_bottom_ratio <= 1:
+            raise ValueError("final approach bottom ratio must be in (0, 1]")
+        if self.final_approach_frames < 1:
+            raise ValueError("final approach frames must be positive")
+        if not 0 < self.final_approach_velocity <= 0.45:
+            raise ValueError("final approach velocity must be in the slow gait band (0, 0.45]")
+        if self.final_approach_seconds <= 0:
+            raise ValueError("final approach seconds must be positive")
         if self.arrival_action and not _ACTION_NAME_PATTERN.fullmatch(self.arrival_action):
             raise ValueError(
                 "arrival action must be 1-32 alphanumeric/underscore characters or empty"
@@ -180,6 +211,11 @@ class VisualApproachController:
         self._misalign_streak = 0
         self._arrival_streak = 0
         self._arrival_ratios: deque[float] = deque(maxlen=config.arrival_frames)
+        self._reliable_radius_ratios: deque[float] = deque(
+            maxlen=max(config.arrival_frames, config.final_approach_frames, 5)
+        )
+        self._handoff_streak = 0
+        self._final_started_at: float | None = None
         self._lost_streak = 0
         self._last_correction_sign = 0
         self._fine_alignment = False
@@ -188,7 +224,11 @@ class VisualApproachController:
         """Swap tuning parameters at runtime via an atomic reference swap."""
         self.config = config
         self._arrival_ratios = deque(maxlen=config.arrival_frames)
+        self._reliable_radius_ratios = deque(
+            maxlen=max(config.arrival_frames, config.final_approach_frames, 5)
+        )
         self._arrival_streak = 0
+        self._handoff_streak = 0
 
     def arm(self, now: float) -> None:
         if self.state is ControlState.IDLE:
@@ -215,14 +255,45 @@ class VisualApproachController:
         if self.state in (ControlState.IDLE, ControlState.LOST_SAFE, ControlState.ARRIVED):
             return self._decision(RobotCommand.stop())
 
+        if self.state is ControlState.FINAL_APPROACH:
+            return self._update_final_approach(detection, now)
+
         current = detection.has_current_target
         if current:
             error = detection.horizontal_error
             radius_ratio = detection.radius_ratio
             self._last_target_error = error
             self._lost_streak = 0
+            if not detection.bottom_clipped:
+                self._reliable_radius_ratios.append(radius_ratio)
+            recent_reliable_radius = max(self._reliable_radius_ratios, default=0.0)
+            handoff_eligible = (
+                self.config.final_approach_enabled
+                and detection.bottom_clipped
+                and detection.bottom_ratio >= self.config.final_approach_bottom_ratio
+                and abs(error) <= self.config.arrival_max_error
+                and radius_ratio + 1e-9 >= self.config.slow_radius_ratio
+                and recent_reliable_radius >= self.config.final_approach_radius_ratio
+            )
+            if handoff_eligible:
+                self._handoff_streak += 1
+                self._arrival_streak = 0
+                self._arrival_ratios.clear()
+                if self._handoff_streak >= self.config.final_approach_frames:
+                    self.state = ControlState.FINAL_APPROACH
+                    self.reason = "final_approach_started"
+                    self._final_started_at = now
+                    return self._decision(
+                        RobotCommand(velocity=self.config.final_approach_velocity),
+                        error,
+                        radius_ratio,
+                    )
+                self.reason = "final_approach_pending"
+                return self._decision(RobotCommand.stop(), error, radius_ratio)
+            self._handoff_streak = 0
             arrival_eligible = (
-                radius_ratio >= self.config.arrival_radius_ratio
+                not (self.config.final_approach_enabled and detection.bottom_clipped)
+                and radius_ratio >= self.config.arrival_radius_ratio
                 and abs(error) <= self.config.arrival_max_error
             )
             if arrival_eligible:
@@ -247,12 +318,39 @@ class VisualApproachController:
             self._arrival_ratios.clear()
             self._align_streak = 0
             self._misalign_streak = 0
+            self._handoff_streak = 0
 
         if self.state is ControlState.SEARCHING:
             return self._update_search(current, error, radius_ratio, now)
         if self.state is ControlState.ALIGNING:
             return self._update_align(current, error, radius_ratio, now)
         return self._update_approach(current, error, radius_ratio, now)
+
+    def _update_final_approach(self, detection: Detection, now: float) -> ControlDecision:
+        """Finish the calibrated blind-zone segment with bounded straight motion."""
+        assert self._final_started_at is not None
+        if now - self._final_started_at >= self.config.final_approach_seconds:
+            self.state = ControlState.ARRIVED
+            self.reason = "final_approach_complete"
+            self._final_started_at = None
+            return self._decision(RobotCommand.stop())
+
+        if detection.has_current_target:
+            error = detection.horizontal_error
+            radius_ratio = detection.radius_ratio
+            self._last_target_error = error
+            if abs(error) > self.config.align_exit_error:
+                self.state = ControlState.ALIGNING
+                self.reason = "final_approach_alignment_lost"
+                self._final_started_at = None
+                self._align_streak = 0
+                return self._decision(RobotCommand.stop(), error, radius_ratio)
+            return self._decision(
+                RobotCommand(velocity=self.config.final_approach_velocity),
+                error,
+                radius_ratio,
+            )
+        return self._decision(RobotCommand(velocity=self.config.final_approach_velocity))
 
     def _update_search(
         self,
@@ -394,6 +492,9 @@ class VisualApproachController:
         self._misalign_streak = 0
         self._arrival_streak = 0
         self._arrival_ratios.clear()
+        self._reliable_radius_ratios.clear()
+        self._handoff_streak = 0
+        self._final_started_at = None
         self._lost_streak = 0
 
     def _arrival_size_stable(self) -> bool:

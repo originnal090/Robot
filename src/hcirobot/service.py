@@ -491,9 +491,18 @@ class SessionService(SessionRuntime):
                 raise ControlConflict("参数更新需要运行中的视觉会话")
             detector, control = self.active_detector, self.active_controller
             # Runtime settings such as stepping and approach mode are session-only.
-            allowed = {"align_enter_error", "align_exit_error", "arrival_radius_ratio"}
+            allowed = {
+                "align_enter_error",
+                "align_exit_error",
+                "arrival_radius_ratio",
+                "final_approach_radius_ratio",
+                "final_approach_bottom_ratio",
+                "final_approach_frames",
+                "final_approach_velocity",
+                "final_approach_seconds",
+            }
             if controller.keys() - allowed:
-                raise ValueError("仅支持热更新对准阈值和到达半径")
+                raise ValueError("仅支持热更新对准、到达和盲区末段参数")
             detector_fields = {
                 "lab_min",
                 "lab_max",
@@ -524,6 +533,11 @@ class SessionService(SessionRuntime):
                     items = detection[key] if isinstance(detection[key], list) else [detection[key]]
                     if any(type(item) is not int for item in items):
                         raise ValueError(f"{key} 必须是整数")
+            if (
+                "final_approach_frames" in controller
+                and type(controller["final_approach_frames"]) is not int
+            ):
+                raise ValueError("final_approach_frames 必须是整数")
             for value in list(detection.values()) + list(controller.values()):
                 items = value if isinstance(value, list) else [value]
                 if any(

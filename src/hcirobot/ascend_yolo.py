@@ -253,18 +253,31 @@ class AscendYoloDetector:
             x1, y1, x2, y2 = best["box"]
             box_width = max(0.0, x2 - x1)
             box_height = max(0.0, y2 - y1)
+            bottom_margin = max(2.0, height * 0.01)
+            bottom_clipped = y2 >= height - bottom_margin
+            # A bottom-clipped ball loses box height as it approaches and would
+            # therefore appear to shrink under the old (width + height) / 4
+            # estimate.  Its horizontal diameter remains reliable until only a
+            # shallow cap is visible, so prefer that while the box touches the
+            # image boundary.
+            radius = box_width / 2 if bottom_clipped else (box_width + box_height) / 4
             return Detection(
                 candidate_detected=True,
                 detected=self._confirmed,
                 center_x=round((x1 + x2) / 2, 2),
                 center_y=round((y1 + y2) / 2, 2),
-                radius=round((box_width + box_height) / 4, 2),
+                radius=round(radius, 2),
                 frame_width=width,
                 frame_height=height,
                 area=round(box_width * box_height, 2),
                 aspect_ratio=round(box_width / box_height, 4) if box_height else 0.0,
                 score=float(best["score"]),
                 control_confirmed=self._hit_streak >= self.config.confirmation_frames,
+                box_left=x1,
+                box_top=y1,
+                box_right=x2,
+                box_bottom=y2,
+                bottom_clipped=bottom_clipped,
             )
 
     def close(self) -> None:

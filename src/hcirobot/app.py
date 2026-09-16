@@ -854,6 +854,7 @@ def run_loop(
                 approach_gate is not None
                 and is_armed
                 and manual is None
+                and controller.state is not ControlState.FINAL_APPROACH
                 and (
                     not (startup_route is not None and startup_route.active) or step_id is not None
                 )
@@ -957,6 +958,17 @@ def run_loop(
                 # An un-armed session must never self-activate an avoidance
                 # motion: the maneuver degrades to a plain hold.
                 send_command(RobotCommand.stop(), "unarmed_hold")
+            elif (
+                controller.state is ControlState.FINAL_APPROACH
+                and obstacle is not None
+                and obstacle.action in {"maneuver", "hold"}
+            ):
+                # Never run an avoidance turn during the camera-blind segment.
+                # Stop and require an explicit reset instead of guessing around
+                # an obstacle without a visible target.
+                decision = controller.fail_safe("final_approach_obstacle")
+                walk_command = RobotCommand.stop()
+                send_command(RobotCommand.stop(), "final_approach_obstacle")
             elif obstacle is not None and obstacle.action == "maneuver":
                 if approach_gate is not None:
                     approach_gate.hold_settle()
@@ -972,8 +984,10 @@ def run_loop(
                 # Gated modes only cache intent while sensing. Executing it
                 # here used to add the whole sense window to each motion burst
                 # and destroy the stationary frames needed for confirmation.
-                gated = approach_gate is not None and not (
-                    startup_route is not None and startup_route.active
+                gated = (
+                    approach_gate is not None
+                    and controller.state is not ControlState.FINAL_APPROACH
+                    and not (startup_route is not None and startup_route.active)
                 )
                 command = RobotCommand.stop() if gated else decision.command
                 send_command(command, source_name)

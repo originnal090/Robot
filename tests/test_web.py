@@ -105,12 +105,18 @@ def test_preview_manual_tuning_capture_and_estop(service):
             json={
                 **request,
                 "detection": {"minimum_contour_area": 65.0},
-                "controller": {"align_enter_error": 0.07},
+                "controller": {
+                    "align_enter_error": 0.07,
+                    "final_approach_frames": 4,
+                    "final_approach_seconds": 0.75,
+                },
             },
         )
         assert changed.status_code == 200, changed.text
         assert changed.json()["detection"]["processing_width"] == before.processing_width
         assert service.active_controller.config.align_enter_error == 0.07
+        assert service.active_controller.config.final_approach_frames == 4
+        assert service.active_controller.config.final_approach_seconds == 0.75
         assert client.post("/api/capture", json={**request, "active": True}).status_code == 200
         captured = wait_state(ws, request["lease"], lambda s: s["capture"]["saved"] > 0)
         assert Path(captured["capture"]["directory"]).is_dir()

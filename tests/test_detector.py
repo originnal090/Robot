@@ -29,6 +29,14 @@ def ball_frame(x: int = 320, radius: int = 40) -> np.ndarray:
     return frame
 
 
+def bottom_clipped_ball_frame(radius: int = 80) -> np.ndarray:
+    frame = np.full((480, 640, 3), 32, dtype=np.uint8)
+    lab = np.array([[[120, 170, 135]]], dtype=np.uint8)
+    color = tuple(int(value) for value in cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)[0, 0])
+    cv2.circle(frame, (320, 480), radius, color, -1, lineType=cv2.LINE_8)
+    return frame
+
+
 def test_lab_test_color_round_trips_inside_course_threshold() -> None:
     lab = np.array([[[120, 170, 135]]], dtype=np.uint8)
     bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
@@ -49,6 +57,17 @@ def test_detector_requires_three_consecutive_hits_and_releases_after_three_misse
     misses = [detector.process(empty) for _ in range(3)]
     assert [result.detected for result in misses] == [True, True, False]
     assert all(not result.candidate_detected for result in misses)
+
+
+def test_detector_accepts_bottom_clipped_half_ball_and_preserves_horizontal_radius() -> None:
+    detector = RedBallDetector(DetectorConfig(confirmation_frames=1))
+
+    detection = detector.process(bottom_clipped_ball_frame())
+
+    assert detection.has_current_target
+    assert detection.bottom_clipped is True
+    assert detection.bottom_ratio == 1.0
+    assert detection.radius == pytest.approx(80, abs=3)
 
 
 def test_new_candidate_after_loss_must_be_confirmed_again() -> None:

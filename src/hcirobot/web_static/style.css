@@ -46,7 +46,7 @@ h3 {font-size:16px; font-weight:500}
 #video-empty p {font-size:11px; margin-bottom:16px}
 .crosshair {margin:auto; width:44px; height:44px; border:1px solid #354249; color:#677a85; display:grid; place-items:center; font:28px monospace; border-radius:10px}
 .video-caption {position:absolute; bottom:0; left:0; right:0; display:flex; justify-content:space-between; padding:7px 12px; background:#0b1113cf; color:#8ea0a8; font:9px monospace; letter-spacing:1px; pointer-events:none}
-.metrics {display:grid; grid-template-columns:repeat(4,1fr); padding:11px 0; border-top:1px solid var(--line); flex:none}
+.metrics {display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); padding:11px 0; border-top:1px solid var(--line); flex:none}
 .metrics>div {padding:0 15px; border-right:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:8px}
 .metrics>div:last-child {border:0}
 .metrics span {color:var(--muted); font-size:10px; white-space:nowrap}

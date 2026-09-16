@@ -51,6 +51,34 @@ def test_decode_and_nms_restore_original_coordinates() -> None:
     ]
 
 
+def test_bottom_clipped_yolo_box_uses_horizontal_radius(monkeypatch) -> None:
+    class Model:
+        @staticmethod
+        def execute(_inputs):
+            return [np.zeros((1, 5, 1), dtype=np.float32)]
+
+    detector = object.__new__(AscendYoloDetector)
+    detector.npu_config = AscendYoloConfig(enabled=True, model="unused.om")
+    detector.config = DetectorConfig(confirmation_frames=1)
+    detector._lock = threading.Lock()
+    detector._hit_streak = detector._miss_streak = 0
+    detector._confirmed = False
+    detector._closed = False
+    detector._model = Model()
+    monkeypatch.setattr(
+        ascend_yolo,
+        "decode_detections",
+        lambda *_args, **_kwargs: [{"box": [220.0, 430.0, 420.0, 480.0], "score": 0.9}],
+    )
+
+    detection = detector.process(np.zeros((480, 640, 3), dtype=np.uint8))
+
+    assert detection.bottom_clipped is True
+    assert detection.bottom_ratio == 1.0
+    assert detection.radius == 100.0
+    assert detection.radius_ratio == 100 / 480
+
+
 def test_detector_close_accepts_acllite_resource_without_public_destroy() -> None:
     class Model:
         destroyed = 0

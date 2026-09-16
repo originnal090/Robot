@@ -174,17 +174,26 @@ class RedBallDetector:
             if perimeter <= 0:
                 continue
             circularity = 4.0 * math.pi * area / (perimeter * perimeter)
-            _, _, width, height = cv2.boundingRect(contour)
+            _, box_y, width, height = cv2.boundingRect(contour)
             if height <= 0:
                 continue
             aspect_ratio = width / height
-            if circularity < self.config.minimum_circularity:
+            bottom_clipped = box_y + height >= (
+                self.config.processing_height - max(1, round(self.config.processing_height * 0.01))
+            )
+            minimum_circularity = (
+                min(self.config.minimum_circularity, 0.35)
+                if bottom_clipped
+                else self.config.minimum_circularity
+            )
+            maximum_aspect_ratio = (
+                max(self.config.maximum_aspect_ratio, 6.0)
+                if bottom_clipped
+                else self.config.maximum_aspect_ratio
+            )
+            if circularity < minimum_circularity:
                 continue
-            if (
-                not self.config.minimum_aspect_ratio
-                <= aspect_ratio
-                <= self.config.maximum_aspect_ratio
-            ):
+            if not self.config.minimum_aspect_ratio <= aspect_ratio <= maximum_aspect_ratio:
                 continue
             if not self._has_core_support(contour, core_mask, area):
                 continue
@@ -208,14 +217,22 @@ class RedBallDetector:
 
         score, contour, area, circularity, aspect_ratio = best
         (center_x, center_y), radius = cv2.minEnclosingCircle(contour)
+        box_x, box_y, box_width, box_height = cv2.boundingRect(contour)
         scale_x = original_width / self.config.processing_width
         scale_y = original_height / self.config.processing_height
+        left, top = box_x * scale_x, box_y * scale_y
+        right = (box_x + box_width) * scale_x
+        bottom = (box_y + box_height) * scale_y
+        bottom_clipped = bottom >= original_height - max(2.0, original_height * 0.01)
+        scaled_radius = radius * (scale_x + scale_y) / 2.0
+        if bottom_clipped:
+            scaled_radius = max(scaled_radius, (right - left) / 2.0)
         return Detection(
             candidate_detected=True,
             detected=self._confirmed,
             center_x=round(center_x * scale_x, 2),
             center_y=round(center_y * scale_y, 2),
-            radius=round(radius * (scale_x + scale_y) / 2.0, 2),
+            radius=round(scaled_radius, 2),
             frame_width=original_width,
             frame_height=original_height,
             area=round(area, 2),
@@ -223,4 +240,9 @@ class RedBallDetector:
             aspect_ratio=round(aspect_ratio, 4),
             score=round(score, 2),
             control_confirmed=self._hit_streak >= self.config.confirmation_frames,
+            box_left=left,
+            box_top=top,
+            box_right=right,
+            box_bottom=bottom,
+            bottom_clipped=bottom_clipped,
         )

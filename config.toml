@@ -34,6 +34,14 @@ arrival_action = "right_grip"
 # 底边裁剪，半径比封顶 ~0.13，frame-01447（approached）实测 ~0.10。
 arrival_radius_ratio = 0.10
 slow_radius_ratio = 0.06
+# 球进入画面底部盲区后，连续确认半球再以慢速补完最后一小段。
+# 这些数值是首轮安全起点；实拍后重点标定半径、底边比例和末段秒数。
+final_approach_enabled = true
+final_approach_radius_ratio = 0.075
+final_approach_bottom_ratio = 0.88
+final_approach_frames = 3
+final_approach_velocity = 0.30
+final_approach_seconds = 0.60
 # 接近模式：fast_then_slow（远快近慢）| normal | normal_then_slow（默认）
 # | slow_realtime（慢速连续，无走走停停）。前三种按 走->停->识别 循环，
 # 走的时长随球变大而缩短（越近识别越频繁）。速度值对应机器人端三档动作组：

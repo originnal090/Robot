@@ -12,6 +12,7 @@ class ControlState(str, Enum):
     SEARCHING = "SEARCHING"
     ALIGNING = "ALIGNING"
     APPROACHING = "APPROACHING"
+    FINAL_APPROACH = "FINAL_APPROACH"
     ARRIVED = "ARRIVED"
     LOST_SAFE = "LOST_SAFE"
 
@@ -30,6 +31,11 @@ class Detection:
     aspect_ratio: float = 0.0
     score: float = 0.0
     control_confirmed: bool | None = None
+    box_left: float | None = None
+    box_top: float | None = None
+    box_right: float | None = None
+    box_bottom: float | None = None
+    bottom_clipped: bool = False
 
     @property
     def has_current_target(self) -> bool:
@@ -57,6 +63,16 @@ class Detection:
         if not self.has_current_target:
             raise ValueError("detection has no current target")
         return float(self.radius) / min(self.frame_width, self.frame_height)
+
+    @property
+    def bottom_ratio(self) -> float:
+        """Bottom edge of the visible target, normalized to the image height."""
+        if not self.has_current_target:
+            raise ValueError("detection has no current target")
+        bottom = self.box_bottom
+        if bottom is None or not math.isfinite(bottom):
+            bottom = float(self.center_y) + float(self.radius)
+        return max(0.0, min(1.0, float(bottom) / self.frame_height))
 
 
 @dataclass(frozen=True, slots=True)
