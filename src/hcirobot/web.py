@@ -93,6 +93,11 @@ def same_origin(connection) -> bool:
     return parsed.scheme in ("http", "https") and parsed.netloc == connection.headers.get("host")
 
 
+def requires_auth(path: str) -> bool:
+    """Keep control/state private while allowing the read-only Unity video feed."""
+    return path.startswith("/api/") or path == "/stream.mjpg"
+
+
 def create_app(
     config: Path = Path("config.toml"),
     *,
@@ -128,7 +133,7 @@ def create_app(
     async def guard(request: Request, call_next):
         if request.method not in ("GET", "HEAD") and not same_origin(request):
             return JSONResponse({"detail": "拒绝跨站控制请求"}, status_code=403)
-        protected = request.url.path.startswith("/api/") or request.url.path == "/stream.mjpg"
+        protected = requires_auth(request.url.path)
         if protected and request.url.path != "/api/login" and not authorized(request):
             return JSONResponse({"detail": "请输入访问令牌"}, status_code=401)
         response = await call_next(request)
@@ -233,8 +238,7 @@ def create_app(
         runtime.capture(data.client_id, data.lease, data.session_id, data.active)
         return {"ok": True}
 
-    @app.get("/stream.mjpg")
-    async def stream(request: Request):
+    def mjpeg_response(request: Request) -> StreamingResponse:
         async def frames():
             previous = -1
             while not await request.is_disconnected():
@@ -251,6 +255,15 @@ def create_app(
                 await asyncio.sleep(0.05)
 
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @app.get("/stream.mjpg")
+    async def stream(request: Request):
+        return mjpeg_response(request)
+
+    @app.get("/unity-stream.mjpg")
+    async def unity_stream(request: Request):
+        """Unauthenticated read-only fan-out of the existing annotated JPEG cache."""
+        return mjpeg_response(request)
 
     @app.websocket("/ws/events")
     async def events(ws: WebSocket):

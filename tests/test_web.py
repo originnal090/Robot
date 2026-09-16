@@ -22,7 +22,7 @@ from hcirobot.gui_model import SessionState
 from hcirobot.robot import RecordingRobot
 from hcirobot.service import LEASE_SECONDS, ControlConflict, SessionService
 from hcirobot.video import SyntheticBallSource
-from hcirobot.web import create_app, main
+from hcirobot.web import create_app, main, requires_auth
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -369,6 +369,15 @@ def test_authentication_cookie_origin_and_static_assets(service):
         assert cross_origin.value.code == 1008
         with client.websocket_connect("/ws/events", headers={"Origin": "http://testserver"}) as ws:
             assert ws.receive_json()["type"] == "state"
+
+
+def test_unity_stream_is_public_read_only_route(service):
+    app = create_app(service=service, token="test-access")
+    routes = {getattr(route, "path", ""): getattr(route, "methods", set()) for route in app.routes}
+
+    assert requires_auth("/stream.mjpg")
+    assert not requires_auth("/unity-stream.mjpg")
+    assert "GET" in routes["/unity-stream.mjpg"]
 
 
 def test_missing_profile_fails_before_hardware_and_recovers(service, monkeypatch):
