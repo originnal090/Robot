@@ -236,6 +236,9 @@ namespace HciRobot.Simulator.Editor
             // low enough that the align band resolves even when an unfocused
             // Unity editor throttles Play Mode to a few frames per second.
             SetSerializedBool(driver, "continuousMotion", true);
+            // The generated quick-start geometry uses Unity's usual 1 unit = 1 m,
+            // unlike the calibrated FactoryDay course scene.
+            SetSerializedFloat(driver, "movementSpeedMultiplier", 1f);
             SetSerializedFloat(driver, "maximumTurnDegreesPerSecond", 30f);
             SetSerializedFloat(driver, "maximumForwardSpeed", 0.8f);
             // The 0.20 TonyPi deadzone matches the physical firmware; a fine

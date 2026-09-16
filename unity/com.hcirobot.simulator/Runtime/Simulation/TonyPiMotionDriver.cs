@@ -12,13 +12,14 @@ namespace HciRobot.Simulator
         [SerializeField, Min(0f)] private float maximumForwardSpeed = 1.0f;
         // Placeholder until measured on hardware; independent of forward speed.
         [SerializeField, Min(0f)] private float maximumLateralSpeed = 0.2f;
+        [Tooltip("Fallback continuous turn rate when measured full-stick calibration is disabled.")]
         [SerializeField, Min(0f)] private float maximumTurnDegreesPerSecond = 120f;
         [SerializeField, Range(0f, 1f)] private float deadzone = 0.20f;
         [SerializeField] private bool continuousMotion;
 
         [Header("Scene scale")]
-        [Tooltip("Scales forward and lateral movement to match the scene's distance units. Rotation is unchanged.")]
-        [SerializeField, Min(0f)] private float movementSpeedMultiplier = 1f;
+        [Tooltip("Unity units per real-world metre. The 21.5 default is calibrated for FactoryDay_HciRobot; rotation is unchanged.")]
+        [SerializeField, Min(0f)] private float movementSpeedMultiplier = 21.5f;
 
         [Header("Measured TonyPi forward tiers")]
         [SerializeField] private bool useMeasuredForwardTiers = true;
@@ -27,6 +28,20 @@ namespace HciRobot.Simulator
         [SerializeField, Min(0f)] private float fastSpeedMultiplier = 2.0f;
         [SerializeField, Range(0f, 1f)] private float slowTierMaximum = 0.45f;
         [SerializeField, Range(0f, 1f)] private float fastTierMinimum = 0.75f;
+
+        [Header("Measured TonyPi full-stick turn")]
+        [Tooltip("Use the measured fast action angle and cadence for continuous full-stick turning.")]
+        [SerializeField] private bool useMeasuredFullStickTurn = true;
+        [Tooltip("Base yaw change produced by one full-stick fast turn action.")]
+        [SerializeField, Min(0f)] private float fullStickTurnDegreesPerAction = 15f;
+        [Tooltip("Duration of turn_left_fast/turn_right_fast in the course action files.")]
+        [SerializeField, Min(0.01f)] private float fullStickTurnActionSeconds = 0.9f;
+        [Tooltip("Service wait between repeated gait actions.")]
+        [SerializeField, Min(0f)] private float turnRepeatIntervalSeconds = 0.3f;
+        [Tooltip("Scales full-stick left-turn speed relative to the measured base angle.")]
+        [SerializeField, Min(0f)] private float leftTurnMultiplier = 1f;
+        [Tooltip("Scales full-stick right-turn speed relative to the measured base angle.")]
+        [SerializeField, Min(0f)] private float rightTurnMultiplier = 0.5f;
 
         [Header("Persistent head pitch preview")]
         [SerializeField] private Transform headPitchTransform;
@@ -65,6 +80,7 @@ namespace HciRobot.Simulator
         public Vector2 ActualOutput => actualOutput;
         public float ActualLateralOutput { get; private set; }
         public float ActualForwardSpeedMetresPerSecond { get; private set; }
+        public float ActualForwardSpeedSceneUnitsPerSecond { get; private set; }
         public RobotMotionMode CurrentMode => target.Mode;
         public string LastAction { get; private set; }
         public string HeadPitchLevel { get; private set; } = "center";
@@ -91,6 +107,18 @@ namespace HciRobot.Simulator
         {
             get => movementSpeedMultiplier;
             set => movementSpeedMultiplier = Mathf.Max(0f, value);
+        }
+
+        public float LeftTurnMultiplier
+        {
+            get => leftTurnMultiplier;
+            set => leftTurnMultiplier = Mathf.Max(0f, value);
+        }
+
+        public float RightTurnMultiplier
+        {
+            get => rightTurnMultiplier;
+            set => rightTurnMultiplier = Mathf.Max(0f, value);
         }
 
         private void Reset()
@@ -131,16 +159,17 @@ namespace HciRobot.Simulator
             }
 
             Vector3 currentVelocity = body.velocity;
-            float forwardSpeed = useMeasuredForwardTiers && continuousMotion
+            float forwardSpeedMetresPerSecond = useMeasuredForwardTiers && continuousMotion
                 ? CalculateMeasuredForwardSpeed(velocity)
                 : velocity * maximumForwardSpeed;
-            forwardSpeed *= movementSpeedMultiplier;
-            Vector3 planarVelocity = transform.forward * forwardSpeed
+            float forwardSpeedSceneUnitsPerSecond = forwardSpeedMetresPerSecond * movementSpeedMultiplier;
+            Vector3 planarVelocity = transform.forward * forwardSpeedSceneUnitsPerSecond
                 + transform.right * (lateral * maximumLateralSpeed * movementSpeedMultiplier);
             body.velocity = new Vector3(planarVelocity.x, currentVelocity.y, planarVelocity.z);
-            body.angularVelocity = new Vector3(0f, steer * maximumTurnDegreesPerSecond * Mathf.Deg2Rad, 0f);
+            body.angularVelocity = new Vector3(0f, CalculateTurnDegreesPerSecond(steer) * Mathf.Deg2Rad, 0f);
             actualOutput = new Vector2(velocity, steer);
-            ActualForwardSpeedMetresPerSecond = forwardSpeed;
+            ActualForwardSpeedMetresPerSecond = forwardSpeedMetresPerSecond;
+            ActualForwardSpeedSceneUnitsPerSecond = forwardSpeedSceneUnitsPerSecond;
             ActualLateralOutput = lateral;
         }
 
@@ -223,6 +252,7 @@ namespace HciRobot.Simulator
             target = RobotCommand.Stop;
             actualOutput = Vector2.zero;
             ActualForwardSpeedMetresPerSecond = 0f;
+            ActualForwardSpeedSceneUnitsPerSecond = 0f;
             ActualLateralOutput = 0f;
             if (body != null)
             {
@@ -317,6 +347,24 @@ namespace HciRobot.Simulator
                     ? fastSpeedMultiplier
                     : 1f;
             return Mathf.Sign(velocity) * baselineForwardSpeed * multiplier;
+        }
+
+        public float CalculateTurnDegreesPerSecond(float steer)
+        {
+            float input = Mathf.Clamp(steer, -1f, 1f);
+            if (Mathf.Abs(input) <= deadzone)
+            {
+                return 0f;
+            }
+
+            float baseRate = maximumTurnDegreesPerSecond;
+            if (useMeasuredFullStickTurn)
+            {
+                float cycleSeconds = fullStickTurnActionSeconds + turnRepeatIntervalSeconds;
+                baseRate = cycleSeconds > 0f ? fullStickTurnDegreesPerAction / cycleSeconds : 0f;
+            }
+            float directionMultiplier = input < 0f ? leftTurnMultiplier : rightTurnMultiplier;
+            return input * baseRate * directionMultiplier;
         }
 
         private void FinishMirroredStep(string status)

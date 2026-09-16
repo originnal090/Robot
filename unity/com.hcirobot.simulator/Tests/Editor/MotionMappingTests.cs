@@ -19,6 +19,7 @@ namespace HciRobot.Simulator.Tests
                 var body = robot.AddComponent<Rigidbody>();
                 body.useGravity = false;
                 var driver = robot.AddComponent<TonyPiMotionDriver>();
+                driver.MovementSpeedMultiplier = 1f;
                 var flags = BindingFlags.Instance | BindingFlags.NonPublic;
                 typeof(TonyPiMotionDriver).GetMethod("Awake", flags).Invoke(driver, null);
                 var tick = typeof(TonyPiMotionDriver).GetMethod("FixedUpdate", flags);
@@ -44,6 +45,43 @@ namespace HciRobot.Simulator.Tests
                 Assert.That(body.angularVelocity.sqrMagnitude, Is.Zero); // Duplicate cannot replay.
             }
             finally { Object.DestroyImmediate(robot); }
+        }
+
+        [Test]
+        public void Driver_FullStickUsesMeasuredFastActionAndDirectionalMultipliers()
+        {
+            var robot = new GameObject("full-stick turn calibration");
+            try
+            {
+                var body = robot.AddComponent<Rigidbody>();
+                body.useGravity = false;
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                driver.ContinuousMotion = true;
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                typeof(TonyPiMotionDriver).GetMethod("Awake", flags).Invoke(driver, null);
+                var tick = typeof(TonyPiMotionDriver).GetMethod("FixedUpdate", flags);
+
+                driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, -1f, false, 0.2f, true));
+                tick.Invoke(driver, null);
+                Assert.That(body.angularVelocity.y * Mathf.Rad2Deg,
+                    Is.EqualTo(-12.5f).Within(0.001f));
+
+                driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, 1f, false, 0.2f, true));
+                tick.Invoke(driver, null);
+                Assert.That(body.angularVelocity.y * Mathf.Rad2Deg,
+                    Is.EqualTo(6.25f).Within(0.001f));
+
+                driver.LeftTurnMultiplier = 1.5f;
+                driver.RightTurnMultiplier = 0.25f;
+                Assert.That(driver.CalculateTurnDegreesPerSecond(-1f),
+                    Is.EqualTo(-18.75f).Within(0.001f));
+                Assert.That(driver.CalculateTurnDegreesPerSecond(1f),
+                    Is.EqualTo(3.125f).Within(0.001f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(robot);
+            }
         }
 
         [TestCase("done")]
@@ -125,6 +163,22 @@ namespace HciRobot.Simulator.Tests
         }
 
         [Test]
+        public void Driver_DefaultSceneScaleMatchesFactoryDayCalibration()
+        {
+            var robot = new GameObject("default course scene scale");
+            try
+            {
+                robot.AddComponent<Rigidbody>().useGravity = false;
+                var driver = robot.AddComponent<TonyPiMotionDriver>();
+                Assert.That(driver.MovementSpeedMultiplier, Is.EqualTo(21.5f).Within(0.0001f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(robot);
+            }
+        }
+
+        [Test]
         public void Driver_MovementSpeedMultiplierScalesTranslationButNotTurnRate()
         {
             var robot = new GameObject("movement scale test");
@@ -144,6 +198,8 @@ namespace HciRobot.Simulator.Tests
                 Assert.That(Vector3.Dot(body.velocity, robot.transform.forward),
                     Is.EqualTo(0.075f).Within(0.00001f));
                 Assert.That(driver.ActualForwardSpeedMetresPerSecond,
+                    Is.EqualTo(0.0375f).Within(0.00001f));
+                Assert.That(driver.ActualForwardSpeedSceneUnitsPerSecond,
                     Is.EqualTo(0.075f).Within(0.00001f));
 
                 driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, 0f, false, 0.2f, true, 0.5f));
@@ -154,7 +210,7 @@ namespace HciRobot.Simulator.Tests
                 driver.ApplyCommand(TonyPiCommandMapper.ToCommand(0f, 0.5f, false, 0.2f, true));
                 tick.Invoke(driver, null);
                 Assert.That(body.angularVelocity.y * Mathf.Rad2Deg,
-                    Is.EqualTo(60f).Within(0.001f));
+                    Is.EqualTo(3.125f).Within(0.001f));
 
                 driver.ApplyCommand(Mirror("scaled lateral", "start", lateral: 0.35f));
                 float displacement = 0f;
