@@ -86,6 +86,7 @@
               <div class="host-row"><div><label for="host">机器人地址</label><input id="host" value="127.0.0.1"></div><div><label for="port">端口</label><input id="port" type="number" min="1" max="65535" value="5075"></div></div>
               <label for="mirror">Unity 镜像地址（可选）</label><input id="mirror" placeholder="IP:5075">
               <label for="approach">接近模式</label><select id="approach"><option value="normal_then_slow">正常 → 慢速接近</option><option value="normal">正常节拍</option><option value="slow_realtime">慢速实时</option></select>
+              <label for="arrival-size-version">到达尺寸判定</label><select id="arrival-size-version"><option value="v2">半球 v2（推荐）</option><option value="v1">v1 旧版平均框（兜底）</option></select>
               <label for="detector">识别器</label><select id="detector"><option value="lab">LAB 颜色与轮廓</option><option value="ascend">Ascend NPU YOLO</option><option value="svm">端侧 SVM / Hybrid</option></select>
               <div id="ascend-model-field" hidden><label for="ascend-model-path">Ascend 模型</label><input id="ascend-model-path" placeholder="/home/…/yolo11n_640.om"><small class="muted">仅使用香橙派上的 .om 模型</small></div>
               <div id="svm-model-field" hidden><label for="svm-model">SVM / Hybrid 版本</label><select id="svm-model"></select><small id="svm-description" class="muted"></small><div id="svm-custom-field" hidden><label for="svm-custom-path">自定义服务端路径</label><input id="svm-custom-path" placeholder="artifacts/…/profile.json"><small class="muted">支持 .json 配置或 .npz 权重</small></div></div>

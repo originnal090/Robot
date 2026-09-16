@@ -237,6 +237,7 @@ async function initialize() {
     $("login-panel").hidden = true;
     for (const key of ["source", "backend", "host", "port"]) $(key).value = defaults[key];
     $("approach").value = defaults.approach_mode;
+    $("arrival-size-version").value = defaults.arrival_size_version ?? "v2";
     $("detector").value = defaults.detector_backend ?? "lab";
     $("ascend-model-path").value = defaults.ascend_model_path ?? "";
     fillSvmModels(defaults.svm_presets ?? [], defaults.svm_model_path ?? "");
@@ -288,6 +289,7 @@ $("start").onclick = () => perform(async () => {
     control_only: $("control-only").checked, local_gamepad: $("local-gamepad").checked,
     obstacle: $("obstacle").checked,
     approach_mode: $("approach").value,
+    arrival_size_version: $("arrival-size-version").value,
     detector_backend: detector, detector_model_path: modelPath,
   });
   setTab("status");

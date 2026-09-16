@@ -55,6 +55,7 @@ align_exit_error = 0.14
 arrival_radius_ratio = 0.10
 arrival_max_error = 0.10
 arrival_radius_stability_ratio = 0.18
+arrival_size_version = "v2"
 slow_radius_ratio = 0.06
 final_approach_enabled = true
 final_approach_radius_ratio = 0.075

@@ -64,6 +64,35 @@ class Detection:
             raise ValueError("detection has no current target")
         return float(self.radius) / min(self.frame_width, self.frame_height)
 
+    def arrival_radius_ratio(self, version: str = "v2") -> float:
+        """Size estimate used by arrival logic, with a legacy field fallback.
+
+        v1 reproduces the original YOLO box estimate.  v2 reconstructs a
+        conservative circle from a shallow bottom-clipped cap, capped at 1.5x
+        the visible half-width so a one-pixel false strip cannot explode.
+        """
+        if version not in {"v1", "v2"}:
+            raise ValueError("arrival size version must be v1 or v2")
+        if not self.has_current_target:
+            raise ValueError("detection has no current target")
+        values = (self.box_left, self.box_top, self.box_right, self.box_bottom)
+        if not self.bottom_clipped or not all(
+            value is not None and math.isfinite(value) for value in values
+        ):
+            return self.radius_ratio
+        width = float(self.box_right) - float(self.box_left)
+        height = float(self.box_bottom) - float(self.box_top)
+        if width <= 0 or height <= 0:
+            return self.radius_ratio
+        if version == "v1":
+            radius = (width + height) / 4.0
+        else:
+            radius = max(float(self.radius), width / 2.0)
+            if height < width / 2.0:
+                cap_radius = width * width / (8.0 * height) + height / 2.0
+                radius = max(radius, min(cap_radius, width * 0.75))
+        return radius / min(self.frame_width, self.frame_height)
+
     @property
     def bottom_ratio(self) -> float:
         """Bottom edge of the visible target, normalized to the image height."""

@@ -293,8 +293,10 @@ def annotate(
         lines.append(f"dist={distance_mm:.0f}mm{state}")
     lines.append(f"detected={detection.detected} candidate={detection.candidate_detected}")
     if detection.has_current_target:
+        control_ratio = decision.radius_ratio
+        control_text = "--" if control_ratio is None else f"{control_ratio:.3f}"
         lines.append(
-            f"radius_ratio={detection.radius_ratio:.3f} "
+            f"radius raw={detection.radius_ratio:.3f} control={control_text} "
             f"bottom={detection.bottom_ratio:.3f} clipped={detection.bottom_clipped}"
         )
     for index, text in enumerate(lines):

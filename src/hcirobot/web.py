@@ -52,6 +52,7 @@ class StartRequest(Owner):
     obstacle: bool | None = None
     startup_forward: bool = False
     approach_mode: Literal["normal", "normal_then_slow", "slow_realtime"] | None = None
+    arrival_size_version: Literal["v1", "v2"] | None = None
     detector_backend: Literal["lab", "ascend", "svm"] | None = None
     detector_model_path: str | None = Field(default=None, max_length=2048)
 

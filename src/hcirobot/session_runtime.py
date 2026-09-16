@@ -59,7 +59,14 @@ class SessionRuntime:
                 )
                 return
             # The mode selector is read once per session, like the obstacle switch.
-            config["controller"] = dict(config["controller"], approach_mode=values["approach_mode"])
+            config["controller"] = dict(
+                config["controller"],
+                approach_mode=values["approach_mode"],
+                arrival_size_version=values.get(
+                    "arrival_size_version",
+                    config["controller"].get("arrival_size_version", "v2"),
+                ),
+            )
             detection = detector_config(config["detection"])
             detector_backend = values.get("detector_backend")
             if detector_backend is None:

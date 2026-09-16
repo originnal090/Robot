@@ -52,8 +52,11 @@ def acquire(client, ws):
     return {"client_id": client_id, "lease": result.json()["lease"]}
 
 
-def start(client, ws, *, control_only=False):
+def start(client, ws, *, control_only=False, arrival_size_version=None):
     owner = acquire(client, ws)
+    options = {}
+    if arrival_size_version is not None:
+        options["arrival_size_version"] = arrival_size_version
     response = client.post(
         "/api/session/start",
         json={
@@ -62,6 +65,7 @@ def start(client, ws, *, control_only=False):
             "backend": "recording",
             "obstacle": False,
             "control_only": control_only,
+            **options,
         },
     )
     assert response.status_code == 200, response.text
@@ -78,8 +82,9 @@ def test_preview_manual_tuning_capture_and_estop(service):
         TestClient(create_app(service=service)) as client,
         client.websocket_connect("/ws/events") as ws,
     ):
-        request = start(client, ws)
+        request = start(client, ws, arrival_size_version="v1")
         assert service.model.armed is False
+        assert service.active_controller.config.arrival_size_version == "v1"
         seq, jpeg = service.jpeg()
         assert seq > 0
         assert cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR).shape[2] == 3
@@ -283,6 +288,7 @@ def test_defaults_list_svm_variants_separately_from_ascend(service, tmp_path, mo
     assert defaults["startup_enabled"] is True
     assert defaults["startup_forward"] is False
     assert defaults["startup_forward_seconds"] == 16.0
+    assert defaults["arrival_size_version"] == "v2"
 
 
 def test_invalid_axes_do_not_reach_session(service):
@@ -344,6 +350,7 @@ def test_authentication_cookie_origin_and_static_assets(service):
         assert "app.js" in index.text
         assert 'id="arm-mode"' in index.text
         assert 'id="arm-forward-seconds"' in index.text
+        assert 'id="arrival-size-version"' in index.text
         assert 'id="startup-forward"' not in index.text
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/api/state").status_code == 401

@@ -14,6 +14,7 @@ _ACTION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_]{1,32}")
 # pairs are (far, near) velocity magnitudes chosen to land in the robot-side
 # gait bands: <=0.45 one_step, <=0.75 normal, >0.75 fast.
 APPROACH_MODES = ("fast_then_slow", "normal", "normal_then_slow", "slow_realtime")
+ARRIVAL_SIZE_VERSIONS = ("v1", "v2")
 APPROACH_SPEEDS: dict[str, tuple[float, float]] = {
     "fast_then_slow": (0.85, 0.30),
     "normal": (0.60, 0.60),
@@ -31,6 +32,7 @@ class ControllerConfig:
     # samples agree. This rejects a close false box at the frame edge and one-frame jumps.
     arrival_max_error: float = 0.10
     arrival_radius_stability_ratio: float = 0.18
+    arrival_size_version: str = "v2"
     slow_radius_ratio: float = 0.10
     search_steer: float = 0.35
     search_reverse_seconds: float = 2.0
@@ -121,6 +123,8 @@ class ControllerConfig:
             raise ValueError("arrival max error must be between 0 and align_exit_error")
         if not 0 <= self.arrival_radius_stability_ratio <= 1:
             raise ValueError("arrival radius stability ratio must be between 0 and 1")
+        if self.arrival_size_version not in ARRIVAL_SIZE_VERSIONS:
+            raise ValueError("arrival size version must be one of: v1, v2")
         if not 0 <= self.near_speed <= self.far_speed <= 1:
             raise ValueError("speeds must satisfy 0 <= near <= far <= 1")
         if self.search_reverse_seconds <= 0 or self.max_search_seconds <= 0:
@@ -261,7 +265,7 @@ class VisualApproachController:
         current = detection.has_current_target
         if current:
             error = detection.horizontal_error
-            radius_ratio = detection.radius_ratio
+            radius_ratio = detection.arrival_radius_ratio(self.config.arrival_size_version)
             self._last_target_error = error
             self._lost_streak = 0
             if not detection.bottom_clipped:
@@ -337,7 +341,7 @@ class VisualApproachController:
 
         if detection.has_current_target:
             error = detection.horizontal_error
-            radius_ratio = detection.radius_ratio
+            radius_ratio = detection.arrival_radius_ratio(self.config.arrival_size_version)
             self._last_target_error = error
             if abs(error) > self.config.align_exit_error:
                 self.state = ControlState.ALIGNING

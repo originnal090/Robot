@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from hcirobot.controller import ControllerConfig, VisualApproachController
@@ -36,6 +39,26 @@ def bottom_clipped_target(error: float, radius_ratio: float = 0.08) -> Detection
         box_right=center_x + radius,
         box_bottom=height,
         bottom_clipped=True,
+    )
+
+
+def boxed_target(box: list[int]) -> Detection:
+    left, top, right, bottom = box
+    width, height = right - left, bottom - top
+    return Detection(
+        candidate_detected=True,
+        detected=True,
+        center_x=(left + right) / 2,
+        center_y=(top + bottom) / 2,
+        radius=(width + height) / 4,
+        frame_width=640,
+        frame_height=480,
+        control_confirmed=True,
+        box_left=left,
+        box_top=top,
+        box_right=right,
+        box_bottom=bottom,
+        bottom_clipped=bottom >= 478,
     )
 
 
@@ -184,6 +207,57 @@ def test_bottom_clipped_target_hands_off_to_bounded_final_approach() -> None:
     assert arrived.command == RobotCommand.stop()
 
 
+def test_shallow_cap_v2_reconstructs_bounded_radius_and_v1_remains_available() -> None:
+    detection = boxed_target([200, 464, 270, 480])
+
+    assert detection.arrival_radius_ratio("v1") == pytest.approx(21.5 / 480)
+    assert detection.arrival_radius_ratio("v2") == pytest.approx(46.28125 / 480)
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_reviewed_capture_boxes_trigger_only_the_expected_arrival(version: str) -> None:
+    root = Path(__file__).parents[1]
+    rows = json.loads(
+        (root / "data/red-ball-route-20260914/annotations-balanced.json").read_text(
+            encoding="utf-8"
+        )
+    ) + json.loads(
+        (root / "data/red-ball-route-20260915/annotations-new.json").read_text(encoding="utf-8")
+    )
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["capture"], []).append(row)
+
+    arrived = set()
+    for capture, capture_rows in grouped.items():
+        controller = armed_controller(
+            arrival_size_version=version,
+            align_frames=3,
+            arrival_radius_ratio=0.10,
+            arrival_max_error=0.10,
+            arrival_frames=4,
+            slow_radius_ratio=0.06,
+            final_approach_enabled=True,
+            final_approach_radius_ratio=0.075,
+            final_approach_bottom_ratio=0.88,
+            final_approach_frames=3,
+            final_approach_seconds=0.60,
+        )
+        controller.state = ControlState.APPROACHING
+        now = 0.0
+        for row in capture_rows:
+            detection = missing() if row["box"] is None else boxed_target(row["box"])
+            decision = controller.update(detection, now)
+            now += 0.1
+            if decision.state is ControlState.FINAL_APPROACH:
+                decision = controller.update(missing(), now + 0.60)
+                break
+        if decision.state is ControlState.ARRIVED:
+            arrived.add(capture)
+
+    assert arrived == {"capture-20260914-093059"}
+
+
 def test_bottom_clipped_false_positive_without_near_history_cannot_blind_walk() -> None:
     controller = armed_controller(
         align_frames=1,
@@ -302,6 +376,7 @@ def test_optional_near_lateral_is_exclusive_and_limited(sign: int) -> None:
         {"final_approach_frames": 0},
         {"final_approach_velocity": 0.6},
         {"final_approach_seconds": 0},
+        {"arrival_size_version": "v3"},
     ],
 )
 def test_invalid_pulse_config_rejected(values: dict) -> None:

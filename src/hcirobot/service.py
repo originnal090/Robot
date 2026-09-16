@@ -298,6 +298,7 @@ class SessionService(SessionRuntime):
             "host": cfg["robot"]["host"],
             "port": cfg["robot"]["port"],
             "approach_mode": cfg["controller"].get("approach_mode", "normal_then_slow"),
+            "arrival_size_version": cfg["controller"].get("arrival_size_version", "v2"),
             "obstacle": cfg.get("obstacle", {}).get("enabled", True),
             # Forward lead-in is deliberately one-shot and opt-in per Web session.
             "startup_forward": False,
