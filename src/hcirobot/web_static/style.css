@@ -55,6 +55,9 @@ h3 {font-size:16px; font-weight:500}
 .session-actions button {min-width:112px; height:38px}
 .arm-control {display:flex; align-items:center; gap:5px}
 .arm-control select {width:136px; height:38px}
+.arm-seconds {display:flex; align-items:center; gap:3px; color:var(--muted); font-size:10px}
+.arm-seconds input {width:58px; height:38px; padding:5px; border:1px solid #3e4b54; background:#20282d; color:var(--text); border-radius:6px}
+.arm-seconds input:disabled {opacity:.38}
 .arm-control button {min-width:96px}
 .command-hint {margin-left:auto; color:var(--muted); font-size:10px}
 .manual-panel {flex:none}
@@ -133,7 +136,7 @@ fieldset small {font-size:9px; line-height:1.5; display:block}
   .manual-panel{height:100%;display:flex;flex-direction:column}.manual-panel .panel-heading{min-height:42px}.manual-workspace{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:22px;align-content:center}
   .dpad{grid-template-columns:repeat(3,40px);grid-template-rows:repeat(3,38px);gap:4px;justify-content:center}.drive-info{gap:9px}.drive-info button{min-height:42px;font-size:13px}.drive-info span{font-size:10px}
   .action-grid{grid-column:1/-1;gap:9px}.action-grid button{min-height:40px;font-size:12px}.gamepad-line{min-height:54px;flex-wrap:wrap}.gamepad-line .checkbox{font-size:11px}.gamepad-line small{display:none}
-  .session-actions{display:grid;grid-template-columns:.9fr 1.8fr .8fr .8fr;gap:6px;height:42px}.session-actions button{font-size:11px;min-width:0;padding:7px 3px}.arm-control{gap:2px;min-width:0}.arm-control select{flex:1;width:auto;min-width:0;font-size:9px;padding:3px}.arm-control button{width:52px;min-width:52px}.command-hint{display:none}
+  .session-actions{display:grid;grid-template-columns:.8fr 2.3fr .7fr .7fr;gap:5px;height:42px}.session-actions button{font-size:11px;min-width:0;padding:7px 3px}.arm-control{gap:2px;min-width:0}.arm-control select{flex:1;width:auto;min-width:0;font-size:9px;padding:3px}.arm-seconds{gap:1px}.arm-seconds input{width:43px;font-size:9px;padding:2px}.arm-control button{width:48px;min-width:48px}.command-hint{display:none}
   body[data-mobile-view=video] .manual-panel,body[data-mobile-view=video] .inspector{display:none}
   body[data-mobile-view=manual] .viewer-panel,body[data-mobile-view=manual] .inspector{display:none}
   body[data-mobile-view=settings] .main-column{display:none}

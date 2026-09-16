@@ -137,6 +137,7 @@ function render() {
   $("arm").disabled = !owns || !(state?.armed || caps.arm) || busy;
   $("arm").textContent = state?.armed ? "解除自治" : "武装自治";
   $("arm-mode").disabled = !owns || !caps.arm || busy || Boolean(state?.armed);
+  $("arm-forward-seconds").disabled = $("arm-mode").value !== "startup" || $("arm-mode").disabled;
   $("stop").disabled = !connected || !caps.stop;
   $("reset").disabled = !owns || !caps.reset || busy;
   $("claim").disabled = !connected || busy || (state?.owner !== "none" && !owns);
@@ -242,9 +243,10 @@ async function initialize() {
     updateDetectorFields();
     $("obstacle").checked = defaults.obstacle;
     $("arm-mode").value = "direct";
+    $("arm-forward-seconds").value = defaults.startup_forward_seconds;
     $("arm-mode-startup").disabled = !defaults.startup_enabled;
     $("arm-mode-startup").textContent = defaults.startup_enabled
-      ? `先直走 ${defaults.startup_forward_seconds} 秒再自治`
+      ? "先直走再自治"
       : "起步路线未启用";
     $("local-gamepad").disabled = !defaults.gamepad_enabled;
     fillTuning(defaults);
@@ -296,7 +298,15 @@ $("arm").onclick = () => perform(async () => {
     return;
   }
   const armMode = $("arm-mode").value;
-  await api("/api/session/arm", {...context(), arm_mode: armMode});
+  const payload = {...context(), arm_mode: armMode};
+  if (armMode === "startup") {
+    const seconds = Number($("arm-forward-seconds").value);
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 120) {
+      throw new Error("直走时长需要在 0–120 秒之间");
+    }
+    payload.startup_forward_seconds = seconds;
+  }
+  await api("/api/session/arm", payload);
   // A long open-loop lead-in is always opt-in for each individual arm action.
   $("arm-mode").value = "direct";
 });
@@ -346,6 +356,7 @@ function updateDetectorFields() {
 $("detector").onchange = updateDetectorFields;
 $("svm-model").onchange = updateSvmDescription;
 $("control-only").onchange = render;
+$("arm-mode").onchange = render;
 $("capture").onclick = () => perform(() => api("/api/capture", {...context(), active: !state.capture.active}));
 document.querySelectorAll("[data-action]").forEach((button) => {
   button.onclick = () => perform(() => api(`/api/action/${button.dataset.action}`, context()));

@@ -57,6 +57,18 @@ def test_forward_can_be_selected_for_one_arm_only() -> None:
     assert route.update(missing(), 2.0).command == RobotCommand.stop()
 
 
+def test_forward_duration_can_be_overridden_for_one_arm() -> None:
+    route = StartupRoute(StartupRouteConfig(enabled=True, forward_seconds=16))
+
+    route.arm(0.0, forward=True, forward_seconds=32.0)
+
+    assert route.update(missing(), 31.9).command.velocity > 0
+    assert route.update(missing(), 32.0).command == RobotCommand.stop()
+    route.reset()
+    route.arm(40.0, forward=True)
+    assert route.update(missing(), 56.0).command == RobotCommand.stop()
+
+
 def test_unconfirmed_candidate_does_not_end_scan() -> None:
     route = StartupRoute(StartupRouteConfig(enabled=True, acquire_frames=6))
     route.arm(0.0)

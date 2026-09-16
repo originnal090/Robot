@@ -411,6 +411,7 @@ class SessionService(SessionRuntime):
         session_id: int,
         operation: str,
         arm_mode: ArmMode = "direct",
+        startup_forward_seconds: float | None = None,
     ) -> None:
         with self._lock:
             self._require_owner(client, lease, session_id)
@@ -419,18 +420,22 @@ class SessionService(SessionRuntime):
                     raise ControlConflict("等待会话结束后再复位")
                 self.model.reset()
             elif operation == "arm":
-                self.request_arm(arm_mode)
+                self.request_arm(arm_mode, startup_forward_seconds)
             elif operation == "disarm":
                 self.request_disarm()
             else:
                 raise ValueError("未知会话指令")
 
     # GamepadTeleop uses these same guarded operations as the web handlers.
-    def request_arm(self, mode: ArmMode = "direct") -> None:
+    def request_arm(
+        self,
+        mode: ArmMode = "direct",
+        startup_forward_seconds: float | None = None,
+    ) -> None:
         if not self.model.can_arm or self.session_control is None:
             raise ControlConflict("当前不能武装，请检查会话、画面和故障状态")
         self.session_control.request_manual(0.0, 0.0, MANUAL_SECONDS)
-        self.session_control.request_arm(mode)
+        self.session_control.request_arm(mode, startup_forward_seconds)
         self.model.armed = True  # gate manual requests before the worker acknowledges
 
     def request_disarm(self) -> None:

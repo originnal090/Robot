@@ -87,7 +87,7 @@ class SessionControl:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._arm = threading.Event()
-        self._arm_mode: ArmMode | None = None
+        self._arm_request: tuple[ArmMode, float | None] | None = None
         self._disarm = threading.Event()
         self._estop = threading.Event()
         self._lock = threading.Lock()
@@ -108,12 +108,18 @@ class SessionControl:
         if stopped:
             self._cancel_robot()
 
-    def request_arm(self, mode: ArmMode = "direct") -> None:
+    def request_arm(
+        self,
+        mode: ArmMode = "direct",
+        startup_forward_seconds: float | None = None,
+    ) -> None:
         if mode not in ("direct", "startup"):
             raise ValueError("arm mode must be direct or startup")
+        if startup_forward_seconds is not None and not 0 < startup_forward_seconds <= 120:
+            raise ValueError("startup forward duration must be in (0, 120] seconds")
         if not self._estop.is_set():
             with self._lock:
-                self._arm_mode = mode
+                self._arm_request = (mode, startup_forward_seconds)
                 self._arm.set()
 
     def request_disarm(self) -> None:
@@ -173,17 +179,21 @@ class SessionControl:
             return self._actions.pop(0) if self._actions else None
 
     def consume_arm(self) -> bool:
-        return self.consume_arm_mode() is not None
+        return self.consume_arm_request() is not None
 
     def consume_arm_mode(self) -> ArmMode | None:
+        request = self.consume_arm_request()
+        return request[0] if request is not None else None
+
+    def consume_arm_request(self) -> tuple[ArmMode, float | None] | None:
         if not self._arm.is_set():
             return None
         with self._lock:
             if not self._arm.is_set():
                 return None
             self._arm.clear()
-            mode, self._arm_mode = self._arm_mode or "direct", None
-            return mode
+            request, self._arm_request = self._arm_request or ("direct", None), None
+            return request
 
     def consume_disarm(self) -> bool:
         if self._disarm.is_set():
@@ -600,9 +610,18 @@ def run_loop(
     walk_command = RobotCommand.stop()
     last_radius_ratio: float | None = None
 
-    def arm_autonomy(now: float, *, use_startup: bool) -> None:
+    def arm_autonomy(
+        now: float,
+        *,
+        use_startup: bool,
+        startup_forward_seconds: float | None = None,
+    ) -> None:
         if startup_route is not None and use_startup:
-            startup_route.arm(now, forward=True)
+            startup_route.arm(
+                now,
+                forward=True,
+                forward_seconds=startup_forward_seconds,
+            )
         else:
             controller.arm(now)
 
@@ -712,8 +731,9 @@ def run_loop(
                     send_command(RobotCommand.stop(), "disarmed")
                 if had_autonomy:
                     emit("disarmed", "manual takeover: autonomy disarmed")
-            arm_mode = session.consume_arm_mode()
-            if arm_mode is not None:
+            arm_request = session.consume_arm_request()
+            if arm_request is not None:
+                arm_mode, startup_forward_seconds = arm_request
                 if vision_hold_active:
                     if resume_autonomy_on_video_recovery:
                         resume_autonomy_pending = True
@@ -727,7 +747,11 @@ def run_loop(
                         last_radius_ratio = None
                         if approach_gate is not None:
                             approach_gate.hold_settle()
-                        arm_autonomy(clock(), use_startup=arm_mode == "startup")
+                        arm_autonomy(
+                            clock(),
+                            use_startup=arm_mode == "startup",
+                            startup_forward_seconds=startup_forward_seconds,
+                        )
                     emit("armed", "autonomy armed")
 
             if step_id is not None:

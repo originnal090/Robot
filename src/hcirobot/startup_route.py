@@ -62,9 +62,21 @@ class StartupRoute:
     def active(self) -> bool:
         return self._phase not in ("idle", "complete")
 
-    def arm(self, now: float, *, forward: bool | None = None) -> None:
+    def arm(
+        self,
+        now: float,
+        *,
+        forward: bool | None = None,
+        forward_seconds: float | None = None,
+    ) -> None:
         use_forward = self.config.forward_enabled if forward is None else forward
-        self._phase = "forward" if use_forward and self.config.forward_seconds > 0 else "settle"
+        if forward_seconds is not None and (
+            not math.isfinite(forward_seconds) or not 0 < forward_seconds <= 120
+        ):
+            raise ValueError("startup forward duration must be in (0, 120] seconds")
+        duration = self.config.forward_seconds if forward_seconds is None else forward_seconds
+        self._forward_seconds = duration
+        self._phase = "forward" if use_forward and duration > 0 else "settle"
         self._phase_started = now
         self._target_streak = 0
 
@@ -72,10 +84,11 @@ class StartupRoute:
         self._phase = "idle"
         self._phase_started = 0.0
         self._target_streak = 0
+        self._forward_seconds = self.config.forward_seconds
 
     def update(self, detection: Detection, now: float) -> StartupDecision:
         if self._phase == "forward":
-            if now - self._phase_started < self.config.forward_seconds:
+            if now - self._phase_started < self._forward_seconds:
                 return StartupDecision(
                     ControlState.STARTUP_FORWARD,
                     RobotCommand(velocity=self.config.forward_velocity),

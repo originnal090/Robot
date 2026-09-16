@@ -104,7 +104,7 @@
         </div>
       </aside>
     </div>
-    <div class="session-actions"><button id="start" class="primary" disabled>▶ 开始预览</button><div class="arm-control"><select id="arm-mode" aria-label="自治启动方式"><option value="direct" selected>直接自治</option><option id="arm-mode-startup" value="startup">先直走再自治</option></select><button id="arm" disabled>武装自治</button></div><button id="stop" disabled>停止会话</button><button id="reset" disabled>复位故障</button><span class="command-hint">每次武装单独选择 · 手动指令松开即停</span></div>
+    <div class="session-actions"><button id="start" class="primary" disabled>▶ 开始预览</button><div class="arm-control"><select id="arm-mode" aria-label="自治启动方式"><option value="direct" selected>直接自治</option><option id="arm-mode-startup" value="startup">先直走再自治</option></select><label class="arm-seconds"><input id="arm-forward-seconds" type="number" min="0.1" max="120" step="0.5" inputmode="decimal" aria-label="直走秒数"><span>秒</span></label><button id="arm" disabled>武装自治</button></div><button id="stop" disabled>停止会话</button><button id="reset" disabled>复位故障</button><span class="command-hint">每次武装单独选择 · 手动指令松开即停</span></div>
   </main>
   <dialog id="logs-dialog" aria-labelledby="logs-title"><div class="panel-heading"><h2 id="logs-title">会话日志 <span id="log-count" class="muted">0 条</span></h2><button id="log-close" class="quiet" aria-label="关闭日志">关闭 ×</button></div><pre id="logs" tabindex="0" aria-label="会话日志">等待连接控制服务…</pre></dialog>
 </body>

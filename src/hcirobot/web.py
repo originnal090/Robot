@@ -38,6 +38,7 @@ class Owner(Payload):
 class SessionRequest(Owner):
     session_id: int = Field(ge=0)
     arm_mode: Literal["direct", "startup"] = "direct"
+    startup_forward_seconds: float | None = Field(default=None, gt=0, le=120)
 
 
 class StartRequest(Owner):
@@ -220,7 +221,14 @@ def create_app(
 
     @app.post("/api/session/{operation}")
     def command(operation: Literal["arm", "disarm", "reset"], data: SessionRequest):
-        runtime.command(data.client_id, data.lease, data.session_id, operation, data.arm_mode)
+        runtime.command(
+            data.client_id,
+            data.lease,
+            data.session_id,
+            operation,
+            data.arm_mode,
+            data.startup_forward_seconds,
+        )
         return {"ok": True}
 
     @app.post("/api/action/{name}")

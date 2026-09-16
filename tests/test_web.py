@@ -343,6 +343,7 @@ def test_authentication_cookie_origin_and_static_assets(service):
         assert index.status_code == 200
         assert "app.js" in index.text
         assert 'id="arm-mode"' in index.text
+        assert 'id="arm-forward-seconds"' in index.text
         assert 'id="startup-forward"' not in index.text
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/api/state").status_code == 401
@@ -389,12 +390,20 @@ def test_arm_mode_is_validated_and_forwarded(service):
     payload = {"client_id": "browser", "lease": "lease", "session_id": 7}
 
     with TestClient(create_app(service=service)) as client:
-        response = client.post("/api/session/arm", json={**payload, "arm_mode": "startup"})
+        response = client.post(
+            "/api/session/arm",
+            json={**payload, "arm_mode": "startup", "startup_forward_seconds": 32.0},
+        )
         invalid = client.post("/api/session/arm", json={**payload, "arm_mode": "sometimes"})
+        too_long = client.post(
+            "/api/session/arm",
+            json={**payload, "arm_mode": "startup", "startup_forward_seconds": 121.0},
+        )
 
     assert response.status_code == 200
-    assert calls == [("browser", "lease", 7, "arm", "startup")]
+    assert calls == [("browser", "lease", 7, "arm", "startup", 32.0)]
     assert invalid.status_code == 422
+    assert too_long.status_code == 422
 
 
 def test_missing_profile_fails_before_hardware_and_recovers(service, monkeypatch):

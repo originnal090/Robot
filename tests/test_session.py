@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from hcirobot.app import RuntimeEvent, SessionControl, run_loop
 from hcirobot.controller import ControllerConfig, VisualApproachController
 from hcirobot.detector import DetectorConfig, RedBallDetector
@@ -48,12 +50,20 @@ def test_attach_after_stop_cancels_robot_immediately() -> None:
 def test_arm_request_carries_one_shot_start_mode() -> None:
     session = SessionControl()
 
-    session.request_arm("startup")
+    session.request_arm("startup", 32.0)
 
-    assert session.consume_arm_mode() == "startup"
-    assert session.consume_arm_mode() is None
+    assert session.consume_arm_request() == ("startup", 32.0)
+    assert session.consume_arm_request() is None
     session.request_arm()
     assert session.consume_arm_mode() == "direct"
+
+
+def test_arm_request_rejects_invalid_custom_forward_duration() -> None:
+    session = SessionControl()
+
+    for seconds in (0, -1, 120.1, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="duration"):
+            session.request_arm("startup", seconds)
 
 
 def test_session_can_arm_then_stop_from_events() -> None:
