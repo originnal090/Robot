@@ -72,6 +72,8 @@ def test_detector_close_accepts_acllite_resource_without_public_destroy() -> Non
 
 
 def test_detectors_share_process_acl_runtime_between_sessions(tmp_path, monkeypatch) -> None:
+    current_context = threading.local()
+
     class Resource:
         instances = 0
         initializations = 0
@@ -79,14 +81,25 @@ def test_detectors_share_process_acl_runtime_between_sessions(tmp_path, monkeypa
         def __init__(self, device):
             type(self).instances += 1
             self.device = device
+            self.context = object()
 
         def init(self):
             type(self).initializations += 1
+
+    class Runtime:
+        contexts: ClassVar[list] = []
+
+        @classmethod
+        def set_context(cls, context):
+            current_context.value = context
+            cls.contexts.append(context)
+            return 0
 
     class Model:
         instances: ClassVar[list] = []
 
         def __init__(self, path):
+            assert current_context.value is ascend_yolo._acl_resource.context
             self.path = path
             self.destroyed = 0
             type(self).instances.append(self)
@@ -98,19 +111,36 @@ def test_detectors_share_process_acl_runtime_between_sessions(tmp_path, monkeypa
     resource_module.AclLiteResource = Resource
     model_module = types.ModuleType("acllite_model")
     model_module.AclLiteModel = Model
+    acl_module = types.ModuleType("acl")
+    acl_module.rt = Runtime
     monkeypatch.setitem(sys.modules, "acllite_resource", resource_module)
     monkeypatch.setitem(sys.modules, "acllite_model", model_module)
+    monkeypatch.setitem(sys.modules, "acl", acl_module)
     monkeypatch.setattr(ascend_yolo, "_acl_resource", None)
     monkeypatch.setattr(ascend_yolo, "_acl_resource_device", None)
     model_path = tmp_path / "model.om"
     model_path.write_bytes(b"test")
     npu = AscendYoloConfig(enabled=True, model=str(model_path))
 
-    first = AscendYoloDetector(npu, DetectorConfig())
-    first.close()
-    second = AscendYoloDetector(npu, DetectorConfig())
-    second.close()
+    failures = []
 
+    def run_session():
+        try:
+            detector = AscendYoloDetector(npu, DetectorConfig())
+            detector.close()
+        except BaseException as exc:  # noqa: BLE001 - propagate worker failures below.
+            failures.append(exc)
+
+    first = threading.Thread(target=run_session)
+    first.start()
+    first.join()
+    resource = ascend_yolo._acl_resource
+    second = threading.Thread(target=run_session)
+    second.start()
+    second.join()
+
+    assert failures == []
     assert Resource.instances == 1
     assert Resource.initializations == 1
+    assert Runtime.contexts == [resource.context, resource.context]
     assert [model.destroyed for model in Model.instances] == [1, 1]

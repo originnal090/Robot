@@ -39,7 +39,20 @@ def _process_acl_resource(device: int) -> Any:
             raise RuntimeError(
                 f"ACL runtime already uses device {_acl_resource_device}, cannot switch to {device}"
             )
-        return _acl_resource
+        resource = _acl_resource
+
+    # ACL contexts are thread-local.  Web sessions run in fresh worker threads,
+    # so retaining the process resource is not enough: every session thread
+    # must make that resource's context current before loading a model.
+    import acl
+
+    context = getattr(resource, "context", None)
+    if context is None:
+        raise RuntimeError("ACL runtime did not create a context")
+    ret = acl.rt.set_context(context)
+    if ret != 0:
+        raise RuntimeError(f"acl.rt.set_context failed ret_int={ret}")
+    return resource
 
 
 @dataclass(frozen=True, slots=True)
