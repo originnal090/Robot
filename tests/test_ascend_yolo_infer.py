@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import threading
+import types
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 from PIL import Image
 
-from hcirobot.ascend_yolo import AscendYoloDetector
+from hcirobot import ascend_yolo
+from hcirobot.ascend_yolo import AscendYoloConfig, AscendYoloDetector
+from hcirobot.detector import DetectorConfig
 
 SCRIPT = Path(__file__).parents[1] / "tools" / "ascend_yolo_infer.py"
 SPEC = importlib.util.spec_from_file_location("ascend_yolo_infer", SCRIPT)
@@ -64,3 +69,48 @@ def test_detector_close_accepts_acllite_resource_without_public_destroy() -> Non
     detector.close()
 
     assert model.destroyed == 1
+
+
+def test_detectors_share_process_acl_runtime_between_sessions(tmp_path, monkeypatch) -> None:
+    class Resource:
+        instances = 0
+        initializations = 0
+
+        def __init__(self, device):
+            type(self).instances += 1
+            self.device = device
+
+        def init(self):
+            type(self).initializations += 1
+
+    class Model:
+        instances: ClassVar[list] = []
+
+        def __init__(self, path):
+            self.path = path
+            self.destroyed = 0
+            type(self).instances.append(self)
+
+        def destroy(self):
+            self.destroyed += 1
+
+    resource_module = types.ModuleType("acllite_resource")
+    resource_module.AclLiteResource = Resource
+    model_module = types.ModuleType("acllite_model")
+    model_module.AclLiteModel = Model
+    monkeypatch.setitem(sys.modules, "acllite_resource", resource_module)
+    monkeypatch.setitem(sys.modules, "acllite_model", model_module)
+    monkeypatch.setattr(ascend_yolo, "_acl_resource", None)
+    monkeypatch.setattr(ascend_yolo, "_acl_resource_device", None)
+    model_path = tmp_path / "model.om"
+    model_path.write_bytes(b"test")
+    npu = AscendYoloConfig(enabled=True, model=str(model_path))
+
+    first = AscendYoloDetector(npu, DetectorConfig())
+    first.close()
+    second = AscendYoloDetector(npu, DetectorConfig())
+    second.close()
+
+    assert Resource.instances == 1
+    assert Resource.initializations == 1
+    assert [model.destroyed for model in Model.instances] == [1, 1]

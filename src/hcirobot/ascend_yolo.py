@@ -15,6 +15,32 @@ from .model import Detection
 
 DEFAULT_CONFIDENCE = 0.053634531795978546
 
+# ACL is process-scoped.  The ACLLite version shipped on the Orange Pi has no
+# public AclLiteResource.destroy(); dropping a detector releases its model but
+# can leave ACL initialized, so the next session fails with
+# ACL_ERROR_REPEAT_INITIALIZE.  Keep one runtime for the lifetime of the web
+# process and only create/destroy models per session.
+_acl_resource_lock = threading.Lock()
+_acl_resource: Any | None = None
+_acl_resource_device: int | None = None
+
+
+def _process_acl_resource(device: int) -> Any:
+    global _acl_resource, _acl_resource_device
+    with _acl_resource_lock:
+        if _acl_resource is None:
+            from acllite_resource import AclLiteResource
+
+            resource = AclLiteResource(device)
+            resource.init()
+            _acl_resource = resource
+            _acl_resource_device = device
+        elif _acl_resource_device != device:
+            raise RuntimeError(
+                f"ACL runtime already uses device {_acl_resource_device}, cannot switch to {device}"
+            )
+        return _acl_resource
+
 
 @dataclass(frozen=True, slots=True)
 class AscendYoloConfig:
@@ -73,9 +99,7 @@ def _box_iou(one: np.ndarray, many: np.ndarray) -> np.ndarray:
     y2 = np.minimum(one[3], many[:, 3])
     intersection = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
     one_area = max(0.0, float(one[2] - one[0])) * max(0.0, float(one[3] - one[1]))
-    many_area = np.maximum(0.0, many[:, 2] - many[:, 0]) * np.maximum(
-        0.0, many[:, 3] - many[:, 1]
-    )
+    many_area = np.maximum(0.0, many[:, 2] - many[:, 0]) * np.maximum(0.0, many[:, 3] - many[:, 1])
     return intersection / np.maximum(one_area + many_area - intersection, 1e-9)
 
 
@@ -150,7 +174,6 @@ class AscendYoloDetector:
         # These modules are provided by the Orange Pi CANN/ACLLite installation.
         # Import only when this backend is selected so desktop LAB mode remains portable.
         from acllite_model import AclLiteModel
-        from acllite_resource import AclLiteResource
 
         self.npu_config = npu
         self.config = temporal
@@ -159,14 +182,11 @@ class AscendYoloDetector:
         self._miss_streak = 0
         self._confirmed = False
         self._closed = False
-        self._resource = AclLiteResource(npu.device)
-        self._resource.init()
+        self._resource = _process_acl_resource(npu.device)
         try:
             self._model = AclLiteModel(str(model_path))
         except BaseException:
-            destroy_resource = getattr(self._resource, "destroy", None)
-            if destroy_resource is not None:
-                destroy_resource()
+            self._resource = None
             raise
 
     def update_config(self, config: DetectorConfig) -> None:
@@ -239,11 +259,8 @@ class AscendYoloDetector:
             if self._closed:
                 return
             self._closed = True
-            model, resource = self._model, self._resource
+            model = self._model
             self._model = self._resource = None
         model.destroy()
-        destroy_resource = getattr(resource, "destroy", None)
-        if destroy_resource is not None:
-            destroy_resource()
-        del model, resource
+        del model
         gc.collect()
