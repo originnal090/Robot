@@ -34,6 +34,15 @@ camera_control_url() {
     if [ "${IPHONE_MJPEG_ROTATION+x}" = x ]; then
         control_url="$control_url&rotation=$IPHONE_MJPEG_ROTATION"
     fi
+    if [ "${IPHONE_MJPEG_PORTRAIT_CROP+x}" = x ]; then
+        control_url="$control_url&portraitCrop=$IPHONE_MJPEG_PORTRAIT_CROP"
+    fi
+    if [ "${IPHONE_MJPEG_CROP_Y_PERCENT+x}" = x ]; then
+        control_url="$control_url&cropYPercent=$IPHONE_MJPEG_CROP_Y_PERCENT"
+    fi
+    if [ "${IPHONE_MJPEG_CROP_ZOOM_PERCENT+x}" = x ]; then
+        control_url="$control_url&cropZoomPercent=$IPHONE_MJPEG_CROP_ZOOM_PERCENT"
+    fi
     printf '%s\n' "$control_url"
 }
 

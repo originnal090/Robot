@@ -112,6 +112,9 @@ export IPHONE_MJPEG_STREAM_FPS=120
 export IPHONE_MJPEG_SEND_BUFFER=65536
 export IPHONE_MJPEG_JPEG_QUALITY=60
 export IPHONE_MJPEG_ROTATION=0
+export IPHONE_MJPEG_PORTRAIT_CROP=0
+export IPHONE_MJPEG_CROP_Y_PERCENT=70
+export IPHONE_MJPEG_CROP_ZOOM_PERCENT=100
 ```
 
 Port 18088 is an internal app-to-Python frame bridge bound only to
@@ -137,6 +140,27 @@ screen. NekoView opens the app with only the loopback bridge port by default,
 so it does not overwrite saved settings. Explicit `IPHONE_MJPEG_*` environment
 variables still override the corresponding saved values.
 
+App build 9 adds **Portrait mount → Crop to landscape**. It captures an upright
+portrait buffer using rotation 90° or 270°, crops it without stretching, and
+scales the selected region to the configured landscape resolution. **Crop
+vertical** is adjustable from 0% (top) to 100% (bottom), defaulting to 70%.
+**Crop zoom** ranges from 100% to 200%, defaulting to 100%; higher values make
+the ball larger but reduce field of view. The app now permits portrait screen
+orientation, and the settings panel scrolls on the shorter landscape screen.
+Each training session records these crop parameters in `metadata.json`.
+
+The equivalent environment configuration is:
+
+```sh
+export IPHONE_MJPEG_ROTATION=90
+export IPHONE_MJPEG_PORTRAIT_CROP=1
+export IPHONE_MJPEG_CROP_Y_PERCENT=70
+export IPHONE_MJPEG_CROP_ZOOM_PERCENT=100
+```
+
+Portrait crop requires rotation 90° or 270°. The stream remains 640×480 (or
+1280×720), so existing clients do not need a resolution or axis change.
+
 ## Start, inspect, and stop
 
 The start script first runs `lsof` and `netstat` when available, followed by a
@@ -153,6 +177,45 @@ chmod +x scripts/*.sh
 tail -f logs/camera.log
 ./scripts/stop.sh
 ```
+
+### View current Personal Hotspot clients
+
+The phone also includes a read-only hotspot client inspector. It combines the
+`bridge100` ARP reachability table with `/var/db/dhcpd_leases`, so the default
+view reports devices that iOS has heard from recently and enriches them with
+their DHCP name and lease expiry. It does not scan the subnet, send packets,
+change hotspot settings, or require root:
+
+```sh
+./scripts/hotspot_clients.sh
+./scripts/hotspot_clients.sh --watch 2
+./scripts/hotspot_clients.sh --json
+```
+
+Install a short command into `PATH` for the current account:
+
+```sh
+./scripts/install_hotspot_clients.sh
+exec zsh -l
+hotspot-clients
+```
+
+When run as `mobile`, the installer creates a small `~/bin/hotspot-clients`
+wrapper and adds `~/bin` to `~/.zprofile` once. When run as root, it installs
+the same wrapper under the rootless `/var/jb/usr/local/bin` (or rootful
+`/usr/local/bin`) and does not edit a user profile. It refuses to replace an
+unrelated existing command.
+
+Use `--all-leases` to include unexpired DHCP leases that are not currently in
+the ARP reachability table. Those rows are labeled `LEASE`, not `ONLINE`,
+because an unexpired lease alone does not prove that a device is still
+connected. The default `ONLINE` label means “present in Darwin's current
+link-layer reachability table”; a completely idle device may disappear when
+that cache expires and reappear as soon as it sends traffic.
+
+The tested rootless phone provides `arp` and `ifconfig` under
+`/var/jb/usr/sbin`; the script also checks standard rootful paths. The defaults
+can be overridden with `--interface` and `--lease-file`.
 
 The native app log lives inside its sandbox. Locate it without assuming the
 container UUID:
@@ -196,8 +259,10 @@ are available both in NekoView and at `logs/camera.log`.
 Environment variables can be added to the NekoView command if mounting changes:
 `IPHONE_MJPEG_WIDTH`, `IPHONE_MJPEG_HEIGHT`, `IPHONE_MJPEG_FPS`,
 `IPHONE_MJPEG_JPEG_QUALITY`, `IPHONE_MJPEG_ROTATION`, and
-`IPHONE_MJPEG_BRIDGE_PORT`. Defaults are 640x480, requested 30 FPS, JPEG quality
-60, rotation 0, and loopback bridge port 18088.
+`IPHONE_MJPEG_PORTRAIT_CROP`, `IPHONE_MJPEG_CROP_Y_PERCENT`,
+`IPHONE_MJPEG_CROP_ZOOM_PERCENT`, and `IPHONE_MJPEG_BRIDGE_PORT`. Defaults are
+640x480, requested 30 FPS, JPEG quality 60, rotation 0, portrait crop off,
+crop position 70%, crop zoom 100%, and loopback bridge port 18088.
 
 To remove only this service entry (leaving NekoView and all other services in
 place):

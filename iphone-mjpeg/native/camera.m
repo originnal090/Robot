@@ -119,6 +119,9 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
 @property(nonatomic) NSInteger configuredFPS;
 @property(nonatomic) CGFloat jpegQuality;
 @property(nonatomic) NSInteger rotation;
+@property(nonatomic) BOOL portraitCrop;
+@property(nonatomic) NSInteger cropYPercent;
+@property(nonatomic) NSInteger cropZoomPercent;
 @property(nonatomic, strong) AVCaptureSession *session;
 @property(nonatomic, strong) AVCaptureVideoDataOutput *videoOutput;
 @property(nonatomic, strong) dispatch_queue_t sessionQueue;
@@ -157,7 +160,10 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
                              height:(NSInteger)height
                                 fps:(NSInteger)fps
                             quality:(NSInteger)quality
-                           rotation:(NSInteger)rotation {
+                           rotation:(NSInteger)rotation
+                       portraitCrop:(BOOL)portraitCrop
+                       cropYPercent:(NSInteger)cropYPercent
+                    cropZoomPercent:(NSInteger)cropZoomPercent {
     self = [super init];
     if (self) {
         _socketPath = [socketPath copy];
@@ -167,6 +173,9 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         _configuredFPS = fps;
         _jpegQuality = MAX(1, MIN(100, quality)) / 100.0;
         _rotation = ((rotation % 360) + 360) % 360;
+        _portraitCrop = portraitCrop;
+        _cropYPercent = MAX(0, MIN(100, cropYPercent));
+        _cropZoomPercent = MAX(100, MIN(200, cropZoomPercent));
         _sessionQueue = dispatch_queue_create("local.iphonecamera.session", DISPATCH_QUEUE_SERIAL);
         _captureQueue = dispatch_queue_create("local.iphonecamera.capture", DISPATCH_QUEUE_SERIAL);
         _datasetQueue = dispatch_queue_create("local.iphonecamera.dataset", DISPATCH_QUEUE_SERIAL);
@@ -181,13 +190,19 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
                           height:(NSInteger)height
                              fps:(NSInteger)fps
                          quality:(NSInteger)quality
-                        rotation:(NSInteger)rotation {
+                        rotation:(NSInteger)rotation
+                    portraitCrop:(BOOL)portraitCrop
+                    cropYPercent:(NSInteger)cropYPercent
+                 cropZoomPercent:(NSInteger)cropZoomPercent {
     self = [self initWithSocketPath:@""
                               width:width
                              height:height
                                 fps:fps
                             quality:quality
-                           rotation:rotation];
+                           rotation:rotation
+                       portraitCrop:portraitCrop
+                       cropYPercent:cropYPercent
+                    cropZoomPercent:cropZoomPercent];
     if (self) {
         _tcpHost = [host copy];
         _tcpPort = port;
@@ -397,9 +412,10 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     self.running = YES;
     [NSThread detachNewThreadSelector:@selector(senderMain:) toTarget:self withObject:nil];
     [session startRunning];
-    IPMJLog(@"Camera started: requested=%ldx%ld@%ld quality=%.2f rotation=%ld",
+    IPMJLog(@"Camera started: requested=%ldx%ld@%ld quality=%.2f rotation=%ld portraitCrop=%@ cropY=%ld cropZoom=%ld",
           (long)self.requestedWidth, (long)self.requestedHeight, (long)self.requestedFPS,
-          self.jpegQuality, (long)self.rotation);
+          self.jpegQuality, (long)self.rotation, self.portraitCrop ? @"YES" : @"NO",
+          (long)self.cropYPercent, (long)self.cropZoomPercent);
     IPMJLog(@"Video output formats=%@ settings=%@ delegate=%@ connection(enabled=%@ active=%@)",
             output.availableVideoCVPixelFormatTypes, output.videoSettings,
             output.sampleBufferDelegate,
@@ -490,7 +506,10 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         @"configured_camera_fps": @(self.configuredFPS),
         @"target_dataset_fps": @(boundedFPS),
         @"jpeg_quality": @((NSInteger)llround(self.jpegQuality * 100.0)),
-        @"rotation": @(self.rotation)
+        @"rotation": @(self.rotation),
+        @"portrait_crop": @(self.portraitCrop),
+        @"crop_y_percent": @(self.cropYPercent),
+        @"crop_zoom_percent": @(self.cropZoomPercent)
     };
     NSData *metadataData = [NSJSONSerialization dataWithJSONObject:metadata
                                                            options:NSJSONWritingPrettyPrinted
@@ -597,10 +616,71 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     CGImageRef image = CGImageCreate(width, height, 8, 32, bytesPerRow, colorSpace,
                                      bitmapInfo, provider, NULL, false,
                                      kCGRenderingIntentDefault);
-    CFMutableDataRef encoded = CFDataCreateMutable(kCFAllocatorDefault, 0);
-    if (!image || !encoded) {
-        if (encoded) CFRelease(encoded);
+    if (!image) {
         if (image) CGImageRelease(image);
+        CGDataProviderRelease(provider);
+        CGColorSpaceRelease(colorSpace);
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        return nil;
+    }
+
+    CGImageRef outputImage = image;
+    CGImageRef croppedImage = NULL;
+    CGImageRef scaledImage = NULL;
+    CGContextRef scaleContext = NULL;
+    size_t outputWidth = width;
+    size_t outputHeight = height;
+    if (self.portraitCrop) {
+        outputWidth = (size_t)MAX(1, self.requestedWidth);
+        outputHeight = (size_t)MAX(1, self.requestedHeight);
+        CGFloat targetAspect = (CGFloat)outputWidth / (CGFloat)outputHeight;
+        CGFloat sourceAspect = (CGFloat)width / (CGFloat)height;
+        CGFloat cropWidth = (CGFloat)width;
+        CGFloat cropHeight = (CGFloat)height;
+        if (sourceAspect > targetAspect) {
+            cropWidth = cropHeight * targetAspect;
+        } else {
+            cropHeight = cropWidth / targetAspect;
+        }
+        CGFloat zoom = (CGFloat)self.cropZoomPercent / 100.0;
+        cropWidth = MAX(1.0, cropWidth / zoom);
+        cropHeight = MAX(1.0, cropHeight / zoom);
+        CGFloat cropX = ((CGFloat)width - cropWidth) * 0.5;
+        CGFloat anchorY = (CGFloat)self.cropYPercent / 100.0;
+        CGFloat cropY = ((CGFloat)height - cropHeight) * anchorY;
+        CGRect cropRect = CGRectMake(floor(cropX), floor(cropY),
+                                     floor(cropWidth), floor(cropHeight));
+        croppedImage = CGImageCreateWithImageInRect(image, cropRect);
+        if (croppedImage) {
+            scaleContext = CGBitmapContextCreate(NULL, outputWidth, outputHeight, 8,
+                                                  outputWidth * 4, colorSpace,
+                                                  kCGBitmapByteOrder32Little |
+                                                      kCGImageAlphaNoneSkipFirst);
+        }
+        if (scaleContext) {
+            CGContextSetInterpolationQuality(scaleContext, kCGInterpolationHigh);
+            CGContextDrawImage(scaleContext,
+                               CGRectMake(0, 0, outputWidth, outputHeight), croppedImage);
+            scaledImage = CGBitmapContextCreateImage(scaleContext);
+        }
+        if (!scaledImage) {
+            if (scaleContext) CGContextRelease(scaleContext);
+            if (croppedImage) CGImageRelease(croppedImage);
+            CGImageRelease(image);
+            CGDataProviderRelease(provider);
+            CGColorSpaceRelease(colorSpace);
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+            return nil;
+        }
+        outputImage = scaledImage;
+    }
+
+    CFMutableDataRef encoded = CFDataCreateMutable(kCFAllocatorDefault, 0);
+    if (!encoded) {
+        if (scaledImage) CGImageRelease(scaledImage);
+        if (scaleContext) CGContextRelease(scaleContext);
+        if (croppedImage) CGImageRelease(croppedImage);
+        CGImageRelease(image);
         CGDataProviderRelease(provider);
         CGColorSpaceRelease(colorSpace);
         CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
@@ -610,6 +690,9 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         CGImageDestinationCreateWithData(encoded, CFSTR("public.jpeg"), 1, NULL);
     if (!destination) {
         CFRelease(encoded);
+        if (scaledImage) CGImageRelease(scaledImage);
+        if (scaleContext) CGContextRelease(scaleContext);
+        if (croppedImage) CGImageRelease(croppedImage);
         CGImageRelease(image);
         CGDataProviderRelease(provider);
         CGColorSpaceRelease(colorSpace);
@@ -618,10 +701,13 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
     }
     NSDictionary *options = @{(id)kCGImageDestinationLossyCompressionQuality:
                                   @(self.jpegQuality)};
-    CGImageDestinationAddImage(destination, image, (__bridge CFDictionaryRef)options);
+    CGImageDestinationAddImage(destination, outputImage, (__bridge CFDictionaryRef)options);
     BOOL finalized = CGImageDestinationFinalize(destination);
 
     CFRelease(destination);
+    if (scaledImage) CGImageRelease(scaledImage);
+    if (scaleContext) CGContextRelease(scaleContext);
+    if (croppedImage) CGImageRelease(croppedImage);
     CGImageRelease(image);
     CGDataProviderRelease(provider);
     CGColorSpaceRelease(colorSpace);
@@ -631,8 +717,8 @@ static BOOL IPMJSendAll(int socketFd, const uint8_t *bytes, size_t length) {
         CFRelease(encoded);
         return nil;
     }
-    *widthOut = (uint32_t)width;
-    *heightOut = (uint32_t)height;
+    *widthOut = (uint32_t)outputWidth;
+    *heightOut = (uint32_t)outputHeight;
     return CFBridgingRelease(encoded);
 }
 
@@ -837,7 +923,7 @@ int main(int argc, const char *argv[]) {
         }
         NSString *socketPath = arguments[@"--socket"];
         if (!socketPath) {
-            fprintf(stderr, "Usage: iphone-camera --socket PATH [--width N --height N --fps N --quality N --rotation N]\n");
+            fprintf(stderr, "Usage: iphone-camera --socket PATH [--width N --height N --fps N --quality N --rotation N --portrait-crop 0|1 --crop-y-percent N --crop-zoom-percent N]\n");
             return 64;
         }
         NSInteger width = IPMJIntegerArgument(arguments, @"--width", 1280);
@@ -845,8 +931,13 @@ int main(int argc, const char *argv[]) {
         NSInteger fps = IPMJIntegerArgument(arguments, @"--fps", 30);
         NSInteger quality = IPMJIntegerArgument(arguments, @"--quality", 75);
         NSInteger rotation = IPMJIntegerArgument(arguments, @"--rotation", 0);
+        NSInteger portraitCrop = IPMJIntegerArgument(arguments, @"--portrait-crop", 0);
+        NSInteger cropYPercent = IPMJIntegerArgument(arguments, @"--crop-y-percent", 70);
+        NSInteger cropZoomPercent = IPMJIntegerArgument(arguments, @"--crop-zoom-percent", 100);
         if (width <= 0 || height <= 0 || fps <= 0 || quality < 1 || quality > 100 ||
-            (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)) {
+            (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270) ||
+            (portraitCrop != 0 && portraitCrop != 1) || cropYPercent < 0 ||
+            cropYPercent > 100 || cropZoomPercent < 100 || cropZoomPercent > 200) {
             fprintf(stderr, "Invalid camera arguments\n");
             return 64;
         }
@@ -858,7 +949,10 @@ int main(int argc, const char *argv[]) {
                                                                               height:height
                                                                                  fps:fps
                                                                              quality:quality
-                                                                            rotation:rotation];
+                                                                            rotation:rotation
+                                                                        portraitCrop:portraitCrop != 0
+                                                                        cropYPercent:cropYPercent
+                                                                     cropZoomPercent:cropZoomPercent];
         NSError *error = nil;
         if (![producer start:&error]) {
             IPMJLog(@"Camera initialization failed: %@", error.localizedDescription);

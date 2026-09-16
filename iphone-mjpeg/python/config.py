@@ -24,6 +24,9 @@ class Config:
     send_buffer_bytes: int = _integer("IPHONE_MJPEG_SEND_BUFFER", 64 * 1024)
     jpeg_quality: int = _integer("IPHONE_MJPEG_JPEG_QUALITY", 60)
     rotation: int = _integer("IPHONE_MJPEG_ROTATION", 0)
+    portrait_crop: int = _integer("IPHONE_MJPEG_PORTRAIT_CROP", 0)
+    crop_y_percent: int = _integer("IPHONE_MJPEG_CROP_Y_PERCENT", 70)
+    crop_zoom_percent: int = _integer("IPHONE_MJPEG_CROP_ZOOM_PERCENT", 100)
     stale_after_seconds: float = float(os.environ.get("IPHONE_MJPEG_STALE_AFTER", "2.0"))
     native_restart_seconds: float = float(os.environ.get("IPHONE_MJPEG_RESTART_DELAY", "2.0"))
 
@@ -40,6 +43,14 @@ class Config:
             raise ValueError("JPEG quality must be between 1 and 100")
         if self.rotation not in {0, 90, 180, 270}:
             raise ValueError("rotation must be 0, 90, 180, or 270")
+        if self.portrait_crop not in {0, 1}:
+            raise ValueError("portrait_crop must be 0 or 1")
+        if not 0 <= self.crop_y_percent <= 100:
+            raise ValueError("crop_y_percent must be between 0 and 100")
+        if not 100 <= self.crop_zoom_percent <= 200:
+            raise ValueError("crop_zoom_percent must be between 100 and 200")
+        if self.portrait_crop and self.rotation not in {90, 270}:
+            raise ValueError("portrait_crop requires rotation 90 or 270")
 
 
 def default_project_dir() -> Path:

@@ -8,6 +8,8 @@ __pycache__/
 *.egg-info/
 dist/
 artifacts/
+/weights/
+/yolo*.pt
 .zcode/
 .pytest-tmp/
 .pytest-tmp-*/

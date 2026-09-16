@@ -270,6 +270,12 @@ class NativeSupervisor:
             str(self.config.jpeg_quality),
             "--rotation",
             str(self.config.rotation),
+            "--portrait-crop",
+            str(self.config.portrait_crop),
+            "--crop-y-percent",
+            str(self.config.crop_y_percent),
+            "--crop-zoom-percent",
+            str(self.config.crop_zoom_percent),
         ]
 
     def _run(self) -> None:

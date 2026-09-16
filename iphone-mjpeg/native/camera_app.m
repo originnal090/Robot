@@ -7,6 +7,9 @@ static const NSInteger kDefaultHeight = 480;
 static const NSInteger kDefaultFPS = 30;
 static const NSInteger kDefaultQuality = 60;
 static const NSInteger kDefaultRotation = 0;
+static const NSInteger kDefaultPortraitCrop = 0;
+static const NSInteger kDefaultCropYPercent = 70;
+static const NSInteger kDefaultCropZoomPercent = 100;
 static const NSInteger kDefaultBridgePort = 18088;
 
 static NSString *const kWidthKey = @"camera.width";
@@ -14,6 +17,9 @@ static NSString *const kHeightKey = @"camera.height";
 static NSString *const kFPSKey = @"camera.fps";
 static NSString *const kQualityKey = @"camera.quality";
 static NSString *const kRotationKey = @"camera.rotation";
+static NSString *const kPortraitCropKey = @"camera.portraitCrop";
+static NSString *const kCropYPercentKey = @"camera.cropYPercent";
+static NSString *const kCropZoomPercentKey = @"camera.cropZoomPercent";
 static NSString *const kDatasetFPSKey = @"dataset.fps";
 
 @interface IPMJAppDelegate : UIResponder <UIApplicationDelegate>
@@ -25,13 +31,18 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
 @property(nonatomic, strong) NSURL *lastStartURL;
 @property(nonatomic) BOOL permissionRequestInFlight;
 @property(nonatomic) NSInteger currentBridgePort;
-@property(nonatomic, strong) UIView *settingsPanel;
+@property(nonatomic, strong) UIScrollView *settingsPanel;
 @property(nonatomic, strong) UISegmentedControl *resolutionControl;
 @property(nonatomic, strong) UISegmentedControl *fpsControl;
 @property(nonatomic, strong) UISegmentedControl *rotationControl;
+@property(nonatomic, strong) UISegmentedControl *portraitCropControl;
 @property(nonatomic, strong) UISegmentedControl *datasetFPSControl;
 @property(nonatomic, strong) UISlider *qualitySlider;
 @property(nonatomic, strong) UILabel *qualityLabel;
+@property(nonatomic, strong) UISlider *cropYSlider;
+@property(nonatomic, strong) UILabel *cropYLabel;
+@property(nonatomic, strong) UISlider *cropZoomSlider;
+@property(nonatomic, strong) UILabel *cropZoomLabel;
 @property(nonatomic, strong) UILabel *datasetStatusLabel;
 @property(nonatomic, strong) UIButton *recordButton;
 @property(nonatomic, strong) NSTimer *statusTimer;
@@ -82,11 +93,13 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     [controller.view addSubview:settingsButton];
 
     CGFloat panelWidth = 278;
-    UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(controller.view.bounds.size.width - panelWidth,
-                                                             0, panelWidth,
-                                                             controller.view.bounds.size.height)];
+    UIScrollView *panel = [[UIScrollView alloc]
+        initWithFrame:CGRectMake(controller.view.bounds.size.width - panelWidth,
+                                 0, panelWidth, controller.view.bounds.size.height)];
     panel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleHeight;
     panel.backgroundColor = [UIColor colorWithWhite:0.04 alpha:0.88];
+    panel.alwaysBounceVertical = YES;
+    panel.contentSize = CGSizeMake(panelWidth, 530);
 
     [panel addSubview:[self panelLabelWithText:@"Stream resolution" frame:CGRectMake(12, 8, 170, 18)]];
     UIButton *closeButton = [self buttonWithTitle:@"Done"
@@ -116,23 +129,48 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     self.rotationControl.frame = CGRectMake(12, 184, 254, 30);
     [panel addSubview:self.rotationControl];
 
+    [panel addSubview:[self panelLabelWithText:@"Portrait mount" frame:CGRectMake(12, 219, 250, 18)]];
+    self.portraitCropControl = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"Crop to landscape"]];
+    self.portraitCropControl.frame = CGRectMake(12, 239, 254, 30);
+    [self.portraitCropControl addTarget:self action:@selector(portraitModeChanged:)
+                       forControlEvents:UIControlEventValueChanged];
+    [panel addSubview:self.portraitCropControl];
+
+    self.cropYLabel = [self panelLabelWithText:@"Crop vertical" frame:CGRectMake(12, 274, 250, 18)];
+    [panel addSubview:self.cropYLabel];
+    self.cropYSlider = [[UISlider alloc] initWithFrame:CGRectMake(12, 291, 254, 28)];
+    self.cropYSlider.minimumValue = 0;
+    self.cropYSlider.maximumValue = 100;
+    [self.cropYSlider addTarget:self action:@selector(cropChanged:)
+               forControlEvents:UIControlEventValueChanged];
+    [panel addSubview:self.cropYSlider];
+
+    self.cropZoomLabel = [self panelLabelWithText:@"Crop zoom" frame:CGRectMake(12, 324, 250, 18)];
+    [panel addSubview:self.cropZoomLabel];
+    self.cropZoomSlider = [[UISlider alloc] initWithFrame:CGRectMake(12, 341, 254, 28)];
+    self.cropZoomSlider.minimumValue = 100;
+    self.cropZoomSlider.maximumValue = 200;
+    [self.cropZoomSlider addTarget:self action:@selector(cropChanged:)
+                  forControlEvents:UIControlEventValueChanged];
+    [panel addSubview:self.cropZoomSlider];
+
     UIButton *applyButton = [self buttonWithTitle:@"Apply & save"
                                             action:@selector(applySettings:)
-                                             frame:CGRectMake(12, 221, 254, 34)];
+                                             frame:CGRectMake(12, 375, 254, 34)];
     [panel addSubview:applyButton];
 
-    [panel addSubview:[self panelLabelWithText:@"Training capture FPS" frame:CGRectMake(12, 261, 250, 18)]];
+    [panel addSubview:[self panelLabelWithText:@"Training capture FPS" frame:CGRectMake(12, 415, 250, 18)]];
     self.datasetFPSControl = [[UISegmentedControl alloc] initWithItems:@[@"1", @"5", @"15", @"30"]];
-    self.datasetFPSControl.frame = CGRectMake(12, 281, 150, 30);
+    self.datasetFPSControl.frame = CGRectMake(12, 435, 150, 30);
     [panel addSubview:self.datasetFPSControl];
 
     self.recordButton = [self buttonWithTitle:@"Start capture"
                                         action:@selector(toggleDatasetRecording:)
-                                         frame:CGRectMake(170, 281, 96, 30)];
+                                         frame:CGRectMake(170, 435, 96, 30)];
     [panel addSubview:self.recordButton];
 
     self.datasetStatusLabel = [self panelLabelWithText:@"Not recording"
-                                                 frame:CGRectMake(12, 316, 254, 48)];
+                                                 frame:CGRectMake(12, 470, 254, 48)];
     self.datasetStatusLabel.numberOfLines = 2;
     self.datasetStatusLabel.font = [UIFont systemFontOfSize:11];
     [panel addSubview:self.datasetStatusLabel];
@@ -154,7 +192,9 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     [[NSUserDefaults standardUserDefaults] registerDefaults:@{
         kWidthKey: @(kDefaultWidth), kHeightKey: @(kDefaultHeight),
         kFPSKey: @(kDefaultFPS), kQualityKey: @(kDefaultQuality),
-        kRotationKey: @(kDefaultRotation), kDatasetFPSKey: @2
+        kRotationKey: @(kDefaultRotation), kPortraitCropKey: @(kDefaultPortraitCrop),
+        kCropYPercentKey: @(kDefaultCropYPercent),
+        kCropZoomPercentKey: @(kDefaultCropZoomPercent), kDatasetFPSKey: @2
     }];
     self.currentBridgePort = kDefaultBridgePort;
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
@@ -202,13 +242,18 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
 }
 
 - (void)persistWidth:(NSInteger)width height:(NSInteger)height fps:(NSInteger)fps
-              quality:(NSInteger)quality rotation:(NSInteger)rotation {
+              quality:(NSInteger)quality rotation:(NSInteger)rotation
+         portraitCrop:(NSInteger)portraitCrop cropYPercent:(NSInteger)cropYPercent
+      cropZoomPercent:(NSInteger)cropZoomPercent {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     [defaults setInteger:width forKey:kWidthKey];
     [defaults setInteger:height forKey:kHeightKey];
     [defaults setInteger:fps forKey:kFPSKey];
     [defaults setInteger:quality forKey:kQualityKey];
     [defaults setInteger:rotation forKey:kRotationKey];
+    [defaults setInteger:portraitCrop forKey:kPortraitCropKey];
+    [defaults setInteger:cropYPercent forKey:kCropYPercentKey];
+    [defaults setInteger:cropZoomPercent forKey:kCropZoomPercentKey];
 }
 
 - (void)loadControlsFromDefaults {
@@ -216,16 +261,22 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     NSInteger width = [defaults integerForKey:kWidthKey];
     NSInteger fps = [defaults integerForKey:kFPSKey];
     NSInteger rotation = [defaults integerForKey:kRotationKey];
+    NSInteger portraitCrop = [defaults integerForKey:kPortraitCropKey];
     NSInteger datasetFPS = [defaults integerForKey:kDatasetFPSKey];
     self.resolutionControl.selectedSegmentIndex = width > 640 ? 1 : 0;
     self.fpsControl.selectedSegmentIndex = fps <= 15 ? 0 : (fps <= 30 ? 1 : 2);
     self.rotationControl.selectedSegmentIndex = rotation == 90 ? 1 :
                                                   (rotation == 180 ? 2 : (rotation == 270 ? 3 : 0));
+    self.portraitCropControl.selectedSegmentIndex = portraitCrop ? 1 : 0;
     self.datasetFPSControl.selectedSegmentIndex = datasetFPS <= 1 ? 0 :
                                                      (datasetFPS <= 5 ? 1 :
                                                       (datasetFPS <= 15 ? 2 : 3));
     self.qualitySlider.value = [defaults integerForKey:kQualityKey];
+    self.cropYSlider.value = [defaults integerForKey:kCropYPercentKey];
+    self.cropZoomSlider.value = [defaults integerForKey:kCropZoomPercentKey];
     [self qualityChanged:self.qualitySlider];
+    [self cropChanged:self.cropYSlider];
+    [self portraitModeChanged:self.portraitCropControl];
 }
 
 - (void)startFromURL:(NSURL *)url {
@@ -267,16 +318,27 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
                                   fallback:[defaults integerForKey:kQualityKey]];
     NSInteger rotation = [self valueForName:@"rotation" components:components
                                    fallback:[defaults integerForKey:kRotationKey]];
+    NSInteger portraitCrop = [self valueForName:@"portraitCrop" components:components
+                                       fallback:[defaults integerForKey:kPortraitCropKey]];
+    NSInteger cropYPercent = [self valueForName:@"cropYPercent" components:components
+                                       fallback:[defaults integerForKey:kCropYPercentKey]];
+    NSInteger cropZoomPercent = [self valueForName:@"cropZoomPercent" components:components
+                                          fallback:[defaults integerForKey:kCropZoomPercentKey]];
     NSInteger bridgePort = [self valueForName:@"bridgePort" components:components
                                      fallback:self.currentBridgePort ?: kDefaultBridgePort];
     if (width <= 0 || height <= 0 || fps <= 0 || quality < 1 || quality > 100 ||
         bridgePort < 1 || bridgePort > 65535 ||
-        (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)) {
+        (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270) ||
+        (portraitCrop != 0 && portraitCrop != 1) || cropYPercent < 0 ||
+        cropYPercent > 100 || cropZoomPercent < 100 || cropZoomPercent > 200 ||
+        (portraitCrop && rotation != 90 && rotation != 270)) {
         self.statusLabel.text = @" Invalid camera configuration";
         return;
     }
 
-    [self persistWidth:width height:height fps:fps quality:quality rotation:rotation];
+    [self persistWidth:width height:height fps:fps quality:quality rotation:rotation
+          portraitCrop:portraitCrop cropYPercent:cropYPercent
+       cropZoomPercent:cropZoomPercent];
     self.currentBridgePort = bridgePort;
     [self loadControlsFromDefaults];
     [self.producer stop];
@@ -286,7 +348,10 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
                                                          height:height
                                                             fps:fps
                                                         quality:quality
-                                                       rotation:rotation];
+                                                       rotation:rotation
+                                                   portraitCrop:portraitCrop != 0
+                                                   cropYPercent:cropYPercent
+                                                cropZoomPercent:cropZoomPercent];
     NSError *error = nil;
     if (![self.producer start:&error]) {
         IPMJLogMessage([NSString stringWithFormat:@"Camera producer failed: %@",
@@ -304,8 +369,10 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     self.previewLayer = preview;
     [self updatePreviewGeometry];
     self.statusLabel.text = [NSString stringWithFormat:
-        @" LIVE · %ld×%ld @ %ld\n JPEG %ld · rotation %ld°\n HTTP :8088 · Config to adjust",
-        (long)width, (long)height, (long)fps, (long)quality, (long)rotation];
+        @" LIVE · %ld×%ld @ %ld\n JPEG %ld · rotation %ld°\n %@ · crop %ld%% · zoom %.2f×",
+        (long)width, (long)height, (long)fps, (long)quality, (long)rotation,
+        portraitCrop ? @"PORTRAIT MOUNT" : @"LANDSCAPE",
+        (long)cropYPercent, cropZoomPercent / 100.0];
 }
 
 - (void)updatePreviewGeometry {
@@ -331,6 +398,28 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     self.qualityLabel.text = [NSString stringWithFormat:@"JPEG quality · %ld", (long)quality];
 }
 
+- (void)cropChanged:(UISlider *)slider {
+    (void)slider;
+    NSInteger cropY = (NSInteger)llround(self.cropYSlider.value);
+    NSInteger cropZoom = (NSInteger)llround(self.cropZoomSlider.value);
+    self.cropYLabel.text = [NSString stringWithFormat:
+        @"Crop vertical · %ld%% (0 top / 100 bottom)", (long)cropY];
+    self.cropZoomLabel.text = [NSString stringWithFormat:@"Crop zoom · %.2f×",
+                                                        cropZoom / 100.0];
+}
+
+- (void)portraitModeChanged:(UISegmentedControl *)control {
+    BOOL enabled = control.selectedSegmentIndex == 1;
+    if (enabled && self.rotationControl.selectedSegmentIndex != 1 &&
+        self.rotationControl.selectedSegmentIndex != 3) {
+        self.rotationControl.selectedSegmentIndex = 1;
+    }
+    self.cropYSlider.enabled = enabled;
+    self.cropZoomSlider.enabled = enabled;
+    self.cropYLabel.alpha = enabled ? 1.0 : 0.45;
+    self.cropZoomLabel.alpha = enabled ? 1.0 : 0.45;
+}
+
 - (void)applySettings:(UIButton *)sender {
     (void)sender;
     NSInteger width = self.resolutionControl.selectedSegmentIndex == 1 ? 1280 : 640;
@@ -340,10 +429,16 @@ static NSString *const kDatasetFPSKey = @"dataset.fps";
     NSInteger fps = fpsValues[MAX(0, self.fpsControl.selectedSegmentIndex)];
     NSInteger rotation = rotationValues[MAX(0, self.rotationControl.selectedSegmentIndex)];
     NSInteger quality = (NSInteger)llround(self.qualitySlider.value);
-    [self persistWidth:width height:height fps:fps quality:quality rotation:rotation];
+    NSInteger portraitCrop = self.portraitCropControl.selectedSegmentIndex == 1 ? 1 : 0;
+    NSInteger cropYPercent = (NSInteger)llround(self.cropYSlider.value);
+    NSInteger cropZoomPercent = (NSInteger)llround(self.cropZoomSlider.value);
+    [self persistWidth:width height:height fps:fps quality:quality rotation:rotation
+          portraitCrop:portraitCrop cropYPercent:cropYPercent
+       cropZoomPercent:cropZoomPercent];
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:
-        @"iphonecamera://start?width=%ld&height=%ld&fps=%ld&quality=%ld&rotation=%ld&bridgePort=%ld",
+        @"iphonecamera://start?width=%ld&height=%ld&fps=%ld&quality=%ld&rotation=%ld&portraitCrop=%ld&cropYPercent=%ld&cropZoomPercent=%ld&bridgePort=%ld",
         (long)width, (long)height, (long)fps, (long)quality, (long)rotation,
+        (long)portraitCrop, (long)cropYPercent, (long)cropZoomPercent,
         (long)self.currentBridgePort]];
     self.lastStartURL = url;
     [self startFromURL:url];

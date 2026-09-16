@@ -22,6 +22,8 @@ SPEC.loader.exec_module(server_module)
 FrameStore = server_module.FrameStore
 MJPEGServer = server_module.MJPEGServer
 NativeFrameReceiver = server_module.NativeFrameReceiver
+NativeSupervisor = server_module.NativeSupervisor
+Config = server_module.Config
 
 JPEG_ONE = b"\xff\xd8one\xff\xd9"
 JPEG_TWO = b"\xff\xd8two\xff\xd9"
@@ -121,6 +123,31 @@ def test_native_receiver_accepts_loopback_tcp_frame(tmp_path):
         assert received.height == 480
     finally:
         receiver.stop()
+
+
+def test_native_supervisor_forwards_portrait_crop_settings(tmp_path):
+    config = Config(
+        rotation=90,
+        portrait_crop=1,
+        crop_y_percent=72,
+        crop_zoom_percent=115,
+    )
+    config.validate()
+    supervisor = NativeSupervisor(tmp_path / "iphone-camera", tmp_path / "frames.sock",
+                                  config, FrameStore())
+    command = supervisor._command()
+    assert command[command.index("--portrait-crop") + 1] == "1"
+    assert command[command.index("--crop-y-percent") + 1] == "72"
+    assert command[command.index("--crop-zoom-percent") + 1] == "115"
+
+
+def test_portrait_crop_requires_portrait_rotation():
+    try:
+        Config(rotation=0, portrait_crop=1).validate()
+    except ValueError as error:
+        assert "rotation 90 or 270" in str(error)
+    else:
+        raise AssertionError("portrait crop should reject a landscape rotation")
 
 
 def test_mjpeg_multipart_headers_and_disconnect_do_not_stop_server():
