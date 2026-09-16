@@ -13,7 +13,7 @@ from typing import Any
 
 import cv2
 
-from .app import RuntimeEvent, SessionControl
+from .app import ArmMode, RuntimeEvent, SessionControl
 from .config import (
     ascend_yolo_config,
     controller_config,
@@ -404,7 +404,14 @@ class SessionService(SessionRuntime):
             self.model.request_stop()
         self._clear_frame()
 
-    def command(self, client: str, lease: str, session_id: int, operation: str) -> None:
+    def command(
+        self,
+        client: str,
+        lease: str,
+        session_id: int,
+        operation: str,
+        arm_mode: ArmMode = "direct",
+    ) -> None:
         with self._lock:
             self._require_owner(client, lease, session_id)
             if operation == "reset":
@@ -412,18 +419,18 @@ class SessionService(SessionRuntime):
                     raise ControlConflict("等待会话结束后再复位")
                 self.model.reset()
             elif operation == "arm":
-                self.request_arm()
+                self.request_arm(arm_mode)
             elif operation == "disarm":
                 self.request_disarm()
             else:
                 raise ValueError("未知会话指令")
 
     # GamepadTeleop uses these same guarded operations as the web handlers.
-    def request_arm(self) -> None:
+    def request_arm(self, mode: ArmMode = "direct") -> None:
         if not self.model.can_arm or self.session_control is None:
             raise ControlConflict("当前不能武装，请检查会话、画面和故障状态")
         self.session_control.request_manual(0.0, 0.0, MANUAL_SECONDS)
-        self.session_control.request_arm()
+        self.session_control.request_arm(mode)
         self.model.armed = True  # gate manual requests before the worker acknowledges
 
     def request_disarm(self) -> None:

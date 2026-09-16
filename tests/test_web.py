@@ -339,8 +339,11 @@ def test_pending_arm_blocks_manual_before_ack(service):
 
 def test_authentication_cookie_origin_and_static_assets(service):
     with TestClient(create_app(service=service, token="test-access")) as client:
-        assert client.get("/").status_code == 200
-        assert "app.js" in client.get("/").text
+        index = client.get("/")
+        assert index.status_code == 200
+        assert "app.js" in index.text
+        assert 'id="arm-mode"' in index.text
+        assert 'id="startup-forward"' not in index.text
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/api/state").status_code == 401
         assert client.post("/api/session/estop", json={}).status_code == 401
@@ -378,6 +381,20 @@ def test_unity_stream_is_public_read_only_route(service):
     assert requires_auth("/stream.mjpg")
     assert not requires_auth("/unity-stream.mjpg")
     assert "GET" in routes["/unity-stream.mjpg"]
+
+
+def test_arm_mode_is_validated_and_forwarded(service):
+    calls = []
+    service.command = lambda *args: calls.append(args)
+    payload = {"client_id": "browser", "lease": "lease", "session_id": 7}
+
+    with TestClient(create_app(service=service)) as client:
+        response = client.post("/api/session/arm", json={**payload, "arm_mode": "startup"})
+        invalid = client.post("/api/session/arm", json={**payload, "arm_mode": "sometimes"})
+
+    assert response.status_code == 200
+    assert calls == [("browser", "lease", 7, "arm", "startup")]
+    assert invalid.status_code == 422
 
 
 def test_missing_profile_fails_before_hardware_and_recovers(service, monkeypatch):

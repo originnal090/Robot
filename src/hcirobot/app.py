@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 from numpy.typing import NDArray
@@ -78,6 +78,7 @@ class ManualCommand:
 
 
 _MANUAL_SOURCES = frozenset({"manual", "gamepad"})
+ArmMode = Literal["direct", "startup"]
 
 
 class SessionControl:
@@ -86,6 +87,7 @@ class SessionControl:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._arm = threading.Event()
+        self._arm_mode: ArmMode | None = None
         self._disarm = threading.Event()
         self._estop = threading.Event()
         self._lock = threading.Lock()
@@ -106,9 +108,13 @@ class SessionControl:
         if stopped:
             self._cancel_robot()
 
-    def request_arm(self) -> None:
+    def request_arm(self, mode: ArmMode = "direct") -> None:
+        if mode not in ("direct", "startup"):
+            raise ValueError("arm mode must be direct or startup")
         if not self._estop.is_set():
-            self._arm.set()
+            with self._lock:
+                self._arm_mode = mode
+                self._arm.set()
 
     def request_disarm(self) -> None:
         """Preempt autonomy without stopping the session (gamepad takeover)."""
@@ -167,10 +173,17 @@ class SessionControl:
             return self._actions.pop(0) if self._actions else None
 
     def consume_arm(self) -> bool:
-        if self._arm.is_set():
+        return self.consume_arm_mode() is not None
+
+    def consume_arm_mode(self) -> ArmMode | None:
+        if not self._arm.is_set():
+            return None
+        with self._lock:
+            if not self._arm.is_set():
+                return None
             self._arm.clear()
-            return True
-        return False
+            mode, self._arm_mode = self._arm_mode or "direct", None
+            return mode
 
     def consume_disarm(self) -> bool:
         if self._disarm.is_set():
@@ -587,9 +600,9 @@ def run_loop(
     walk_command = RobotCommand.stop()
     last_radius_ratio: float | None = None
 
-    def arm_autonomy(now: float) -> None:
-        if startup_route is not None:
-            startup_route.arm(now)
+    def arm_autonomy(now: float, *, use_startup: bool) -> None:
+        if startup_route is not None and use_startup:
+            startup_route.arm(now, forward=True)
         else:
             controller.arm(now)
 
@@ -599,7 +612,10 @@ def run_loop(
             startup_route.reset()
 
     if armed:
-        arm_autonomy(clock())
+        if startup_route is not None:
+            startup_route.arm(clock())
+        else:
+            controller.arm(clock())
 
     frames: queue.Queue = queue.Queue(maxsize=1)
     capture_stop = threading.Event()
@@ -696,7 +712,8 @@ def run_loop(
                     send_command(RobotCommand.stop(), "disarmed")
                 if had_autonomy:
                     emit("disarmed", "manual takeover: autonomy disarmed")
-            if session.consume_arm():
+            arm_mode = session.consume_arm_mode()
+            if arm_mode is not None:
                 if vision_hold_active:
                     if resume_autonomy_on_video_recovery:
                         resume_autonomy_pending = True
@@ -710,7 +727,7 @@ def run_loop(
                         last_radius_ratio = None
                         if approach_gate is not None:
                             approach_gate.hold_settle()
-                        arm_autonomy(clock())
+                        arm_autonomy(clock(), use_startup=arm_mode == "startup")
                     emit("armed", "autonomy armed")
 
             if step_id is not None:
@@ -842,7 +859,7 @@ def run_loop(
                     last_radius_ratio = None
                     if approach_gate is not None:
                         approach_gate.hold_settle()
-                    arm_autonomy(clock())
+                    arm_autonomy(clock(), use_startup=False)
                     is_armed = True
                     emit(
                         "autonomy_resumed",

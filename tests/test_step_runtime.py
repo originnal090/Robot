@@ -191,3 +191,43 @@ def test_startup_route_optionally_moves_forward_then_turns_right_until_stable_ta
     assert any(
         event.decision and event.decision.state is ControlState.STARTUP_TURN for event in events
     )
+
+
+@pytest.mark.parametrize(("arm_mode", "uses_startup"), [("startup", True), ("direct", False)])
+def test_each_arm_request_selects_or_skips_startup_route(arm_mode, uses_startup):
+    robot, session, events = RecordingRobot(), SessionControl(), []
+
+    def sink(event):
+        events.append(event)
+        if event.kind == "started":
+            session.request_arm(arm_mode)
+        elif event.kind == "frame" and event.frame_count >= 5:
+            session.request_stop()
+
+    result = run_loop(
+        SyntheticBallSource(SyntheticConfig(fps=100, realtime=True)),
+        Detector(),
+        VisualApproachController(ControllerConfig()),
+        robot,
+        armed=False,
+        event_sink=sink,
+        session=session,
+        max_frames=20,
+        startup_route=StartupRoute(
+            StartupRouteConfig(
+                enabled=True,
+                forward_enabled=False,
+                forward_seconds=30.0,
+            )
+        ),
+    )
+
+    assert result.termination == "stop_requested"
+    startup_frames = [
+        event
+        for event in events
+        if event.decision is not None and event.decision.state is ControlState.STARTUP_FORWARD
+    ]
+    assert bool(startup_frames) is uses_startup
+    if uses_startup:
+        assert all(event.output_v > 0 for event in startup_frames)

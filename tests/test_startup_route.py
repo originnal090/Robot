@@ -47,6 +47,16 @@ def test_forward_is_disabled_by_default() -> None:
     assert turn.command.steer > 0
 
 
+def test_forward_can_be_selected_for_one_arm_only() -> None:
+    route = StartupRoute(StartupRouteConfig(enabled=True, forward_seconds=16))
+
+    route.arm(0.0, forward=True)
+    assert route.update(missing(), 1.0).command.velocity > 0
+    route.reset()
+    route.arm(2.0)
+    assert route.update(missing(), 2.0).command == RobotCommand.stop()
+
+
 def test_unconfirmed_candidate_does_not_end_scan() -> None:
     route = StartupRoute(StartupRouteConfig(enabled=True, acquire_frames=6))
     route.arm(0.0)

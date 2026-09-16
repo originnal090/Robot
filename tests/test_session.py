@@ -15,9 +15,12 @@ def build_runtime(robot: RecordingRobot, session: SessionControl, sink):
         # before the consumer sees it.
         SyntheticBallSource(SyntheticConfig(fps=100.0, realtime=True)),
         RedBallDetector(DetectorConfig()),
-        VisualApproachController(ControllerConfig(
-            settle_seconds=0.01, sense_seconds=0.02,
-        )),
+        VisualApproachController(
+            ControllerConfig(
+                settle_seconds=0.01,
+                sense_seconds=0.02,
+            )
+        ),
         robot,
         armed=False,
         session=session,
@@ -40,6 +43,17 @@ def test_attach_after_stop_cancels_robot_immediately() -> None:
     robot = CancellableRobot()
     session.attach_robot(robot)
     assert robot.cancelled
+
+
+def test_arm_request_carries_one_shot_start_mode() -> None:
+    session = SessionControl()
+
+    session.request_arm("startup")
+
+    assert session.consume_arm_mode() == "startup"
+    assert session.consume_arm_mode() is None
+    session.request_arm()
+    assert session.consume_arm_mode() == "direct"
 
 
 def test_session_can_arm_then_stop_from_events() -> None:

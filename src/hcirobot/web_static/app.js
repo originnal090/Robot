@@ -136,6 +136,7 @@ function render() {
   $("start").textContent = $("control-only").checked ? "▶ 开始手动会话" : "▶ 开始预览";
   $("arm").disabled = !owns || !(state?.armed || caps.arm) || busy;
   $("arm").textContent = state?.armed ? "解除自治" : "武装自治";
+  $("arm-mode").disabled = !owns || !caps.arm || busy || Boolean(state?.armed);
   $("stop").disabled = !connected || !caps.stop;
   $("reset").disabled = !owns || !caps.reset || busy;
   $("claim").disabled = !connected || busy || (state?.owner !== "none" && !owns);
@@ -222,7 +223,6 @@ function connect() {
     lease = "";
     clientId = "";
     $("browser-gamepad").checked = false;
-    $("startup-forward").checked = false;
     clearDrive();
     render();
     reconnectTimer = setTimeout(connect, 1500);
@@ -241,10 +241,10 @@ async function initialize() {
     fillSvmModels(defaults.svm_presets ?? [], defaults.svm_model_path ?? "");
     updateDetectorFields();
     $("obstacle").checked = defaults.obstacle;
-    $("startup-forward").checked = false;
-    $("startup-forward").disabled = !defaults.startup_enabled;
-    $("startup-forward-label").textContent = defaults.startup_enabled
-      ? `本次会话起步先直行（${defaults.startup_forward_seconds} 秒）`
+    $("arm-mode").value = "direct";
+    $("arm-mode-startup").disabled = !defaults.startup_enabled;
+    $("arm-mode-startup").textContent = defaults.startup_enabled
+      ? `先直走 ${defaults.startup_forward_seconds} 秒再自治`
       : "起步路线未启用";
     $("local-gamepad").disabled = !defaults.gamepad_enabled;
     fillTuning(defaults);
@@ -284,16 +284,22 @@ $("start").onclick = () => perform(async () => {
     client_id: clientId, lease, source: $("source").value.trim(), backend: $("backend").value,
     host: $("host").value.trim(), port: Number($("port").value), mirror: $("mirror").value.trim(),
     control_only: $("control-only").checked, local_gamepad: $("local-gamepad").checked,
-    obstacle: $("obstacle").checked, startup_forward: $("startup-forward").checked,
+    obstacle: $("obstacle").checked,
     approach_mode: $("approach").value,
     detector_backend: detector, detector_model_path: modelPath,
   });
-  // The forward lead-in is consumed once. A restarted/reconnected session must
-  // not unexpectedly repeat a long open-loop movement.
-  $("startup-forward").checked = false;
   setTab("status");
 });
-$("arm").onclick = () => perform(() => api(`/api/session/${state.armed ? "disarm" : "arm"}`, context()));
+$("arm").onclick = () => perform(async () => {
+  if (state.armed) {
+    await api("/api/session/disarm", context());
+    return;
+  }
+  const armMode = $("arm-mode").value;
+  await api("/api/session/arm", {...context(), arm_mode: armMode});
+  // A long open-loop lead-in is always opt-in for each individual arm action.
+  $("arm-mode").value = "direct";
+});
 $("reset").onclick = () => perform(() => api("/api/session/reset", context()));
 // Stop is independent of in-flight tuning, connect and capture requests.
 for (const operation of ["stop", "estop"]) $(operation).onclick = async () => {

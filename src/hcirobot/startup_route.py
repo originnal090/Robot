@@ -62,12 +62,9 @@ class StartupRoute:
     def active(self) -> bool:
         return self._phase not in ("idle", "complete")
 
-    def arm(self, now: float) -> None:
-        self._phase = (
-            "forward"
-            if self.config.forward_enabled and self.config.forward_seconds > 0
-            else "settle"
-        )
+    def arm(self, now: float, *, forward: bool | None = None) -> None:
+        use_forward = self.config.forward_enabled if forward is None else forward
+        self._phase = "forward" if use_forward and self.config.forward_seconds > 0 else "settle"
         self._phase_started = now
         self._target_streak = 0
 
