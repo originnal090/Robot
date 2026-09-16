@@ -85,8 +85,9 @@
               <div class="host-row"><div><label for="host">机器人地址</label><input id="host" value="127.0.0.1"></div><div><label for="port">端口</label><input id="port" type="number" min="1" max="65535" value="5075"></div></div>
               <label for="mirror">Unity 镜像地址（可选）</label><input id="mirror" placeholder="IP:5075">
               <label for="approach">接近模式</label><select id="approach"><option value="normal_then_slow">正常 → 慢速接近</option><option value="normal">正常节拍</option><option value="slow_realtime">慢速实时</option></select>
-              <label for="detector">识别器</label><select id="detector"><option value="lab">LAB 颜色与轮廓</option><option value="ascend">Ascend NPU YOLO</option><option value="custom">端侧 SVM / Hybrid 模型</option></select>
-              <div id="model-field" hidden><label for="model-path">服务端模型路径</label><input id="model-path" placeholder="/home/…/yolo11n_640.om"><small class="muted">Ascend 使用 .om；自定义识别器支持 .json / .npz</small></div>
+              <label for="detector">识别器</label><select id="detector"><option value="lab">LAB 颜色与轮廓</option><option value="ascend">Ascend NPU YOLO</option><option value="svm">端侧 SVM / Hybrid</option></select>
+              <div id="ascend-model-field" hidden><label for="ascend-model-path">Ascend 模型</label><input id="ascend-model-path" placeholder="/home/…/yolo11n_640.om"><small class="muted">仅使用香橙派上的 .om 模型</small></div>
+              <div id="svm-model-field" hidden><label for="svm-model">SVM / Hybrid 版本</label><select id="svm-model"></select><small id="svm-description" class="muted"></small><div id="svm-custom-field" hidden><label for="svm-custom-path">自定义服务端路径</label><input id="svm-custom-path" placeholder="artifacts/…/profile.json"><small class="muted">支持 .json 配置或 .npz 权重</small></div></div>
               <div class="session-options"><label class="checkbox"><input id="obstacle" type="checkbox"> 启用局部避障</label><label class="checkbox"><input id="control-only" type="checkbox"> 仅手动控制，不连接图传</label><label class="checkbox"><input id="local-gamepad" type="checkbox"> 控制权交给香橙派手柄</label></div>
               <small class="muted">本机手柄模式下使用 B 键武装，网页可监看、停止和急停。</small>
             </fieldset>

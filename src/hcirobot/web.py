@@ -49,7 +49,8 @@ class StartRequest(Owner):
     local_gamepad: bool = False
     obstacle: bool | None = None
     approach_mode: Literal["normal", "normal_then_slow", "slow_realtime"] | None = None
-    edge_model_path: str | None = Field(default=None, max_length=2048)
+    detector_backend: Literal["lab", "ascend", "svm"] | None = None
+    detector_model_path: str | None = Field(default=None, max_length=2048)
 
 
 class TuneRequest(SessionRequest):

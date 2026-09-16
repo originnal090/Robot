@@ -5,7 +5,8 @@ let ws, state, defaults, clientId = "", lease = "", sequence = 0;
 let connected = false, busy = false, manualAllowed = false, claimedAt = 0;
 let drive = null, lastDrive = false, previousButtons = [], headLevel = 0;
 let tuningSession = -1, tuningDirty = false, lastLogVersion = -1, padToggleBusy = false;
-let reconnectTimer, noticeTimer;
+let reconnectTimer, noticeTimer, lastHeartbeatAt = 0;
+const CUSTOM_SVM = "__custom__";
 
 function setTab(name) {
   document.querySelectorAll("[data-tab]").forEach((button) => {
@@ -88,7 +89,13 @@ async function perform(callback) {
 function send(payload) {
   if (connected && ws?.readyState === WebSocket.OPEN && ws.bufferedAmount < 4096) {
     ws.send(JSON.stringify(payload));
+    return true;
   }
+  return false;
+}
+function sendHeartbeat() {
+  if (!lease || document.hidden || Date.now() - lastHeartbeatAt < 450) return;
+  if (send({type:"heartbeat", lease})) lastHeartbeatAt = Date.now();
 }
 function motion(v, steer, lateral) {
   if (!manualAllowed || !lease || !state) return;
@@ -184,6 +191,7 @@ function connect() {
       $("browser-gamepad").checked = false;
       clearDrive();
     }
+    sendHeartbeat();
     render();
   };
   socket.onclose = () => {
@@ -206,8 +214,9 @@ async function initialize() {
     for (const key of ["source", "backend", "host", "port"]) $(key).value = defaults[key];
     $("approach").value = defaults.approach_mode;
     $("detector").value = defaults.detector_backend ?? "lab";
-    $("model-path").value = defaults.edge_model_path ?? "";
-    $("model-field").hidden = $("detector").value === "lab";
+    $("ascend-model-path").value = defaults.ascend_model_path ?? "";
+    fillSvmModels(defaults.svm_presets ?? [], defaults.svm_model_path ?? "");
+    updateDetectorFields();
     $("obstacle").checked = defaults.obstacle;
     $("local-gamepad").disabled = !defaults.gamepad_enabled;
     fillTuning(defaults);
@@ -232,20 +241,23 @@ $("claim").onclick = () => perform(async () => {
     const result = await api("/api/control/claim", {client_id: clientId});
     lease = result.lease;
     claimedAt = Date.now();
+    lastHeartbeatAt = 0;
     sequence = 0;
-    send({type:"heartbeat", lease});
+    sendHeartbeat();
   }
 });
 $("start").onclick = () => perform(async () => {
-  const modelPath = $("detector").value === "lab" ? "" : $("model-path").value.trim();
-  if ($("detector").value !== "lab" && !modelPath && !$("control-only").checked) {
+  const detector = $("detector").value;
+  const modelPath = selectedModelPath();
+  if (detector !== "lab" && !modelPath && !$("control-only").checked) {
     throw new Error("请填写服务端模型路径");
   }
   await api("/api/session/start", {
     client_id: clientId, lease, source: $("source").value.trim(), backend: $("backend").value,
     host: $("host").value.trim(), port: Number($("port").value), mirror: $("mirror").value.trim(),
     control_only: $("control-only").checked, local_gamepad: $("local-gamepad").checked,
-    obstacle: $("obstacle").checked, approach_mode: $("approach").value, edge_model_path: modelPath,
+    obstacle: $("obstacle").checked, approach_mode: $("approach").value,
+    detector_backend: detector, detector_model_path: modelPath,
   });
   setTab("status");
 });
@@ -257,7 +269,44 @@ for (const operation of ["stop", "estop"]) $(operation).onclick = async () => {
   $("browser-gamepad").checked = false;
   try { await api(`/api/session/${operation}`, {}); } catch (error) { showNotice(error.message); }
 };
-$("detector").onchange = () => { $("model-field").hidden = $("detector").value === "lab"; };
+function selectedModelPath() {
+  if ($("detector").value === "ascend") return $("ascend-model-path").value.trim();
+  if ($("detector").value !== "svm") return "";
+  return $("svm-model").value === CUSTOM_SVM
+    ? $("svm-custom-path").value.trim() : $("svm-model").value;
+}
+function updateSvmDescription() {
+  const option = $("svm-model").selectedOptions[0];
+  $("svm-custom-field").hidden = $("svm-model").value !== CUSTOM_SVM;
+  $("svm-description").textContent = option?.dataset.description ?? "";
+}
+function fillSvmModels(presets, selectedPath) {
+  const select = $("svm-model");
+  select.replaceChildren();
+  for (const preset of presets) {
+    const option = document.createElement("option");
+    option.value = preset.path;
+    option.textContent = `${preset.label}${preset.available ? "" : "（服务器未找到）"}`;
+    option.dataset.description = preset.description;
+    option.disabled = !preset.available;
+    select.append(option);
+  }
+  const custom = document.createElement("option");
+  custom.value = CUSTOM_SVM;
+  custom.textContent = "自定义模型路径…";
+  custom.dataset.description = "手动填写服务器上的 .json / .npz 路径";
+  select.append(custom);
+  const known = [...select.options].some((option) => option.value === selectedPath && !option.disabled);
+  select.value = known ? selectedPath : CUSTOM_SVM;
+  if (selectedPath && !known) $("svm-custom-path").value = selectedPath;
+  updateSvmDescription();
+}
+function updateDetectorFields() {
+  $("ascend-model-field").hidden = $("detector").value !== "ascend";
+  $("svm-model-field").hidden = $("detector").value !== "svm";
+}
+$("detector").onchange = updateDetectorFields;
+$("svm-model").onchange = updateSvmDescription;
 $("control-only").onchange = render;
 $("capture").onclick = () => perform(() => api("/api/capture", {...context(), active: !state.capture.active}));
 document.querySelectorAll("[data-action]").forEach((button) => {
@@ -292,7 +341,7 @@ document.addEventListener("visibilitychange", () => {
   else if (defaults) connect();
 });
 window.addEventListener("pagehide", () => { clearDrive(); ws?.close(); });
-setInterval(() => { if (lease && !document.hidden) send({type:"heartbeat", lease}); }, 200);
+setInterval(sendHeartbeat, 250);
 
 function deadzone(raw) {
   const value = Number.isFinite(raw) ? Math.max(-1, Math.min(1, raw)) : 0;

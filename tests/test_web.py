@@ -19,7 +19,7 @@ from hcirobot.detector import DetectorConfig, RedBallDetector
 from hcirobot.frame_recorder import FrameRecorder
 from hcirobot.gui_model import SessionState
 from hcirobot.robot import RecordingRobot
-from hcirobot.service import ControlConflict, SessionService
+from hcirobot.service import LEASE_SECONDS, ControlConflict, SessionService
 from hcirobot.video import SyntheticBallSource
 from hcirobot.web import create_app, main
 
@@ -144,7 +144,7 @@ def test_disconnect_stops_owner_session_and_cannot_rearm(service):
     with TestClient(create_app(service=service)) as client:
         with client.websocket_connect("/ws/events") as ws:
             request = start(client, ws, control_only=True)
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + LEASE_SECONDS + 2
         while service._worker_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert not service._worker_alive()
@@ -163,7 +163,7 @@ def test_silent_owner_expires_without_websocket_disconnect(service):
     ):
         request = start(client, ws, control_only=True)
         # No heartbeat and no reads: the independent server watchdog still runs.
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + LEASE_SECONDS + 2
         while service._worker_alive() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not service._worker_alive()
@@ -176,7 +176,7 @@ def test_expired_lease_cannot_be_revived_and_old_manual_packet_rejected(service)
     service._clock = lambda: now[0]
     client_id = service.connect()
     lease = service.claim(client_id)
-    now[0] = 1.0
+    now[0] = LEASE_SECONDS + 0.01
     with pytest.raises(ControlConflict):
         service.heartbeat(client_id, lease)
     new_lease = service.claim(client_id)
@@ -224,7 +224,54 @@ def test_session_start_has_model_initialization_lease_grace(service):
     assert service._expires == 16.0
     service._publish_event(RuntimeEvent("started", session_id=service.model.session_id))
     service.heartbeat(client_id, lease)
-    assert service._expires == 1.8
+    assert service._expires == 1.0 + LEASE_SECONDS
+
+
+def test_detector_backend_rejects_model_from_other_backend(service):
+    client_id = service.connect()
+    lease = service.claim(client_id)
+    common = {
+        "source": "synthetic",
+        "backend": "recording",
+        "host": "127.0.0.1",
+        "port": 5075,
+        "mirror": None,
+        "control_only": False,
+        "local_gamepad": False,
+        "obstacle": False,
+        "approach_mode": "normal_then_slow",
+    }
+    with pytest.raises(ValueError, match=r"\.om"):
+        service.start_session(
+            client_id,
+            lease,
+            common | {"detector_backend": "ascend", "detector_model_path": "svm.json"},
+        )
+    with pytest.raises(ValueError, match=r"\.json"):
+        service.start_session(
+            client_id,
+            lease,
+            common | {"detector_backend": "svm", "detector_model_path": "yolo.om"},
+        )
+
+
+def test_defaults_list_svm_variants_separately_from_ascend(service, tmp_path, monkeypatch):
+    profile = (
+        tmp_path / "artifacts" / "edge-route-20260915" / "route-balanced-a146-v2" / "profile.json"
+    )
+    profile.parent.mkdir(parents=True)
+    (profile.parent / "model.npz").write_bytes(b"placeholder")
+    profile.write_text('{"schema_version": 1, "model": "model.npz"}', encoding="utf-8")
+    service.config["npu"] = {"enabled": True, "model": "/models/ball-yolo.om"}
+    monkeypatch.chdir(tmp_path)
+
+    defaults = service.defaults()
+
+    assert defaults["ascend_model_path"] == "/models/ball-yolo.om"
+    assert defaults["svm_model_path"].endswith("route-balanced-a146-v2/profile.json")
+    assert defaults["detector_model_path"] == "/models/ball-yolo.om"
+    assert defaults["svm_model_path"] != defaults["ascend_model_path"]
+    assert defaults["svm_presets"][0]["available"] is True
 
 
 def test_invalid_axes_do_not_reach_session(service):
@@ -329,7 +376,8 @@ def test_missing_profile_fails_before_hardware_and_recovers(service, monkeypatch
                 **owner,
                 "source": "synthetic",
                 "backend": "recording",
-                "edge_model_path": "missing-profile.json",
+                "detector_backend": "svm",
+                "detector_model_path": "missing-profile.json",
             },
         )
         assert result.status_code == 200

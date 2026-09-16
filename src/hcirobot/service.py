@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
@@ -33,8 +34,122 @@ ACTIONS = frozenset(
     }
 )
 MANUAL_SECONDS = 0.30
-LEASE_SECONDS = 0.80
+# Manual motion still has a 300 ms dead-man timeout. The ownership lease can
+# tolerate browser/main-thread and Wi-Fi jitter without letting a stale manual
+# command keep the robot moving.
+LEASE_SECONDS = 3.0
 STARTUP_LEASE_SECONDS = 15.0
+
+_SVM_PRESETS = (
+    (
+        "route-balanced-a146-v2",
+        "路线均衡 Hybrid A146 v2（推荐）",
+        "artifacts/edge-route-20260915/route-balanced-a146-v2/profile.json",
+        "新采集优化版；A146 + 模糊/背景样本",
+    ),
+    (
+        "route-aug-v1",
+        "路线增强 Hybrid",
+        "artifacts/edge-route-20260914/route-aug-v1/profile.json",
+        "加入贴底和模糊增强",
+    ),
+    (
+        "route-balanced-a146-v1",
+        "路线均衡 Hybrid A146 v1",
+        "artifacts/edge-route-20260915/route-balanced-a146-v1/profile.json",
+        "A146 第一版；保留用于与推荐版对照",
+    ),
+    (
+        "experimental-v2",
+        "路线 Experimental v2",
+        "artifacts/edge-route-20260915/experimental-v2/profile.json",
+        "新采集实验分支",
+    ),
+    (
+        "route-balanced-v1",
+        "路线均衡 Hybrid v1",
+        "artifacts/edge-route-20260914/route-balanced-v1/profile.json",
+        "第一轮路线采集的均衡版本",
+    ),
+    (
+        "route-v1",
+        "路线 Hybrid v1",
+        "artifacts/edge-route-20260914/route-v1/profile.json",
+        "第一轮路线采集基线",
+    ),
+    (
+        "hybrid-v1-fast",
+        "Hybrid v1 Fast（稳妥对照）",
+        "artifacts/edge-versions-20260914/profiles/hybrid-v1-fast.json",
+        "v1 权重 + ROI/恢复/批量特征",
+    ),
+    (
+        "hybrid-v1-geometry",
+        "Hybrid v1 Geometry（近距实验）",
+        "artifacts/edge-versions-20260914/profiles/hybrid-v1-geometry.json",
+        "放宽近距离大球和底边候选",
+    ),
+    (
+        "hybrid-hn-v1-fast",
+        "Hybrid HN v1（困难负样本）",
+        "artifacts/edge-versions-20260914/profiles/hybrid-hn-v1-fast.json",
+        "压制背景误框；可能漏掉底边球帽",
+    ),
+    (
+        "hybrid-v1-recovery",
+        "Hybrid v1 Recovery",
+        "artifacts/edge-versions-20260914/profiles/hybrid-v1-recovery.json",
+        "300 ms 近期目标恢复版本",
+    ),
+    (
+        "hybrid-v1-legacy",
+        "Hybrid v1 Legacy",
+        "artifacts/edge-versions-20260914/profiles/hybrid-v1-legacy.json",
+        "最初 LAB + SVM + ROI 对照",
+    ),
+    (
+        "svm-v1",
+        "SVM v1（全图基线）",
+        "artifacts/edge-versions-20260914/profiles/svm-v1.json",
+        "原 406 维全图候选分类基线",
+    ),
+    (
+        "svm-feature-v2",
+        "SVM Feature v2（回退对照）",
+        "artifacts/edge-versions-20260914/profiles/svm-feature-v2.json",
+        "去除颜色分位数的旧实验",
+    ),
+    (
+        "hybrid-feature-v2",
+        "Hybrid Feature v2（回退对照）",
+        "artifacts/edge-versions-20260914/profiles/hybrid-feature-v2.json",
+        "Hybrid 的 feature-v2 对照",
+    ),
+    (
+        "hybrid-hn-v1-geometry",
+        "Hybrid HN v1 Geometry（实验）",
+        "artifacts/edge-versions-20260914/profiles/hybrid-hn-v1-geometry.json",
+        "困难负样本与近距几何合并版",
+    ),
+)
+
+
+def _detector_preset_available(project_root: Path, relative_path: str) -> bool:
+    path = project_root / relative_path
+    if not path.is_file():
+        return False
+    if path.suffix.lower() == ".npz":
+        return True
+    try:
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        model = profile.get("model")
+        return (
+            profile.get("schema_version") == 1
+            and isinstance(model, str)
+            and (path.parent / model).is_file()
+        )
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 class ControlConflict(ValueError):
@@ -158,6 +273,18 @@ class SessionService(SessionRuntime):
     def defaults(self) -> dict:
         cfg = self.config
         npu = ascend_yolo_config(cfg.get("npu", {}))
+        project_root = Path.cwd()
+        presets = [
+            {
+                "id": ident,
+                "label": label,
+                "path": path,
+                "description": description,
+                "available": _detector_preset_available(project_root, path),
+            }
+            for ident, label, path, description in _SVM_PRESETS
+        ]
+        svm_model = next((item["path"] for item in presets if item["available"]), "")
         return {
             "source": str(cfg["video"]["source"]),
             "backend": cfg["robot"]["backend"],
@@ -167,7 +294,11 @@ class SessionService(SessionRuntime):
             "obstacle": cfg.get("obstacle", {}).get("enabled", True),
             "gamepad_enabled": self.gamepad_monitor is not None,
             "detector_backend": "ascend" if npu.enabled else "lab",
-            "edge_model_path": npu.model if npu.enabled else "",
+            "detector_model_path": npu.model if npu.enabled else "",
+            "ascend_model_path": npu.model,
+            "svm_model_path": svm_model,
+            "svm_presets": presets,
+            "control_lease_seconds": LEASE_SECONDS,
             "detection": asdict(detector_config(cfg["detection"])),
             "controller": asdict(controller_config(cfg["controller"])),
         }
@@ -183,13 +314,36 @@ class SessionService(SessionRuntime):
             if local and self.gamepad_monitor is None:
                 raise ControlConflict("服务未启用本机手柄，请使用 --gamepad 启动")
             values = dict(options, config=str(self.config_path))
-            values["use_edge_model"] = bool(values["edge_model_path"])
+            # Direct callers using the older edge_model_path remain compatible,
+            # but the WebUI's explicit backend is never inferred from a stale path.
+            model_path = str(
+                values.get("detector_model_path", values.get("edge_model_path", "")) or ""
+            ).strip()
+            detector_backend = values.get("detector_backend")
+            if detector_backend is None:
+                suffix = Path(model_path).suffix.lower()
+                detector_backend = "ascend" if suffix == ".om" else "svm" if model_path else "lab"
+            if values["control_only"]:
+                detector_backend, model_path = "lab", ""
+            elif detector_backend == "ascend" and Path(model_path).suffix.lower() != ".om":
+                raise ValueError("Ascend NPU 识别器需要 .om 模型")
+            elif detector_backend == "svm" and Path(model_path).suffix.lower() not in {
+                ".json",
+                ".npz",
+            }:
+                raise ValueError("SVM / Hybrid 识别器需要 .json 配置或 .npz 权重")
+            elif detector_backend not in {"lab", "ascend", "svm"}:
+                raise ValueError("未知识别器类型")
+            values["detector_backend"] = detector_backend
+            values["detector_model_path"] = model_path
+            values["edge_model_path"] = model_path
+            values["use_edge_model"] = detector_backend != "lab"
             if values["control_only"]:
                 values["obstacle"] = False
             # Ascend ACL model initialization may briefly hold the interpreter,
             # preventing the WebSocket heartbeat task from running. A session
             # always starts unarmed; once the worker publishes "started",
-            # heartbeats restore the normal sub-second lease before arming.
+            # heartbeats restore the normal runtime lease before arming.
             self._expires = max(self._expires, self._clock() + STARTUP_LEASE_SECONDS)
             self.model.begin_start(
                 obstacle_enabled=values["obstacle"],

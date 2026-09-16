@@ -40,6 +40,10 @@ if [ ! -r "$CONFIG_PATH" ]; then
     printf '%s\n' "Configuration not readable: $CONFIG_PATH" >&2
     exit 1
 fi
+
+# Detector profile paths are project-relative in both the desktop and Web UIs.
+cd "$PROJECT_DIR"
+
 case "$LISTEN_PORT" in
     ''|*[!0-9]*) printf '%s\n' "HCIROBOT_WEB_PORT must be an integer" >&2; exit 1 ;;
 esac

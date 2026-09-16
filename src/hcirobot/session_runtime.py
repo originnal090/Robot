@@ -61,13 +61,25 @@ class SessionRuntime:
             # The mode selector is read once per session, like the obstacle switch.
             config["controller"] = dict(config["controller"], approach_mode=values["approach_mode"])
             detection = detector_config(config["detection"])
-            if values["use_edge_model"] and Path(values["edge_model_path"]).suffix.lower() == ".om":
+            detector_backend = values.get("detector_backend")
+            if detector_backend is None:
+                detector_backend = (
+                    "ascend"
+                    if values["use_edge_model"]
+                    and Path(values["edge_model_path"]).suffix.lower() == ".om"
+                    else "svm"
+                    if values["use_edge_model"]
+                    else "lab"
+                )
+            if detector_backend == "ascend":
                 from .ascend_yolo import AscendYoloDetector
 
-                npu_values = dict(config.get("npu", {}), enabled=True, model=values["edge_model_path"])
+                npu_values = dict(
+                    config.get("npu", {}), enabled=True, model=values["edge_model_path"]
+                )
                 detector = AscendYoloDetector(ascend_yolo_config(npu_values), detection)
                 publish(RuntimeEvent("state", f"识别器：Ascend NPU {values['edge_model_path']}"))
-            elif values["use_edge_model"]:
+            elif detector_backend == "svm":
                 detector = load_detector(Path(values["edge_model_path"]), detection)
                 publish(RuntimeEvent("state", f"识别器：端侧模型 {values['edge_model_path']}"))
             else:
