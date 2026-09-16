@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import math
+import os
 import sys
 import threading
 import time
@@ -130,8 +131,16 @@ class PygameGamepadBackend:
         self.last_error = ""
         self._pygame = None
         self._joystick = None
+        self._owns_display = False
 
     def probe(self) -> str | None:
+        if sys.platform != "win32" and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            # SDL does not refresh joystick state until its event subsystem is
+            # initialized. WebUI is headless, so use a display driver that does
+            # not require X11 or Wayland.
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
         try:
             import pygame  # lazy: optional dependency, import failure is not fatal
         except Exception as exc:  # noqa: BLE001 - report any import-level failure.
@@ -139,6 +148,10 @@ class PygameGamepadBackend:
             return None
         self._close_joystick()
         try:
+            self._pygame = pygame
+            if not pygame.display.get_init():
+                pygame.display.init()
+                self._owns_display = True
             pygame.joystick.init()
             if pygame.joystick.get_count() == 0:
                 self.last_error = "未检测到手柄"
@@ -163,11 +176,10 @@ class PygameGamepadBackend:
             raise RuntimeError("gamepad is not open")
         try:
             # Joystick axis/button state refreshes from the SDL event queue,
-            # and pygame's queue silently DROPS new input once it fills up
-            # (pump() alone does not consume anything).  Draining it every poll
-            # is the canonical pattern; there is no window to feed events to.
-            with contextlib.suppress(Exception):
-                pygame.event.get()
+            # and pygame's queue silently DROPS new input once it fills up.
+            # probe() initializes the event subsystem even when headless, so
+            # draining the queue both pumps fresh state and prevents buildup.
+            pygame.event.get()
             buttons = frozenset(
                 index for index in range(joystick.get_numbuttons()) if joystick.get_button(index)
             )
@@ -205,6 +217,10 @@ class PygameGamepadBackend:
                 pygame.joystick.quit()
             except Exception:  # noqa: BLE001, S110 - best-effort module teardown.
                 pass
+            if self._owns_display:
+                with contextlib.suppress(Exception):
+                    pygame.display.quit()
+        self._owns_display = False
 
     def _close_joystick(self) -> None:
         joystick, self._joystick = self._joystick, None
@@ -684,7 +700,9 @@ class GamepadTeleop:
         self._last_toggle_at = now
         if armed:
             session.request_disarm()
-            log("手柄：抢断自主寻路，切入手动控制（LS 移动、RS 左右旋转、十字键上下俯仰，再按 B 恢复自主）")
+            log(
+                "手柄：抢断自主寻路，切入手动控制（LS 移动、RS 左右旋转、十字键上下俯仰，再按 B 恢复自主）"
+            )
             return "disarm"
         if can_arm:
             session.request_arm()

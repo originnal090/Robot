@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +15,7 @@ from hcirobot.gamepad import (
     GamepadMonitor,
     GamepadReading,
     GamepadTeleop,
+    PygameGamepadBackend,
     apply_deadzone,
     map_to_command,
     map_to_motion,
@@ -132,6 +135,84 @@ def test_map_to_motion_uses_ls_x_for_lateral_and_rs_x_for_turning() -> None:
     assert velocity == pytest.approx(0.5)
     assert steer == pytest.approx(-0.75)
     assert lateral == pytest.approx(0.25)
+
+
+def test_pygame_backend_initializes_event_subsystem_before_read(monkeypatch) -> None:
+    events = []
+
+    class Display:
+        initialized = False
+
+        @classmethod
+        def get_init(cls):
+            return cls.initialized
+
+        @classmethod
+        def init(cls):
+            cls.initialized = True
+
+        @classmethod
+        def quit(cls):
+            cls.initialized = False
+
+    class Joystick:
+        def init(self):
+            pass
+
+        def quit(self):
+            pass
+
+        def get_name(self):
+            return "Fake SDL Pad"
+
+        def get_numaxes(self):
+            return 3
+
+        def get_axis(self, index):
+            return (-1.0, 0.25, 0.75)[index]
+
+        def get_numbuttons(self):
+            return 2
+
+        def get_button(self, index):
+            return index == 1
+
+        def get_numhats(self):
+            return 0
+
+    def get_events():
+        assert Display.initialized
+        events.append("pumped")
+        return []
+
+    pygame = SimpleNamespace(
+        display=Display,
+        event=SimpleNamespace(get=get_events),
+        joystick=SimpleNamespace(
+            init=lambda: None,
+            quit=lambda: None,
+            get_count=lambda: 1,
+            Joystick=lambda _index: Joystick(),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
+    monkeypatch.setattr("hcirobot.gamepad.sys.platform", "linux")
+
+    backend = PygameGamepadBackend()
+    assert backend.probe() == "Fake SDL Pad"
+    reading = backend.read()
+    backend.close()
+
+    assert events == ["pumped"]
+    assert reading.lateral_axis == -1.0
+    assert reading.drive_axis == -0.25
+    assert reading.steer_axis == 0.75
+    assert reading.buttons == frozenset({1})
+    assert not Display.initialized
+    assert os.environ["SDL_VIDEODRIVER"] == "dummy"
 
 
 # ---------- monitor ----------
