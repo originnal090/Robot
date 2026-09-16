@@ -39,6 +39,25 @@ TRIGGER_RIGHT_BUTTON = 12
 _TRIGGER_AXIS_PRESSED = 0.5  # normalized SDL trigger axis threshold
 _TRIGGER_BYTE_PRESSED = 64  # XInput byte threshold out of 255
 
+# pygame._sdl2.controller uses SDL's standard controller enum, whose shoulder,
+# menu and stick-button indices differ from the XInput-style indices exposed by
+# this module. Keep one stable internal namespace for WebUI and teleoperation.
+_SDL_BUTTON_TO_XINPUT = (
+    (0, 0),  # A
+    (1, 1),  # B
+    (2, 2),  # X
+    (3, 3),  # Y
+    (9, 4),  # LB
+    (10, 5),  # RB
+    (4, 6),  # Back
+    (6, 7),  # Start
+    (7, 8),  # LS
+    (8, 9),  # RS
+    (5, 10),  # Guide
+)
+_SDL_LEFT_TRIGGER_AXIS = 4
+_SDL_RIGHT_TRIGGER_AXIS = 5
+
 # Gamepad buttons -> CMD action names in the course button namespace, so both
 # the course TCP_connect.py and robot_side/tonypi_server.py accept them:
 # left_trigger/right_trigger -> stand_up_front/back, right_grip -> outfire.
@@ -71,6 +90,21 @@ def apply_deadzone(value: object, deadzone: float) -> float:
     if abs(axis) <= band:
         return 0.0
     return math.copysign((abs(axis) - band) / (1.0 - band), axis)
+
+
+def controller_trigger_pressed(value: object) -> bool:
+    """Accept SDL controller trigger ranges used by different pygame builds."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(number):
+        return False
+    if -1.0 <= number <= 1.0:
+        return number > _TRIGGER_AXIS_PRESSED
+    if number <= 255.0:
+        return number > _TRIGGER_BYTE_PRESSED
+    return number > 8192.0
 
 
 def map_to_command(drive: object, steer: object, deadzone: float) -> tuple[float, float]:
@@ -131,6 +165,7 @@ class PygameGamepadBackend:
         self.last_error = ""
         self._pygame = None
         self._joystick = None
+        self._controller = None
         self._owns_display = False
 
     def probe(self) -> str | None:
@@ -163,6 +198,7 @@ class PygameGamepadBackend:
                 return None
             self._pygame = pygame
             self._joystick = joystick
+            self._open_standard_controller()
             self.last_error = ""
             return joystick.get_name()
         except Exception as exc:  # noqa: BLE001 - a broken device must not kill the thread.
@@ -180,17 +216,7 @@ class PygameGamepadBackend:
             # probe() initializes the event subsystem even when headless, so
             # draining the queue both pumps fresh state and prevents buildup.
             pygame.event.get()
-            buttons = frozenset(
-                index for index in range(joystick.get_numbuttons()) if joystick.get_button(index)
-            )
-            if joystick.get_numaxes() >= 6:
-                # SDL maps XInput triggers to axes 4/5 (0..1); surface them as
-                # synthetic buttons so ACTION_BUTTONS works uniformly.
-                buttons |= frozenset(
-                    synthetic
-                    for synthetic, axis in ((TRIGGER_LEFT_BUTTON, 4), (TRIGGER_RIGHT_BUTTON, 5))
-                    if sanitize_axis(joystick.get_axis(axis)) > _TRIGGER_AXIS_PRESSED
-                )
+            buttons = self._read_buttons(joystick)
             hat_y = joystick.get_hat(0)[1] if joystick.get_numhats() > 0 else 0
             return GamepadReading(
                 connected=True,
@@ -223,6 +249,10 @@ class PygameGamepadBackend:
         self._owns_display = False
 
     def _close_joystick(self) -> None:
+        controller, self._controller = self._controller, None
+        if controller is not None:
+            with contextlib.suppress(Exception):
+                controller.quit()
         joystick, self._joystick = self._joystick, None
         if joystick is None:
             return
@@ -230,6 +260,40 @@ class PygameGamepadBackend:
             joystick.quit()
         except Exception:  # noqa: BLE001, S110 - best-effort device teardown.
             pass
+
+    def _open_standard_controller(self) -> None:
+        """Use SDL's device mapping instead of treating raw Linux indices as XInput."""
+        try:
+            from pygame._sdl2 import controller
+
+            controller.init()
+            if controller.is_controller(0):
+                self._controller = controller.Controller(0)
+        except Exception:  # noqa: BLE001 - raw joystick fallback remains available.
+            self._controller = None
+
+    def _read_buttons(self, joystick) -> frozenset[int]:
+        controller = self._controller
+        if controller is not None:
+            buttons = frozenset(
+                xinput for sdl, xinput in _SDL_BUTTON_TO_XINPUT if controller.get_button(sdl)
+            )
+            if controller_trigger_pressed(controller.get_axis(_SDL_LEFT_TRIGGER_AXIS)):
+                buttons |= frozenset({TRIGGER_LEFT_BUTTON})
+            if controller_trigger_pressed(controller.get_axis(_SDL_RIGHT_TRIGGER_AXIS)):
+                buttons |= frozenset({TRIGGER_RIGHT_BUTTON})
+            return buttons
+
+        buttons = frozenset(
+            index for index in range(joystick.get_numbuttons()) if joystick.get_button(index)
+        )
+        if joystick.get_numaxes() >= 6:
+            buttons |= frozenset(
+                synthetic
+                for synthetic, axis in ((TRIGGER_LEFT_BUTTON, 4), (TRIGGER_RIGHT_BUTTON, 5))
+                if sanitize_axis(joystick.get_axis(axis)) > _TRIGGER_AXIS_PRESSED
+            )
+        return buttons
 
 
 class _XInputGamepad(ctypes.Structure):

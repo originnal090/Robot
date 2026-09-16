@@ -17,6 +17,7 @@ from hcirobot.gamepad import (
     GamepadTeleop,
     PygameGamepadBackend,
     apply_deadzone,
+    controller_trigger_pressed,
     map_to_command,
     map_to_motion,
     sanitize_axis,
@@ -112,6 +113,14 @@ def test_apply_deadzone_scales_outside_band() -> None:
     assert apply_deadzone(-0.6, 0.20) == pytest.approx(-0.5)
     assert apply_deadzone(1.0, 0.20) == pytest.approx(1.0)
     assert apply_deadzone(0.6, 0.0) == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize(
+    ("value", "pressed"),
+    [(-1.0, False), (0.0, False), (0.75, True), (64, False), (65, True), (9000, True)],
+)
+def test_controller_trigger_pressed_accepts_sdl_ranges(value, pressed) -> None:
+    assert controller_trigger_pressed(value) is pressed
 
 
 def test_map_to_command_follows_protocol_signs() -> None:
@@ -213,6 +222,36 @@ def test_pygame_backend_initializes_event_subsystem_before_read(monkeypatch) -> 
     assert reading.buttons == frozenset({1})
     assert not Display.initialized
     assert os.environ["SDL_VIDEODRIVER"] == "dummy"
+
+
+def test_pygame_backend_standardizes_sdl_controller_buttons() -> None:
+    class Controller:
+        def get_button(self, index):
+            # SDL standard indices: X, Y, Back and LB.
+            return index in {2, 3, 4, 9}
+
+        def get_axis(self, index):
+            # SDL axis 4 is LT, axis 5 is RT. Only RT is pressed.
+            return 255 if index == 5 else 0
+
+    class RawJoystick:
+        def get_numbuttons(self):
+            return 16
+
+        def get_button(self, _index):
+            # A misleading raw button must be ignored when SDL mapping exists.
+            return True
+
+        def get_numaxes(self):
+            return 6
+
+        def get_axis(self, _index):
+            return 1.0
+
+    backend = PygameGamepadBackend()
+    backend._controller = Controller()
+
+    assert backend._read_buttons(RawJoystick()) == frozenset({2, 3, 4, 6, 12})
 
 
 # ---------- monitor ----------
