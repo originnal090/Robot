@@ -17,6 +17,7 @@ from hcirobot.app import RuntimeEvent, SessionControl, run_loop, run_manual_loop
 from hcirobot.controller import ControllerConfig, VisualApproachController
 from hcirobot.detector import DetectorConfig, RedBallDetector
 from hcirobot.frame_recorder import FrameRecorder
+from hcirobot.gamepad import GamepadReading
 from hcirobot.gui_model import SessionState
 from hcirobot.robot import RecordingRobot
 from hcirobot.service import LEASE_SECONDS, ControlConflict, SessionService
@@ -469,6 +470,9 @@ def test_local_gamepad_owns_session_after_browser_disconnect(service):
         def status(self):
             return True, "Test local pad"
 
+        def latest(self):
+            return GamepadReading(True, "Test local pad")
+
     service.gamepad_monitor = LocalMonitor()
     with TestClient(create_app(service=service)) as client:
         with client.websocket_connect("/ws/events") as ws:
@@ -499,6 +503,37 @@ def test_local_gamepad_owns_session_after_browser_disconnect(service):
             assert (
                 client.post("/api/control/claim", json={"client_id": client_id}).status_code == 200
             )
+
+
+def test_local_gamepad_reading_is_exposed_in_web_state(service):
+    class LocalMonitor:
+        def status(self):
+            return True, "Test local pad"
+
+        def latest(self):
+            return GamepadReading(
+                connected=True,
+                name="Test local pad",
+                drive_axis=0.4567,
+                lateral_axis=-0.25,
+                steer_axis=0.75,
+                head_axis=1.0,
+                buttons=frozenset({1, 5}),
+            )
+
+    service.gamepad_monitor = LocalMonitor()
+
+    assert service.snapshot()["gamepad"] == {
+        "enabled": True,
+        "connected": True,
+        "message": "Test local pad",
+        "name": "Test local pad",
+        "drive": 0.457,
+        "lateral": -0.25,
+        "steer": 0.75,
+        "head": 1.0,
+        "buttons": [1, 5],
+    }
 
 
 def test_delayed_jpeg_from_old_session_is_discarded(service, monkeypatch):

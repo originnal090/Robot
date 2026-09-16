@@ -7,6 +7,17 @@ let drive = null, lastDrive = false, previousButtons = [], headLevel = 0;
 let tuningSession = -1, tuningDirty = false, lastLogVersion = -1, padToggleBusy = false;
 let reconnectTimer, noticeTimer, lastHeartbeatAt = 0;
 const CUSTOM_SVM = "__custom__";
+const GAMEPAD_BUTTON_NAMES = {0:"A", 1:"B", 2:"X", 3:"Y", 4:"LB", 5:"RB",
+  6:"BACK", 7:"START", 8:"LS", 9:"RS", 11:"LT", 12:"RT"};
+
+function gamepadAxis(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number >= 0 ? "+" : ""}${number.toFixed(2)}` : "+0.00";
+}
+
+function gamepadButton(index) {
+  return GAMEPAD_BUTTON_NAMES[index] ?? `#${index}`;
+}
 
 function setTab(name) {
   document.querySelectorAll("[data-tab]").forEach((button) => {
@@ -153,7 +164,12 @@ function render() {
   $("obstacle-state").textContent = state.obstacle_state;
   $("avoid-count").textContent = state.avoid_count;
   $("output-source").textContent = state.output.source;
-  $("local-pad").textContent = state.gamepad.message;
+  const localPad = state.gamepad ?? {};
+  $("local-pad").textContent = localPad.message ?? "未启用本机手柄";
+  $("local-pad-live").textContent = localPad.connected ? localPad.name || localPad.message : localPad.message;
+  $("local-pad-live").classList.toggle("connected", Boolean(localPad.connected));
+  $("local-pad-axes").textContent = `前后 ${gamepadAxis(localPad.drive)} · 横移 ${gamepadAxis(localPad.lateral)} · 转向 ${gamepadAxis(localPad.steer)} · 俯仰 ${gamepadAxis(localPad.head)}`;
+  $("local-pad-buttons").textContent = `按键 ${(localPad.buttons ?? []).map(gamepadButton).join("+") || "--"}`;
   $("manual-mode").textContent = state.armed ? "自治已武装" : manualAllowed ? "手动模式" : "仅观察";
   $("output").textContent = `v ${state.output.v.toFixed(2)} · 转向 ${state.output.steer.toFixed(2)}`;
   const capture = state.capture;

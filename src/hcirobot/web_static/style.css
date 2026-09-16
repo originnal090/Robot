@@ -70,7 +70,10 @@ h3 {font-size:16px; font-weight:500}
 .gamepad-line {border-top:1px solid var(--line); padding:8px 14px; display:flex; align-items:center; gap:12px; min-width:0}
 .gamepad-line .checkbox {margin:0; white-space:nowrap}
 #pad-status {font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0}
-.gamepad-line small {font-size:9px; white-space:nowrap}
+.local-pad-feedback {border-left:1px solid var(--line); padding-left:12px; display:flex; align-items:center; gap:10px; min-width:0; white-space:nowrap}
+.local-pad-feedback strong {font-size:10px; max-width:190px; overflow:hidden; text-overflow:ellipsis; color:var(--muted)}
+.local-pad-feedback strong.connected {color:var(--green)}
+.local-pad-feedback code {font-size:9px; color:var(--muted)}
 .inspector {min-height:0; display:flex; flex-direction:column}
 .inspector-tabs {display:flex; flex:none; border-bottom:1px solid var(--line); padding:0 6px; gap:2px}
 .inspector-tabs button {flex:1; border:0; border-radius:0; background:transparent; min-height:40px; font-size:12px; color:var(--muted); border-bottom:2px solid transparent}
@@ -117,7 +120,7 @@ fieldset small {font-size:9px; line-height:1.5; display:block}
 .mobile-nav {display:none}
 [hidden] {display:none!important}
 @media(min-width:1600px) {.layout{grid-template-columns:minmax(0,1fr) 370px}.manual-workspace{padding:14px 20px;gap:24px}.dpad{grid-template-columns:repeat(3,34px);grid-template-rows:repeat(3,30px)}.gamepad-line{padding:10px 18px}}
-@media(max-width:1150px) {.layout{grid-template-columns:minmax(0,1fr) 304px}.metrics>div{flex-direction:column;align-items:flex-start;gap:3px;padding:0 12px}.manual-workspace{gap:10px;padding:10px;grid-template-columns:96px 82px 1fr}.action-grid{gap:5px}.action-grid button{font-size:10px}.gamepad-line small{display:none}.command-hint{font-size:9px}}
+@media(max-width:1150px) {.layout{grid-template-columns:minmax(0,1fr) 304px}.metrics>div{flex-direction:column;align-items:flex-start;gap:3px;padding:0 12px}.manual-workspace{gap:10px;padding:10px;grid-template-columns:96px 82px 1fr}.action-grid{gap:5px}.action-grid button{font-size:10px}#pad-status{display:none}.local-pad-feedback{margin-left:auto}.local-pad-feedback strong{max-width:130px}.local-pad-feedback code:nth-of-type(2){display:none}.command-hint{font-size:9px}}
 @media(max-height:730px) and (min-width:761px) {.topbar{height:52px}main{gap:8px}.page-heading{height:34px}.panel-heading{min-height:30px;padding:7px 12px}.manual-workspace{padding:7px 12px}.gamepad-line{padding:6px 12px}.inspector-tabs button{min-height:34px}.settings label{margin-top:7px}.settings label:first-child{margin-top:0}.session-options{gap:6px;margin:9px 0}.session-options label{margin:0}.metrics{padding:8px 0}.viewport{min-height:80px}}
 @media(max-width:760px) {
   .topbar{height:56px;padding:0 12px;gap:7px}.brand{font-size:19px;gap:7px}.brand-mark{width:28px;height:32px}.brand small{font-size:6px;letter-spacing:.4px}.connection{margin-right:0}.connection #connection{display:none}.topbar button{font-size:11px;padding:6px 8px;min-height:32px}.danger{min-width:58px}

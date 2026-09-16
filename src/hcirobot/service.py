@@ -639,7 +639,18 @@ class SessionService(SessionRuntime):
             connected, message = (
                 self.gamepad_monitor.status() if self.gamepad_monitor else (False, "未启用本机手柄")
             )
-            state["gamepad"] = {"connected": connected, "message": message}
+            reading = self.gamepad_monitor.latest() if self.gamepad_monitor else None
+            state["gamepad"] = {
+                "enabled": self.gamepad_monitor is not None,
+                "connected": connected,
+                "message": message,
+                "name": reading.name if reading else "",
+                "drive": round(reading.drive_axis, 3) if reading else 0.0,
+                "lateral": round(reading.lateral_axis, 3) if reading else 0.0,
+                "steer": round(reading.steer_axis, 3) if reading else 0.0,
+                "head": round(reading.head_axis, 3) if reading else 0.0,
+                "buttons": sorted(reading.buttons) if reading else [],
+            }
             if self.active_detector is not None and self.active_controller is not None:
                 state["tuning"] = {
                     "detection": asdict(self.active_detector.config),
