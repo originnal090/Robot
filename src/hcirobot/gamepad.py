@@ -29,6 +29,11 @@ from typing import Protocol
 TOGGLE_BUTTON = 1
 TOGGLE_HINT = "B 抢断/恢复，LS 前后/横移，RS 左右旋转，十字键上下俯仰，LT/RT 爬起，RB 灭火"
 DEADZONE = 0.20  # matches the TonyPi TCP_connect stick deadzone
+# A USB/Bluetooth controller may report a stale stick position or a pressed
+# button for one or two SDL polls immediately after it appears.  Do not expose
+# any input to the control loop until it has been physically released and
+# centred for this many consecutive polls (5 x 50 ms by default).
+_NEUTRAL_SAMPLES_ON_CONNECT = 5
 _DRIVE_AXIS = 1  # left stick Y: -1 when pushed up
 _LATERAL_AXIS = 0  # left stick X: +1 when pushed right
 _STEER_AXIS = 2  # right stick X: +1 when pushed right
@@ -519,6 +524,7 @@ class GamepadMonitor:
         probe_seconds: float = 1.0,
         maximum_probe_seconds: float = 5.0,
         stale_after_seconds: float = 0.5,
+        neutral_samples_on_connect: int = _NEUTRAL_SAMPLES_ON_CONNECT,
         on_log: Log | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -527,6 +533,7 @@ class GamepadMonitor:
         self._probe_seconds = max(0.01, probe_seconds)
         self._maximum_probe_seconds = max(self._probe_seconds, maximum_probe_seconds)
         self._stale_after_seconds = stale_after_seconds
+        self._neutral_samples_on_connect = max(1, int(neutral_samples_on_connect))
         self._on_log = on_log
         self._clock = clock
         self._lock = threading.Lock()
@@ -613,15 +620,46 @@ class GamepadMonitor:
             backoff = self._probe_seconds
             with self._lock:
                 self._connected = True
-                self._status_text = name
+                self._status_text = "手柄已连接，等待摇杆和按键回中"
             self._log(f"手柄已连接：{name}")
-            self._poll_device()
+            self._poll_device(name)
 
-    def _poll_device(self) -> None:
+    def _poll_device(self, device_name: str) -> None:
+        """Poll one attachment, enabling it only after a stable neutral state.
+
+        This is deliberately in the monitor rather than the teleop bridge, so
+        a reconnect cannot generate a synthetic B/action rising edge while no
+        session is active and then replay it later.
+        """
         previous_buttons = frozenset()
+        neutral_samples = 0
+        input_enabled = False
         try:
             while not self._stop.wait(self._poll_seconds):
                 reading = self._backend.read()
+                if not input_enabled:
+                    if self._is_neutral(reading):
+                        neutral_samples += 1
+                    else:
+                        neutral_samples = 0
+                    # Keep status() live for the UI, but fail closed: latest()
+                    # stays disconnected so no axis, D-Pad, or button can
+                    # reach the robot until the neutral gate is complete.
+                    self._store(_DISCONNECTED)
+                    if neutral_samples < self._neutral_samples_on_connect:
+                        with self._lock:
+                            self._status_text = (
+                                "手柄已连接，等待摇杆和按键回中"
+                                f"（{neutral_samples}/{self._neutral_samples_on_connect}）"
+                            )
+                        continue
+                    input_enabled = True
+                    # Treat buttons held while the device becomes ready as the
+                    # baseline; only a release and new press is actionable.
+                    previous_buttons = reading.buttons
+                    with self._lock:
+                        self._status_text = reading.name or device_name
+                    self._log("手柄已回中，输入已启用")
                 if reading.buttons != previous_buttons:
                     self._latch_edges(previous_buttons, reading.buttons)
                     previous_buttons = reading.buttons
@@ -635,6 +673,19 @@ class GamepadMonitor:
             with self._lock:
                 self._connected = False
                 self._status_text = "手柄已断开，正在重新检测"
+
+    @staticmethod
+    def _is_neutral(reading: GamepadReading) -> bool:
+        """Whether every controllable input is released/inside the deadzone."""
+        return not reading.buttons and all(
+            abs(sanitize_axis(value)) <= DEADZONE
+            for value in (
+                reading.drive_axis,
+                reading.steer_axis,
+                reading.lateral_axis,
+                reading.head_axis,
+            )
+        )
 
     def _latch_edges(self, previous_buttons: frozenset[int], pressed: frozenset[int]) -> None:
         """Latch rising edges: B toggles autonomy, action buttons queue their CMD."""

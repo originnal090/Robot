@@ -342,6 +342,32 @@ def test_monitor_publishes_reading_and_latches_toggle_edges() -> None:
     assert not monitor.latest().connected
 
 
+def test_monitor_requires_neutral_before_exposing_a_reconnected_controller() -> None:
+    """A held stick/button at USB reconnect must not move or arm the robot."""
+    backend = FakeBackend()
+    backend.queue_probe("Fake Pad")
+    monitor = build_monitor(backend, neutral_samples_on_connect=3)
+    try:
+        backend.queue_readings(
+            GamepadReading(True, "Fake Pad", 1.0, 1.0, frozenset({TOGGLE_BUTTON})),
+            GamepadReading(True, "Fake Pad", 1.0, 1.0, frozenset({TOGGLE_BUTTON})),
+            GamepadReading(True, "Fake Pad", 0.0, 0.0, frozenset()),
+            GamepadReading(True, "Fake Pad", 0.0, 0.0, frozenset()),
+            GamepadReading(True, "Fake Pad", 0.0, 0.0, frozenset()),
+        )
+        assert wait_until(lambda: monitor.latest().connected)
+        reading = monitor.latest()
+        assert reading.drive_axis == 0.0
+        assert reading.steer_axis == 0.0
+        assert not monitor.consume_toggle()
+
+        # The first genuine post-ready press is still accepted normally.
+        press(backend, frozenset({TOGGLE_BUTTON}))
+        assert wait_until(monitor.consume_toggle)
+    finally:
+        monitor.stop()
+
+
 def test_monitor_survives_read_failure_and_reconnects() -> None:
     backend = FakeBackend()
     backend.queue_probe("Fake Pad")

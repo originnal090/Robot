@@ -130,6 +130,15 @@ function render() {
   $("connection-dot").classList.toggle("green", connected);
   $("estop").disabled = !connected;
   const owns = connected && Boolean(lease) && state?.owner === "you";
+  const localGamepadOwns = state?.owner === "local";
+  // A page-attached controller and the Orange Pi controller are two separate
+  // input sources.  Never leave the browser one armed after ownership has
+  // moved to the Orange Pi: otherwise a stale browser Gamepad frame could
+  // race the local controller when the session is changed back.
+  if (localGamepadOwns && $("browser-gamepad").checked) {
+    $("browser-gamepad").checked = false;
+    previousButtons = [];
+  }
   const caps = state?.capabilities ?? {};
   manualAllowed = Boolean(owns && caps.manual && !busy);
   $("start").disabled = !owns || !caps.start || busy;
@@ -145,7 +154,7 @@ function render() {
   $("settings").disabled = !owns || !caps.start || busy;
   $("apply-tuning").disabled = !owns || state?.session_state !== "running" || state?.control_only || busy;
   $("capture").disabled = !owns || state?.session_state !== "running" || state?.control_only || busy;
-  $("browser-gamepad").disabled = !owns || !window.isSecureContext || !navigator.getGamepads;
+  $("browser-gamepad").disabled = localGamepadOwns || !owns || !window.isSecureContext || !navigator.getGamepads;
   document.querySelectorAll(".drive, [data-action], #hold").forEach((button) => {
     button.disabled = !manualAllowed;
   });
