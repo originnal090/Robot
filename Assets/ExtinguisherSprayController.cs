@@ -1,7 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.Rendering;
 
 public class ExtinguisherSprayController : MonoBehaviour
 {
@@ -44,11 +43,7 @@ public class ExtinguisherSprayController : MonoBehaviour
         if (sprayParticles == null && autoCreateSprayParticles)
             sprayParticles = CreateDefaultSprayParticles();
 
-        if (sprayParticles != null)
-        {
-            EnsureSprayMaterial(sprayParticles);
-            RegisterSprayLayer(sprayParticles);
-        }
+        RegisterExistingSprayLayers();
     }
 
     private void OnEnable()
@@ -191,7 +186,6 @@ public class ExtinguisherSprayController : MonoBehaviour
         limitVelocity.limit = 10f;
         limitVelocity.dampen = 0.18f;
 
-        EnsureSprayMaterial(particles);
         RegisterSprayLayer(particles);
         CreatePowderMistLayer();
         CreateResidualDustLayer();
@@ -320,7 +314,6 @@ public class ExtinguisherSprayController : MonoBehaviour
 
     private void FinalizeLayer(ParticleSystem particles)
     {
-        EnsureSprayMaterial(particles);
         RegisterSprayLayer(particles);
         particles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
     }
@@ -331,91 +324,14 @@ public class ExtinguisherSprayController : MonoBehaviour
             _sprayLayers.Add(particles);
     }
 
-    private void EnsureSprayMaterial(ParticleSystem particles)
+    // An authored prefab may contain multiple nested particle layers.
+    private void RegisterExistingSprayLayers()
     {
-        var particleRenderer = particles.GetComponent<ParticleSystemRenderer>();
-        if (particleRenderer == null)
+        if (sprayParticles == null)
             return;
 
-        particleRenderer.renderMode = ParticleSystemRenderMode.Billboard;
-        particleRenderer.alignment = ParticleSystemRenderSpace.View;
-        particleRenderer.shadowCastingMode = ShadowCastingMode.Off;
-        particleRenderer.receiveShadows = false;
-
-        bool isBuiltInRenderPipeline = GraphicsSettings.currentRenderPipeline == null;
-        if (IsMaterialCompatible(sprayMaterial, isBuiltInRenderPipeline))
-        {
-            particleRenderer.sharedMaterial = sprayMaterial;
-            return;
-        }
-
-        sprayMaterial = null;
-        Shader shader = null;
-
-        if (isBuiltInRenderPipeline)
-        {
-            shader = Shader.Find("Particles/Standard Unlit");
-            if (shader == null || !shader.isSupported)
-                shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended");
-        }
-        else
-        {
-            shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
-        }
-
-        if (shader == null || !shader.isSupported)
-            shader = Shader.Find("Unlit/Transparent");
-
-        if (shader == null || !shader.isSupported)
-        {
-            Debug.LogWarning("[ExtinguisherSpray] No compatible transparent particle shader was found.");
-            return;
-        }
-
-        sprayMaterial = new Material(shader)
-        {
-            name = "Runtime Extinguisher Spray Material",
-            renderQueue = 3000
-        };
-
-        if (sprayMaterial.HasProperty("_BaseColor"))
-            sprayMaterial.SetColor("_BaseColor", new Color(0.9f, 0.94f, 0.96f, 0.72f));
-        if (sprayMaterial.HasProperty("_Color"))
-            sprayMaterial.SetColor("_Color", new Color(0.9f, 0.94f, 0.96f, 0.72f));
-        if (sprayMaterial.HasProperty("_Surface"))
-            sprayMaterial.SetFloat("_Surface", 1f);
-        if (sprayMaterial.HasProperty("_Blend"))
-            sprayMaterial.SetFloat("_Blend", 0f);
-        if (sprayMaterial.HasProperty("_ZWrite"))
-            sprayMaterial.SetFloat("_ZWrite", 0f);
-
-        if (isBuiltInRenderPipeline)
-        {
-            if (sprayMaterial.HasProperty("_Mode"))
-                sprayMaterial.SetFloat("_Mode", 2f);
-            if (sprayMaterial.HasProperty("_SrcBlend"))
-                sprayMaterial.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
-            if (sprayMaterial.HasProperty("_DstBlend"))
-                sprayMaterial.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
-
-            sprayMaterial.DisableKeyword("_ALPHATEST_ON");
-            sprayMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-            sprayMaterial.EnableKeyword("_ALPHABLEND_ON");
-        }
-
-        particleRenderer.sharedMaterial = sprayMaterial;
-    }
-
-    private static bool IsMaterialCompatible(Material material, bool isBuiltInRenderPipeline)
-    {
-        if (material == null || material.shader == null || !material.shader.isSupported)
-            return false;
-
-        string shaderName = material.shader.name;
-        if (isBuiltInRenderPipeline)
-            return !shaderName.StartsWith("Universal Render Pipeline/");
-
-        return shaderName.StartsWith("Universal Render Pipeline/");
+        foreach (var particles in sprayParticles.GetComponentsInChildren<ParticleSystem>(true))
+            RegisterSprayLayer(particles);
     }
 
     private void OnDrawGizmosSelected()
