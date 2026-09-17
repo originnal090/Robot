@@ -1,6 +1,6 @@
 # HCIRobot Unity 本地仿真包
 
-`unity/com.hcirobot.simulator` 0.2.6 是面向 Unity 2022.3 LTS 及更新版本的轻量本地包。它只使用 Unity 与 .NET 自带 API，不依赖 PICO、XR、URP 或其他第三方包。
+`unity/com.hcirobot.simulator` 0.2.7 是面向 Unity 2022.3 LTS 及更新版本的轻量本地包。它只使用 Unity 与 .NET 自带 API，不依赖 PICO、XR、URP 或其他第三方包。
 
 ## 导入
 
@@ -50,6 +50,7 @@ Game 视图自带三层可视化：`Observer Camera`（第三人称跟随，全�
 |---|---|---|
 | `VirtualRobotTcpServer` | TonyPi 兼容 JSONL/CMD/ACTION 服务 | `0.0.0.0:5075`；声明 `ACTION_V1`；单客户端；跨 read 缓冲；非法帧忽略；0.60 s 看门狗停车；网络线程仅入队，主线程应用命令；所有回执与 `DIST` 经同一写锁串行化；Console 只在连接或有效运动方向变化时记录，不逐包刷屏 |
 | `TonyPiMotionDriver` | Rigidbody 平面运动与头部预览 | 死区 0.20；转向优先；负值左转、正值右转；continuous 模式按真机三档映射前进速度，并按满舵 fast 动作标定转向；`Movement Speed Multiplier` 统一缩放前进/横移；左右转速倍率可独立调整；`head_down/center/up` 持久调整机器人相机俯仰 |
+| `CourseFireExtinguishAdapter` | 课程灭火兼容桥 | `TonyPiMotionDriver` 运行时自动挂载；把 `CMD:right_grip` / `outfire` 转给课程 `LightControl`；默认实际灭火距离 `1.2 m`，按场景倍率换算；没有课程火控组件时保持无副作用 |
 | `ForwardDistanceSensor` | 前向 ray/sphere cast | 默认 sphere cast；结果换算为整数 mm；默认每 0.30 s 发送 `DIST` |
 | `MjpegCameraServer` | TonyPi 风格 MJPEG | `0.0.0.0:8080/?action=stream`；Camera/RenderTexture/ReadPixels/JPEG 全在主线程；网络线程只发送缓存 JPEG |
 | `AutonomyStatusUdpReceiver` | 自治状态旁路接收 | `0.0.0.0:6102`；校验 `type/schema_version/session_id/seq`；同 session 只接受递增 seq，拒绝已退出会话迟到包；主线程 latest-only；默认 1.0 s watchdog |
@@ -95,6 +96,15 @@ full-stick turn` 按这一实际链路标定：fast 动作基础转角 `15°`，
 测量值冒充小步标定。前进速度则可使用已测三档速度与 `Movement Speed Multiplier`
 调整。
 
+### 灭火动作适配
+
+Python 自治到达后发送一次 `CMD:right_grip`；真机端仍将它映射到 `outfire` 动作组。
+Unity 端的 `CourseFireExtinguishAdapter` 会同时接受 `right_grip` 和 `outfire`，自动发现
+课程 `LightControl`，启用它已有的单次动作灭火入口，并把默认实际允许距离 `1.2 m`
+换算为 `1.2 × Movement Speed Multiplier`。FactoryDay 默认倍率 `21.5` 时即为
+`25.8` Unity 单位。距离、最近火点、无火与重复生成等判定仍由课程 `LightControl`
+负责；PICO 扳机的渐进喷射逻辑不受影响。
+
 ## 场景矩阵
 
 | 场景 | TCP 5075 | MJPEG 8080 | UDP 6102 | Rigidbody | 适用目的 |
@@ -124,7 +134,7 @@ full-stick turn` 按这一实际链路标定：fast 动作基础转角 `15°`，
 
 `TonyPiMotionDriver > Measured TonyPi Forward Tiers` 使用 2026-09-15 真机粗测：`go_forward` 16 秒约 0.60 m，对应基线 `0.0375 m/s`；`go_forward_one_step` 暂按老旧机器人偶发原地踏步后的有效速度 `0.4x` 处理；`go_forward_fast` 按 `2x` 处理。因此 continuous 输入 `|v| <= 0.45`、`0.45 < |v| <= 0.75`、`|v| > 0.75` 分别使用 `0.015`、`0.0375`、`0.075 m/s`。这些参数都可在 Inspector 修改；关闭 `Use Measured Forward Tiers` 后恢复 `v * Maximum Forward Speed` 的比例模型。
 
-该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 60 项 EditMode 测试。
+该包已在 Unity 2022.3.62f3c1 实际编译并全部通过 65 项 EditMode 测试。
 
 ## 安全与限制
 

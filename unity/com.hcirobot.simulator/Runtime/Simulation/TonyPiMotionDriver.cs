@@ -17,6 +17,10 @@ namespace HciRobot.Simulator
         [SerializeField, Range(0f, 1f)] private float deadzone = 0.20f;
         [SerializeField] private bool continuousMotion;
 
+        [Header("Course compatibility")]
+        [Tooltip("Automatically bridge right_grip/outfire actions to the course LightControl when present.")]
+        [SerializeField] private bool enableCourseFireExtinguishAdapter = true;
+
         [Header("Scene scale")]
         [Tooltip("Unity units per real-world metre. The 21.5 default is calibrated for FactoryDay_HciRobot; rotation is unchanged.")]
         [SerializeField, Min(0f)] private float movementSpeedMultiplier = 21.5f;
@@ -137,6 +141,11 @@ namespace HciRobot.Simulator
             if (headPitchTransform == null)
             {
                 headPitchTransform = transform.Find("Robot Camera");
+            }
+            if (enableCourseFireExtinguishAdapter
+                && GetComponent<CourseFireExtinguishAdapter>() == null)
+            {
+                gameObject.AddComponent<CourseFireExtinguishAdapter>();
             }
         }
 

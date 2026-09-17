@@ -667,7 +667,7 @@ ssh pi@<TONYPI_IP> 'pkill -f TCP_connect.py; PYTHONPATH=/home/pi/TonyPi/Hiwonder
 2. 从 Orange Pi 验证 `5075` 端口可达；
 3. 不要同时启动厂商 `Follow.py`、`KickBall.py` 或另一个控制程序。
 
-课程示例把 `right_grip` 映射到 `outfire`，但课程归档动作组中没有确认到 `outfire.d6a`。本基线不发送该离散命令，因此不受此缺口影响。
+课程示例把 `right_grip` 映射到 `outfire`；课程归档动作组中没有 `outfire.d6a`，因此真机部署前必须确认目标机器人系统已安装这一自定义动作组。Unity Package 0.2.7+ 不依赖该文件：它把同一命令桥接到课程 `LightControl`，按距离判定熄灭最近火点。
 
 ### 9.3 Orange Pi 端
 

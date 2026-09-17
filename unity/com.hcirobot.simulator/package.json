@@ -1,6 +1,6 @@
 {
   "name": "com.hcirobot.simulator",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "displayName": "HCI Robot Simulator",
   "description": "Dependency-free TonyPi protocol and physics simulator for Unity 2022.3 LTS and newer.",
   "unity": "2022.3",

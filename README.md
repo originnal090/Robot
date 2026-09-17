@@ -174,8 +174,8 @@ uv run hcirobot-gui
   | RB | `right_grip` | 蹲下灭火（outfire） |
 
 - **到达自动灭火**：自治 ARRIVED 后自动下发 `arrival_action`（默认
-  `right_grip`），在 `[controller]` 配置；Unity 仿真对 CMD 无动作副作用，
-  真机/robot_side 生效。
+  `right_grip`），在 `[controller]` 配置；真机/robot_side 映射到 `outfire`，
+  Unity Package 0.2.7+ 会桥接课程 `LightControl`，仅在实际距离阈值内熄灭最近火点。
 - 手动模式下松杆即停（0.3 s 脉冲续期，GUI 卡顿时自动超时停车）；拔掉手柄
   自动零输出并重新检测，插回自动恢复；避障 `BLOCKED` 锁存、急停等安全语义
   对手柄模式同样生效。
