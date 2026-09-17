@@ -129,6 +129,15 @@ uv run hcirobot-web --host 0.0.0.0 --config deploy/config/config.orangepi.toml \
 给 `ExecStart` 追加 `--gamepad`；例如设备属于 `input` 组时可添加
 `SupplementaryGroups=input`。按实际系统确认组名。
 
+香橙派以用户服务运行且桌面 seat 属于 LightDM 时，`uaccess` 可能只把手柄 ACL
+授予 LightDM，导致 USB 可见但 WebUI 显示“无读取权限”。可安装项目提供的持久规则：
+
+```bash
+sudo ./deploy/install_gamepad_udev.sh HwHiAiUser
+```
+
+规则只匹配 `ID_INPUT_JOYSTICK=1` 的 event 节点，并在 USB 重新插拔后继续生效。
+
 ## API
 
 | 路径 | 用途 |

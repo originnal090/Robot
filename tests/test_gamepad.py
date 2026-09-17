@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -222,6 +223,32 @@ def test_pygame_backend_initializes_event_subsystem_before_read(monkeypatch) -> 
     assert reading.buttons == frozenset({1})
     assert not Display.initialized
     assert os.environ["SDL_VIDEODRIVER"] == "dummy"
+
+
+def test_pygame_backend_reports_unreadable_linux_gamepad(monkeypatch) -> None:
+    pygame = SimpleNamespace(
+        display=SimpleNamespace(
+            get_init=lambda: True,
+            init=lambda: None,
+            quit=lambda: None,
+        ),
+        joystick=SimpleNamespace(
+            init=lambda: None,
+            quit=lambda: None,
+            get_count=lambda: 0,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+    monkeypatch.setattr(
+        "hcirobot.gamepad._unreadable_linux_gamepad",
+        lambda: Path("/dev/input/by-id/test-event-joystick"),
+    )
+
+    backend = PygameGamepadBackend()
+    assert backend.probe() is None
+    assert backend.last_error == (
+        f"检测到手柄但无读取权限：{Path('/dev/input/by-id/test-event-joystick')}"
+    )
 
 
 def test_pygame_backend_standardizes_sdl_controller_buttons() -> None:

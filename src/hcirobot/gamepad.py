@@ -21,6 +21,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 # XInput-style button indices (0=A, 1=B, 2=X, 3=Y, ...).  B is the takeover
@@ -158,6 +159,23 @@ class GamepadBackend(Protocol):
     def close(self) -> None: ...
 
 
+def _unreadable_linux_gamepad() -> Path | None:
+    if sys.platform == "win32":
+        return None
+    directory = Path("/dev/input/by-id")
+    try:
+        return next(
+            (
+                path
+                for path in directory.glob("*-event-joystick")
+                if not os.access(path, os.R_OK)
+            ),
+            None,
+        )
+    except OSError:
+        return None
+
+
 class PygameGamepadBackend:
     """pygame/SDL joystick backend; every failure degrades to 'no device'."""
 
@@ -189,7 +207,12 @@ class PygameGamepadBackend:
                 self._owns_display = True
             pygame.joystick.init()
             if pygame.joystick.get_count() == 0:
-                self.last_error = "未检测到手柄"
+                unreadable = _unreadable_linux_gamepad()
+                self.last_error = (
+                    f"检测到手柄但无读取权限：{unreadable}"
+                    if unreadable is not None
+                    else "未检测到手柄"
+                )
                 return None
             joystick = pygame.joystick.Joystick(0)
             joystick.init()
