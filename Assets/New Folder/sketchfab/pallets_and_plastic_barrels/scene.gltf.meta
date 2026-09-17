@@ -1,0 +1,40 @@
+fileFormatVersion: 2
+guid: 79ad66d2af0ab1f42b446a4162f7bf86
+ScriptedImporter:
+  internalIDToNameTable: []
+  externalObjects: {}
+  serializedVersion: 2
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+  script: {fileID: 11500000, guid: 715df9372183c47e389bb6e19fbc3b52, type: 3}
+  editorImportSettings:
+    generateSecondaryUVSet: 0
+  importSettings:
+    nodeNameMethod: 1
+    animationMethod: 2
+    generateMipMaps: 1
+    texturesReadable: 0
+    defaultMinFilterMode: 9729
+    defaultMagFilterMode: 9729
+    anisotropicFilterLevel: 1
+  instantiationSettings:
+    mask: -1
+    layer: 0
+    skinUpdateWhenOffscreen: 1
+    lightIntensityFactor: 1
+    sceneObjectCreation: 2
+  assetDependencies:
+  - type: 0
+    originalUri: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\scene.bin
+    assetPath: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\scene.bin
+  - type: 1
+    originalUri: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\textures\Wood_baseColor.png
+    assetPath: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\textures\Wood_baseColor.png
+  - type: 1
+    originalUri: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\textures\Wood_metallicRoughness.png
+    assetPath: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\textures\Wood_metallicRoughness.png
+  - type: 1
+    originalUri: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\textures\Wood_normal.png
+    assetPath: Assets\New Folder\sketchfab\pallets_and_plastic_barrels\textures\Wood_normal.png
+  reportItems: []

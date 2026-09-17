@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: fa91ba3439c0f0a4a83825f1f8b917ee
+ScriptedImporter:
+  internalIDToNameTable: []
+  externalObjects: {}
+  serializedVersion: 2
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+  script: {fileID: 11500000, guid: 6c51fa5e63a9c704db6cfa9014345745, type: 3}
+  createAvatar: 0
+  generateDebugData: 0
+  materialCreationMode: 0
+  vMDAnimations: []
+  vMDFrameRate: 30
+  vMDBakeIKToFK: 1
+  vMDBakePhysicsToFK: 0
+  vMDPhysicsWarmUpDuration: 5

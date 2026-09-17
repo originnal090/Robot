@@ -1,0 +1,11 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes: []
+  m_configObjects:
+    Unity.XR.PICO.LivePreview.Settings: {fileID: 11400000, guid: 3dda8567e862edb4c8dba82a57ccf06b, type: 2}
+    Unity.XR.PXR.Settings: {fileID: 11400000, guid: 9ae2e93c21d479546bddb9e2c4e0c27a, type: 2}
+    com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 93585c659091c88488134916b5cbbc98, type: 2}
