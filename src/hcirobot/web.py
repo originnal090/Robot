@@ -194,9 +194,10 @@ def create_app(
         if discovery_lock.locked():
             raise ControlConflict("设备发现正在进行")
         async with discovery_lock:
-            return await asyncio.wait_for(
-                asyncio.to_thread(discover_devices), timeout=12.0
-            )
+            # Each socket probe has its own timeout and discovery caps the CIDR
+            # size. Do not wrap the worker in wait_for: cancelling to_thread
+            # cannot stop its underlying scan and would surface a spurious 500.
+            return await asyncio.to_thread(discover_devices)
 
     @app.post("/api/control/claim")
     def claim(data: ClaimRequest):
