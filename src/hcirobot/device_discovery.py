@@ -134,14 +134,27 @@ def arp_table() -> dict[str, str]:
         return {}
 
 
-def discover_devices(cidr: str | None = None, *, timeout: float = 0.5, workers: int = 128) -> dict:
+def format_mac(ip: str, table: dict[str, str]) -> str:
+    return table.get(ip, "-")
+
+
+def discover_devices(
+    cidr: str | None = None,
+    *,
+    timeout: float = 0.5,
+    workers: int = 128,
+    roles: dict[str, tuple[int, ...]] = ROLE_PORTS,
+    extra_ports: tuple[int, ...] = (),
+    include_banner: bool = True,
+) -> dict:
     selected, source = (cidr, "argument") if cidr else autodetect_cidr()
     started = time.monotonic()
-    scanned = scan(selected, (22, 8080, 8090), timeout, workers)
+    probe_ports = tuple(sorted({port for required in roles.values() for port in required} | set(extra_ports)))
+    scanned = scan(selected, probe_ports, timeout, workers)
     macs = arp_table()
     devices = []
     for ip in sorted(scanned, key=ipaddress.ip_address):
-        full, partial = classify(scanned[ip])
+        full, partial = classify(scanned[ip], roles)
         devices.append({"ip": ip, "mac": macs.get(ip), "roles_full": full, "roles_partial": partial,
-                        "open_ports": sorted(scanned[ip]), "http_server": http_server_banner(ip, 8080) if 8080 in scanned[ip] else None})
+                        "open_ports": sorted(scanned[ip]), "http_server": http_server_banner(ip, 8080) if include_banner and 8080 in scanned[ip] else None})
     return {"cidr": selected, "cidr_source": source, "elapsed_seconds": round(time.monotonic() - started, 2), "devices": devices}
