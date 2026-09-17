@@ -251,6 +251,39 @@ def test_pygame_backend_reports_unreadable_linux_gamepad(monkeypatch) -> None:
     )
 
 
+def test_pygame_backend_reinitializes_joystick_subsystem_for_hotplug(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Joystick:
+        def init(self):
+            pass
+
+        def get_numaxes(self):
+            return 2
+
+        def get_name(self):
+            return "Hotplug Pad"
+
+    pygame = SimpleNamespace(
+        display=SimpleNamespace(
+            get_init=lambda: True,
+            init=lambda: None,
+            quit=lambda: None,
+        ),
+        joystick=SimpleNamespace(
+            quit=lambda: calls.append("quit"),
+            init=lambda: calls.append("init"),
+            get_count=lambda: 1,
+            Joystick=lambda _index: Joystick(),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "pygame", pygame)
+
+    backend = PygameGamepadBackend()
+    assert backend.probe() == "Hotplug Pad"
+    assert calls[:2] == ["quit", "init"]
+
+
 def test_pygame_backend_standardizes_sdl_controller_buttons() -> None:
     class Controller:
         def get_button(self, index):

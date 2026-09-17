@@ -205,6 +205,10 @@ class PygameGamepadBackend:
             if not pygame.display.get_init():
                 pygame.display.init()
                 self._owns_display = True
+            # SDL's joystick list can remain frozen when the service starts
+            # before the USB receiver exposes its input interface. Recreate
+            # the subsystem on every disconnected probe so hotplug is visible.
+            pygame.joystick.quit()
             pygame.joystick.init()
             if pygame.joystick.get_count() == 0:
                 unreadable = _unreadable_linux_gamepad()
