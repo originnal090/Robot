@@ -17,6 +17,7 @@ fi
 CONFIG_PATH=${HCIROBOT_CONFIG:-$PROJECT_DIR/deploy/config/config.orangepi.toml}
 LISTEN_HOST=${HCIROBOT_WEB_HOST:-0.0.0.0}
 LISTEN_PORT=${HCIROBOT_WEB_PORT:-8090}
+MJPEG_PORT=${HCIROBOT_MJPEG_PORT:-8091}
 ENABLE_GAMEPAD=${HCIROBOT_GAMEPAD:-1}
 PYTHON_BIN=${HCIROBOT_PYTHON:-$PROJECT_DIR/.venv/bin/python}
 WEB_DEPS=${HCIROBOT_WEB_DEPS:-$PROJECT_DIR/.webdeps}
@@ -55,6 +56,17 @@ case "$ENABLE_GAMEPAD" in
     0|1) ;;
     *) printf '%s\n' "HCIROBOT_GAMEPAD must be 0 or 1" >&2; exit 1 ;;
 esac
+case "$MJPEG_PORT" in
+    ''|*[!0-9]*) printf '%s\n' "HCIROBOT_MJPEG_PORT must be an integer" >&2; exit 1 ;;
+esac
+if [ "$MJPEG_PORT" -lt 1 ] || [ "$MJPEG_PORT" -gt 65535 ]; then
+    printf '%s\n' "HCIROBOT_MJPEG_PORT must be between 1 and 65535" >&2
+    exit 1
+fi
+if [ "$MJPEG_PORT" -eq "$LISTEN_PORT" ]; then
+    printf '%s\n' "HCIROBOT_MJPEG_PORT must differ from HCIROBOT_WEB_PORT" >&2
+    exit 1
+fi
 case "$LISTEN_HOST" in
     127.0.0.1|localhost|::1) ;;
     *)
@@ -67,7 +79,7 @@ esac
 
 "$PYTHON_BIN" -m hcirobot --config "$CONFIG_PATH" --check-config
 
-set -- -m hcirobot.web --config "$CONFIG_PATH" --host "$LISTEN_HOST" --port "$LISTEN_PORT"
+set -- -m hcirobot.web --config "$CONFIG_PATH" --host "$LISTEN_HOST" --port "$LISTEN_PORT" --mjpeg-host "$LISTEN_HOST" --mjpeg-port "$MJPEG_PORT"
 if [ "$ENABLE_GAMEPAD" -eq 1 ]; then
     set -- "$@" --gamepad
 fi
@@ -80,6 +92,7 @@ if [ -n "${HCIROBOT_WEB_CERTFILE:-}" ] || [ -n "${HCIROBOT_WEB_KEYFILE:-}" ]; th
 fi
 
 printf '%s\n' "HCIRobot Web UI: http${HCIROBOT_WEB_CERTFILE:+s}://$LISTEN_HOST:$LISTEN_PORT"
+printf '%s\n' "Annotated MJPEG: http://$LISTEN_HOST:$MJPEG_PORT"
 printf '%s\n' "Config: $CONFIG_PATH"
 printf '%s\n' "Orange Pi gamepad: $ENABLE_GAMEPAD"
 exec "$PYTHON_BIN" "$@"

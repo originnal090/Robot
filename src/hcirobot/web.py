@@ -9,7 +9,10 @@ import hmac
 import ipaddress
 import json
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -25,6 +28,96 @@ from .service import ControlConflict, SessionService
 
 STATIC = Path(__file__).with_name("web_static")
 Axis = Annotated[float, Field(ge=-1, le=1)]
+
+
+class MjpegPortServer:
+    """Small read-only MJPEG server whose root path is the annotated feed."""
+
+    def __init__(self, runtime: SessionService, host: str, port: int):
+        self.runtime = runtime
+        self.host = host
+        self.requested_port = port
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    @property
+    def port(self) -> int:
+        return self._server.server_port if self._server is not None else self.requested_port
+
+    def start(self) -> None:
+        if self._server is not None:
+            return
+        runtime = self.runtime
+        stop = self._stop
+        stop.clear()
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_HEAD(self) -> None:
+                self._headers(stream=False)
+
+            def do_GET(self) -> None:
+                if urlsplit(self.path).path != "/":
+                    self.send_error(404)
+                    return
+                self._headers(stream=True)
+                previous = -1
+                try:
+                    while not stop.is_set():
+                        seq, jpeg = runtime.jpeg()
+                        if jpeg is not None and seq != previous:
+                            previous = seq
+                            self.wfile.write(
+                                b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                                + str(len(jpeg)).encode()
+                                + b"\r\n\r\n"
+                                + jpeg
+                                + b"\r\n"
+                            )
+                            self.wfile.flush()
+                        time.sleep(0.05)
+                except (BrokenPipeError, ConnectionError, OSError):
+                    pass
+
+            def _headers(self, *, stream: bool) -> None:
+                if urlsplit(self.path).path != "/":
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header(
+                    "Content-Type", "multipart/x-mixed-replace; boundary=frame"
+                )
+                self.end_headers()
+
+            def log_message(self, _format: str, *_args) -> None:
+                return
+
+        class Server(ThreadingHTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+        self._server = Server((self.host, self.requested_port), Handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="mjpeg-port",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def close(self) -> None:
+        server, thread = self._server, self._thread
+        self._server = self._thread = None
+        self._stop.set()
+        if server is None:
+            return
+        server.shutdown()
+        server.server_close()
+        if thread is not None:
+            thread.join(timeout=5)
 
 
 class Payload(BaseModel):
@@ -109,21 +202,33 @@ def create_app(
     token: str | None = None,
     gamepad: bool = False,
     service: SessionService | None = None,
+    mjpeg_host: str | None = None,
+    mjpeg_port: int | None = None,
 ) -> FastAPI:
     runtime = service or SessionService(config, gamepad=gamepad)
+    mjpeg_server = (
+        MjpegPortServer(runtime, mjpeg_host or "127.0.0.1", mjpeg_port)
+        if mjpeg_port is not None
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(_app):
         runtime.open()
+        if mjpeg_server is not None:
+            await asyncio.to_thread(mjpeg_server.start)
         try:
             yield
         finally:
+            if mjpeg_server is not None:
+                await asyncio.to_thread(mjpeg_server.close)
             await asyncio.to_thread(runtime.close)
 
     app = FastAPI(
         title="HCIRobot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
     )
     app.state.service = runtime
+    app.state.mjpeg_server = mjpeg_server
     discovery_lock = asyncio.Lock()
 
     def authorized(connection) -> bool:
@@ -359,6 +464,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8090)
+    parser.add_argument(
+        "--mjpeg-port",
+        type=int,
+        default=0,
+        help="Serve the annotated MJPEG feed directly at this port's root path",
+    )
+    parser.add_argument("--mjpeg-host", help="MJPEG bind address (default: --host)")
     parser.add_argument("--gamepad", action="store_true", help="Enable server-attached gamepad")
     parser.add_argument("--ssl-certfile", type=Path)
     parser.add_argument("--ssl-keyfile", type=Path)
@@ -374,10 +486,21 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("TLS 证书和私钥必须同时提供")
     if not 1 <= args.port <= 65535:
         parser.error("端口必须在 1 到 65535 之间")
+    if not 0 <= args.mjpeg_port <= 65535:
+        parser.error("MJPEG 端口必须为 0（禁用）或 1 到 65535")
+    mjpeg_host = args.mjpeg_host or args.host
+    if args.mjpeg_port == args.port and mjpeg_host == args.host:
+        parser.error("WebUI 和 MJPEG 不能监听相同地址与端口")
     import uvicorn
 
     uvicorn.run(
-        create_app(args.config, token=token, gamepad=args.gamepad),
+        create_app(
+            args.config,
+            token=token,
+            gamepad=args.gamepad,
+            mjpeg_host=mjpeg_host,
+            mjpeg_port=args.mjpeg_port or None,
+        ),
         host=args.host,
         port=args.port,
         workers=1,

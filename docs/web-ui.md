@@ -37,6 +37,11 @@ export HCIROBOT_WEB_TOKEN="$(python3 -c 'import secrets; print(secrets.token_url
 Web 服务进程独占机器人连接。不要同时运行桌面 GUI、CLI 或另一 Web 实例来控制同一机器人。
 不要使用多 worker 或自动 reload 启动硬件服务。应用入口固定使用一个 worker。
 
+标注后的只读 MJPEG 流默认单独监听 8091，根路径就是视频流：
+`http://香橙派IP:8091`。Unity 等客户端直接填写该地址，不需要附加
+`/unity-stream.mjpg`、`/?action=stream` 或其他 path。该端口不要求 WebUI 令牌，
+只应暴露在可信局域网；可用 `HCIROBOT_MJPEG_PORT` 修改端口。
+
 ## 两种手柄位置
 
 `deploy/start_webui.sh` 中默认的 `HCIROBOT_GAMEPAD=1` 指的是**物理手柄连接香橙派**，

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import sys
 import threading
 import time
@@ -415,6 +416,33 @@ def test_unity_stream_is_public_read_only_route(service):
     assert requires_auth("/stream.mjpg")
     assert not requires_auth("/unity-stream.mjpg")
     assert "GET" in routes["/unity-stream.mjpg"]
+
+
+def test_dedicated_mjpeg_port_serves_annotated_stream_at_root(service):
+    jpeg = b"\xff\xd8test-jpeg\xff\xd9"
+    with service._lock:
+        service._jpeg_seq = 1
+        service._jpeg = jpeg
+    app = create_app(service=service, mjpeg_host="127.0.0.1", mjpeg_port=0)
+
+    with TestClient(app):
+        port = app.state.mjpeg_server.port
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "multipart/x-mixed-replace; boundary=frame"
+        assert response.readline() == b"--frame\r\n"
+        assert response.readline() == b"Content-Type: image/jpeg\r\n"
+        assert response.readline() == f"Content-Length: {len(jpeg)}\r\n".encode()
+        assert response.readline() == b"\r\n"
+        assert response.read(len(jpeg)) == jpeg
+        connection.close()
+
+        probe = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        probe.request("HEAD", "/extra-path")
+        assert probe.getresponse().status == 404
+        probe.close()
 
 
 def test_arm_mode_is_validated_and_forwarded(service):
