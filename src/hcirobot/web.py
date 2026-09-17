@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .device_discovery import discover_devices
 from .robot import parse_endpoint
 from .service import ControlConflict, SessionService
 
@@ -55,6 +56,7 @@ class StartRequest(Owner):
     arrival_size_version: Literal["v1", "v2"] | None = None
     detector_backend: Literal["lab", "ascend", "svm"] | None = None
     detector_model_path: str | None = Field(default=None, max_length=2048)
+    detector_confidence: float | None = Field(default=None, ge=0, le=1)
 
 
 class TuneRequest(SessionRequest):
@@ -122,6 +124,7 @@ def create_app(
         title="HCIRobot", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
     )
     app.state.service = runtime
+    discovery_lock = asyncio.Lock()
 
     def authorized(connection) -> bool:
         if not token:
@@ -185,6 +188,15 @@ def create_app(
     @app.get("/api/state")
     def state():
         return runtime.snapshot()
+
+    @app.post("/api/devices/discover")
+    async def discover():
+        if discovery_lock.locked():
+            raise ControlConflict("设备发现正在进行")
+        async with discovery_lock:
+            return await asyncio.wait_for(
+                asyncio.to_thread(discover_devices), timeout=12.0
+            )
 
     @app.post("/api/control/claim")
     def claim(data: ClaimRequest):

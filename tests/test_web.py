@@ -13,6 +13,7 @@ pytest.importorskip("fastapi")
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
+import hcirobot.web as web_module
 from hcirobot.app import RuntimeEvent, SessionControl, run_loop, run_manual_loop
 from hcirobot.controller import ControllerConfig, VisualApproachController
 from hcirobot.detector import DetectorConfig, RedBallDetector
@@ -281,6 +282,8 @@ def test_defaults_list_svm_variants_separately_from_ascend(service, tmp_path, mo
     defaults = service.defaults()
 
     assert defaults["ascend_model_path"] == "/models/ball-yolo.om"
+    assert defaults["ascend_presets"][0]["path"] == "/models/ball-yolo.om"
+    assert defaults["ascend_presets"][0]["confidence"] == defaults["ascend_confidence"]
     assert defaults["svm_model_path"].endswith("route-balanced-a146-v2/profile.json")
     assert defaults["detector_model_path"] == "/models/ball-yolo.om"
     assert defaults["svm_model_path"] != defaults["ascend_model_path"]
@@ -289,6 +292,29 @@ def test_defaults_list_svm_variants_separately_from_ascend(service, tmp_path, mo
     assert defaults["startup_forward"] is False
     assert defaults["startup_forward_seconds"] == 16.0
     assert defaults["arrival_size_version"] == "v2"
+
+
+def test_device_discovery_api_does_not_require_control_lease(service, monkeypatch):
+    expected = {
+        "cidr": "192.168.137.0/24",
+        "cidr_source": "test",
+        "elapsed_seconds": 0.1,
+        "devices": [
+            {
+                "ip": "192.168.137.10",
+                "mac": None,
+                "roles_full": ["TonyPi"],
+                "roles_partial": ["OrangePi"],
+                "open_ports": [22, 8080],
+                "http_server": "MJPG-Streamer/0.2",
+            }
+        ],
+    }
+    monkeypatch.setattr(web_module, "discover_devices", lambda: expected)
+    with TestClient(create_app(service=service)) as client:
+        response = client.post("/api/devices/discover", json={})
+    assert response.status_code == 200
+    assert response.json() == expected
 
 
 def test_invalid_axes_do_not_reach_session(service):

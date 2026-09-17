@@ -92,6 +92,11 @@ label:first-child {margin-top:0}
 input:not([type=checkbox]),select {width:100%; background:#11181c; border:1px solid #34434c; border-radius:5px; color:var(--text); height:30px; padding:5px 8px; font-size:11px; min-width:0}
 input:disabled,select:disabled {opacity:.5}
 .host-row {display:grid; grid-template-columns:1fr 72px; gap:9px; margin-top:9px}
+.discovery {display:grid; gap:5px; margin-top:8px}
+.discovery button {width:100%; font-size:10px; min-height:30px}
+#discovery-results {display:grid; gap:5px}
+.device-result {display:grid; grid-template-columns:1fr auto; align-items:center; gap:6px; border:1px solid #2f3a40; border-radius:5px; padding:6px 7px; font-size:10px}
+.device-result button {width:auto; min-height:25px; padding:3px 7px}
 .checkbox {display:flex; align-items:center; gap:7px; line-height:1.4; font-size:10px}
 .checkbox input {accent-color:var(--yellow); width:13px; height:13px; margin:0}
 .session-options {display:grid; gap:8px; margin:12px 0 10px}

@@ -84,6 +84,8 @@ class SessionRuntime:
                 npu_values = dict(
                     config.get("npu", {}), enabled=True, model=values["edge_model_path"]
                 )
+                if values.get("detector_confidence") is not None:
+                    npu_values["confidence"] = values["detector_confidence"]
                 detector = AscendYoloDetector(ascend_yolo_config(npu_values), detection)
                 publish(RuntimeEvent("state", f"识别器：Ascend NPU {values['edge_model_path']}"))
             elif detector_backend == "svm":

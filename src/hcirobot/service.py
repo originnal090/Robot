@@ -46,6 +46,23 @@ MANUAL_SECONDS = 0.30
 LEASE_SECONDS = 3.0
 STARTUP_LEASE_SECONDS = 15.0
 
+_ASCEND_PRESETS = (
+    (
+        "yolo11n-640-v3",
+        "YOLO11n v3（iPhone7 + TonyPi）",
+        "/home/HwHiAiUser/hcirobot-ascend/models/yolo11n_640_v3.om",
+        "混合相机训练版；推荐阈值 0.190",
+        0.1899006367,
+    ),
+    (
+        "yolo11n-640-v1",
+        "YOLO11n v1（当前稳定版）",
+        "/home/HwHiAiUser/hcirobot-ascend/models/yolo11n_640.om",
+        "TonyPi 实测稳定版；保留现场兜底",
+        0.053634531795978546,
+    ),
+)
+
 _SVM_PRESETS = (
     (
         "route-balanced-a146-v2",
@@ -281,6 +298,29 @@ class SessionService(SessionRuntime):
         npu = ascend_yolo_config(cfg.get("npu", {}))
         startup = startup_route_config(cfg.get("startup", {}))
         project_root = Path.cwd()
+        ascend_presets = [
+            {
+                "id": ident,
+                "label": label,
+                "path": path,
+                "description": description,
+                "confidence": confidence,
+                "available": Path(path).is_file(),
+            }
+            for ident, label, path, description, confidence in _ASCEND_PRESETS
+        ]
+        if npu.model and all(item["path"] != npu.model for item in ascend_presets):
+            ascend_presets.insert(
+                0,
+                {
+                    "id": "configured",
+                    "label": "配置文件模型",
+                    "path": npu.model,
+                    "description": "config.toml 当前配置",
+                    "confidence": npu.confidence,
+                    "available": Path(npu.model).is_file(),
+                },
+            )
         presets = [
             {
                 "id": ident,
@@ -307,7 +347,10 @@ class SessionService(SessionRuntime):
             "gamepad_enabled": self.gamepad_monitor is not None,
             "detector_backend": "ascend" if npu.enabled else "lab",
             "detector_model_path": npu.model if npu.enabled else "",
+            "detector_confidence": npu.confidence if npu.enabled else None,
             "ascend_model_path": npu.model,
+            "ascend_confidence": npu.confidence,
+            "ascend_presets": ascend_presets,
             "svm_model_path": svm_model,
             "svm_presets": presets,
             "control_lease_seconds": LEASE_SECONDS,
@@ -348,6 +391,12 @@ class SessionService(SessionRuntime):
                 raise ValueError("未知识别器类型")
             values["detector_backend"] = detector_backend
             values["detector_model_path"] = model_path
+            confidence = values.get("detector_confidence")
+            if confidence is not None:
+                confidence = float(confidence)
+                if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                    raise ValueError("识别置信度必须在 0–1 之间")
+            values["detector_confidence"] = confidence
             values["edge_model_path"] = model_path
             values["use_edge_model"] = detector_backend != "lab"
             if values["control_only"]:

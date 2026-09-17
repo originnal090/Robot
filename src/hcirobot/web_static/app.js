@@ -6,7 +6,7 @@ let connected = false, busy = false, manualAllowed = false, claimedAt = 0;
 let drive = null, lastDrive = false, previousButtons = [], headLevel = 0;
 let tuningSession = -1, tuningDirty = false, lastLogVersion = -1, padToggleBusy = false;
 let reconnectTimer, noticeTimer, lastHeartbeatAt = 0;
-const CUSTOM_SVM = "__custom__";
+const CUSTOM_MODEL = "__custom__";
 const GAMEPAD_BUTTON_NAMES = {0:"A", 1:"B", 2:"X", 3:"Y", 4:"LB", 5:"RB",
   6:"BACK", 7:"START", 8:"LS", 9:"RS", 11:"LT", 12:"RT"};
 
@@ -239,7 +239,7 @@ async function initialize() {
     $("approach").value = defaults.approach_mode;
     $("arrival-size-version").value = defaults.arrival_size_version ?? "v2";
     $("detector").value = defaults.detector_backend ?? "lab";
-    $("ascend-model-path").value = defaults.ascend_model_path ?? "";
+    fillAscendModels(defaults.ascend_presets ?? [], defaults.ascend_model_path ?? "");
     fillSvmModels(defaults.svm_presets ?? [], defaults.svm_model_path ?? "");
     updateDetectorFields();
     $("obstacle").checked = defaults.obstacle;
@@ -291,6 +291,7 @@ $("start").onclick = () => perform(async () => {
     approach_mode: $("approach").value,
     arrival_size_version: $("arrival-size-version").value,
     detector_backend: detector, detector_model_path: modelPath,
+    detector_confidence: selectedDetectorConfidence(),
   });
   setTab("status");
 });
@@ -320,14 +321,47 @@ for (const operation of ["stop", "estop"]) $(operation).onclick = async () => {
   try { await api(`/api/session/${operation}`, {}); } catch (error) { showNotice(error.message); }
 };
 function selectedModelPath() {
-  if ($("detector").value === "ascend") return $("ascend-model-path").value.trim();
+  if ($("detector").value === "ascend") return $("ascend-model").value === CUSTOM_MODEL
+    ? $("ascend-custom-path").value.trim() : $("ascend-model").value;
   if ($("detector").value !== "svm") return "";
-  return $("svm-model").value === CUSTOM_SVM
+  return $("svm-model").value === CUSTOM_MODEL
     ? $("svm-custom-path").value.trim() : $("svm-model").value;
+}
+function selectedDetectorConfidence() {
+  if ($("detector").value !== "ascend" || $("ascend-model").value === CUSTOM_MODEL) return null;
+  const value = Number($("ascend-model").selectedOptions[0]?.dataset.confidence);
+  return Number.isFinite(value) ? value : null;
+}
+function updateAscendDescription() {
+  const option = $("ascend-model").selectedOptions[0];
+  $("ascend-custom-field").hidden = $("ascend-model").value !== CUSTOM_MODEL;
+  $("ascend-description").textContent = option?.dataset.description ?? "";
+}
+function fillAscendModels(presets, selectedPath) {
+  const select = $("ascend-model");
+  select.replaceChildren();
+  for (const preset of presets) {
+    const option = document.createElement("option");
+    option.value = preset.path;
+    option.textContent = `${preset.label}${preset.available ? "" : "（服务器未找到）"}`;
+    option.dataset.description = preset.description;
+    option.dataset.confidence = preset.confidence;
+    option.disabled = !preset.available;
+    select.append(option);
+  }
+  const custom = document.createElement("option");
+  custom.value = CUSTOM_MODEL;
+  custom.textContent = "自定义模型路径…";
+  custom.dataset.description = "自定义路径沿用配置文件中的置信度";
+  select.append(custom);
+  const known = [...select.options].some((option) => option.value === selectedPath && !option.disabled);
+  select.value = known ? selectedPath : CUSTOM_MODEL;
+  if (selectedPath && !known) $("ascend-custom-path").value = selectedPath;
+  updateAscendDescription();
 }
 function updateSvmDescription() {
   const option = $("svm-model").selectedOptions[0];
-  $("svm-custom-field").hidden = $("svm-model").value !== CUSTOM_SVM;
+  $("svm-custom-field").hidden = $("svm-model").value !== CUSTOM_MODEL;
   $("svm-description").textContent = option?.dataset.description ?? "";
 }
 function fillSvmModels(presets, selectedPath) {
@@ -342,12 +376,12 @@ function fillSvmModels(presets, selectedPath) {
     select.append(option);
   }
   const custom = document.createElement("option");
-  custom.value = CUSTOM_SVM;
+  custom.value = CUSTOM_MODEL;
   custom.textContent = "自定义模型路径…";
   custom.dataset.description = "手动填写服务器上的 .json / .npz 路径";
   select.append(custom);
   const known = [...select.options].some((option) => option.value === selectedPath && !option.disabled);
-  select.value = known ? selectedPath : CUSTOM_SVM;
+  select.value = known ? selectedPath : CUSTOM_MODEL;
   if (selectedPath && !known) $("svm-custom-path").value = selectedPath;
   updateSvmDescription();
 }
@@ -356,7 +390,36 @@ function updateDetectorFields() {
   $("svm-model-field").hidden = $("detector").value !== "svm";
 }
 $("detector").onchange = updateDetectorFields;
+$("ascend-model").onchange = updateAscendDescription;
 $("svm-model").onchange = updateSvmDescription;
+$("discover-devices").onclick = () => perform(async () => {
+  $("discovery-status").textContent = "正在扫描局域网…";
+  const report = await api("/api/devices/discover", {});
+  $("discovery-status").textContent = `已扫描 ${report.cidr}，耗时 ${report.elapsed_seconds.toFixed(1)} 秒`;
+  const results = $("discovery-results");
+  results.replaceChildren();
+  for (const device of report.devices.filter((item) => item.roles_full.length)) {
+    const row = document.createElement("div");
+    row.className = "device-result";
+    const label = document.createElement("span");
+    label.textContent = `${device.roles_full.join(" + ")} · ${device.ip}`;
+    row.append(label);
+    if (device.roles_full.includes("TonyPi")) {
+      const use = document.createElement("button");
+      use.type = "button";
+      use.textContent = "用于控制";
+      use.onclick = () => {
+        $("backend").value = "tcp";
+        $("host").value = device.ip;
+        $("port").value = 5075;
+        $("source").value = `http://${device.ip}:8080/?action=stream`;
+      };
+      row.append(use);
+    }
+    results.append(row);
+  }
+  if (!results.children.length) $("discovery-status").textContent += "；未发现完整设备";
+});
 $("control-only").onchange = render;
 $("arm-mode").onchange = render;
 $("capture").onclick = () => perform(() => api("/api/capture", {...context(), active: !state.capture.active}));
