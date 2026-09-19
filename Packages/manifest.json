@@ -2,7 +2,7 @@
   "dependencies": {
     "com.atteneder.gltfast": "5.0.4",
     "com.candidumgames.unitymmdtools": "https://github.com/CandidumGames/UnityMMDTools.git#0.5.1",
-    "com.hcirobot.simulator": "file:F:/unity/hci/Robot/unity/com.hcirobot.simulator",
+    "com.hcirobot.simulator": "file:F:/unity/hci/Robot/unity/com.hcirobot.simulator (2)",
     "com.ivanmurzak.unity.mcp": "0.90.0",
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.feature.development": "1.0.1",

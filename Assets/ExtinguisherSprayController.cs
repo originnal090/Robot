@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using HciRobot.Simulator;
 
 public class ExtinguisherSprayController : MonoBehaviour
 {
@@ -10,6 +11,11 @@ public class ExtinguisherSprayController : MonoBehaviour
     [Range(0.05f, 1f)] public float triggerThreshold = 0.25f;
     public bool enableKeyboardDebug = true;
     public Key keyboardDebugKey = Key.J;
+
+    [Header("HCIRobot TCP Spray")]
+    public TonyPiMotionDriver hciMotionDriver;
+    [Min(0.1f)] public float tcpSpraySeconds = 4f;
+    private float _tcpSprayUntil;
 
     [Header("Spray")]
     public Transform nozzle;
@@ -50,16 +56,53 @@ public class ExtinguisherSprayController : MonoBehaviour
     {
         if (sprayAction != null && sprayAction.action != null)
             sprayAction.action.Enable();
+
+        BindRobotSpray();
+    }
+
+    private void Start()
+    {
+        // The robot may create its legacy adapter after this component's OnEnable.
+        BindRobotSpray();
+    }
+
+    private void BindRobotSpray()
+    {
+        if (hciMotionDriver == null)
+            hciMotionDriver = GetComponentInParent<TonyPiMotionDriver>();
+        if (hciMotionDriver == null)
+            return;
+
+        hciMotionDriver.ActionReceived -= OnRobotSprayAction;
+        hciMotionDriver.ActionReceived += OnRobotSprayAction;
+
+        // This nozzle owns progressive spraying; do not also instantly extinguish.
+        var adapter = hciMotionDriver.GetComponent<CourseFireExtinguishAdapter>();
+        if (adapter != null && (adapter.FireControl == null || adapter.FireControl == fireControl))
+            adapter.enabled = false;
+    }
+
+    private void OnRobotSprayAction(string action)
+    {
+        if (!string.Equals(action, "right_grip", System.StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(action, "outfire", System.StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _tcpSprayUntil = Time.time + Mathf.Max(0.1f, tcpSpraySeconds);
+        Debug.Log($"[Extinguisher] TCP {action}: spraying for {tcpSpraySeconds:F1}s.", this);
     }
 
     private void OnDisable()
     {
+        if (hciMotionDriver != null)
+            hciMotionDriver.ActionReceived -= OnRobotSprayAction;
+        _tcpSprayUntil = 0f;
         SetSprayVisuals(false);
     }
 
     private void Update()
     {
-        bool shouldSpray = ReadSprayHeld();
+        bool shouldSpray = Time.time < _tcpSprayUntil || ReadSprayHeld();
         SetSprayVisuals(shouldSpray);
 
         IsHittingFire = false;
