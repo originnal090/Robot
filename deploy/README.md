@@ -7,6 +7,11 @@ These files are templates, not universal image-specific installers. Replace user
 - Orange Pi controller: 64-bit Linux, Python 3.11+, compatible AArch64 NumPy/OpenCV/Pillow wheels.
 - TonyPi service: Python 3.8+, vendor `hiwonder` modules and matching action groups.
 - Network: isolated LAN; TCP 5075 and MJPEG HTTP 8080 have no authentication.
+- DHCP addresses drift between sessions. Find the boards with
+  `python tools/discover_devices.py` (stdlib-only, ~3 s per /24: TonyPi = TCP 8080+22,
+  Orange Pi = TCP 8090+22). It deliberately never connects to 5075, whose
+  single-client server would kick the live session; mDNS/`.local` names are
+  unreliable on the hotspot network, do not depend on them.
 - Only one process may own robot motion control.
 
 ## 1. Prepare TonyPi without motion
